@@ -59,7 +59,7 @@
 		{
 			"type": "shell",
 			"label": "[Release] CubeProg: Flash (SWD)",
-			"command": "C:/Program Files/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI",
+			"command": "${userHome}/AppData/Local/stm32cube/bundles/programmer/2.21.0/bin/STM32_Programmer_CLI.exe",
 			"args": [
 				"--connect",
 				"port=swd",
