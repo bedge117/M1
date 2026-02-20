@@ -13,13 +13,12 @@ check_env:
 # Distro-specific setup
 setup:
 	@if [ -f /etc/arch-release ]; then \
-		chmod +x setup_arch.sh && ./setup_arch.sh; \
+		./setup_arch.sh; \
 	else \
 		echo "Manual setup required: Ensure cmake, ninja, and arm-none-eabi-gcc are installed."; \
 	fi
 
 build:
-	chmod +x build.sh
 	./build.sh
 
 clean:
