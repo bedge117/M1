@@ -21,8 +21,8 @@ Download: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads (14.
 
 * For Linux users:
 
-- Install ARM GCC toolchain (e.g., `arm-none-eabi-gcc`) and Ninja
-- On Debian/Ubuntu: `sudo apt install gcc-arm-none-eabi ninja-build`
+- Install ARM GCC toolchain (e.g., `arm-none-eabi-gcc`), Ninja, and srecord via yay
+- On Debian/Ubuntu: `sudo apt install gcc-arm-none-eabi ninja-build srecord`
 
 - VSCode download: https://code.visualstudio.com/download
 
