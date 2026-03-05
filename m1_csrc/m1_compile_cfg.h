@@ -75,5 +75,6 @@ extern void assert_failed();
 #define M1_APP_DFU_HWSTRAP_ENABLE      /* Enable PE11 DFU hardware strap */
 #define M1_APP_FLIPPER_COMPAT_ENABLE   /* Enable Flipper file format support */
 #define M1_APP_CRYPTO_ENABLE           /* Enable WiFi credential encryption */
+#define M1_APP_WIFI_CONNECT_ENABLE     /* Enable WiFi connect/saved networks/status */
 
 #endif /* M1_COMPILE_CFG_H_ */

@@ -942,3 +942,317 @@ uint8_t esp_dev_reset(ctrl_cmd_t *app_req)
 
 	return ret;
 } // uint8_t esp_dev_reset(ctrl_cmd_t *app_req)
+
+
+#ifdef M1_APP_WIFI_CONNECT_ENABLE
+
+uint8_t wifi_connect_ap(ctrl_cmd_t *app_req)
+{
+	char *rx_buf = NULL;
+	char *ok_buf = NULL;
+	char *resp_buf = NULL;
+	char at_cmd_buf[128];
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0, tick_pass;
+	uint8_t got_ip = 0;
+
+	tick_t0 = HAL_GetTick();
+	esp_queue_reset(ctrl_msg_Q);
+
+	/* Step 1: Set station mode */
+	app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_WIFI_MODE, ESP32C6_WIFI_MODE_STA));
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		ret = ERROR;
+		while (true)
+		{
+			tick_pass = HAL_GetTick() - tick_t0;
+			tick_pass /= MILLISEC_TO_SEC;
+			if ( tick_pass )
+			{
+				tick_t0 += MILLISEC_TO_SEC;
+				if ( app_req->cmd_timeout_sec > tick_pass )
+					app_req->cmd_timeout_sec -= tick_pass;
+				else
+					break;
+			}
+			esp_free_mem(&resp_buf);
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+			resp_buf = rx_buf;
+			rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+			if ( !rx_buf )
+				continue;
+			if ( rx_uid != current_uid )
+				continue;
+			if ( strcmp(rx_buf, app_req->cmd_resp) )
+				continue;
+			ret = SUCCESS;
+			break;
+		}
+
+		/* Step 2: Send connect command AT+CWJAP="ssid","password" */
+		if ( ret==SUCCESS )
+		{
+			esp_free_mem(&app_req->at_cmd);
+			esp_free_mem(&app_req->cmd_resp);
+
+			snprintf(at_cmd_buf, sizeof(at_cmd_buf), "%s\"%s\",\"%s\"%s",
+					ESP32C6_AT_REQ_CONNECT_AP,
+					(char *)app_req->u.wifi_ap_config.ssid,
+					(char *)app_req->u.wifi_ap_config.pwd,
+					ESP32C6_AT_REQ_CRLF);
+			app_req->at_cmd = strdup(at_cmd_buf);
+			app_req->cmd_len = strlen(app_req->at_cmd);
+			app_req->cmd_resp = NULL;
+
+			/* Use longer timeout for connect */
+			if ( app_req->cmd_timeout_sec < DEFAULT_CTRL_RESP_CONNECT_AP_TIMEOUT )
+				app_req->cmd_timeout_sec = DEFAULT_CTRL_RESP_CONNECT_AP_TIMEOUT;
+
+			ret = spi_AT_app_send_command(app_req);
+			got_ip = 0;
+			app_req->resp_event_status = FAILURE;
+
+			while ( ret==SUCCESS )
+			{
+				esp_free_mem(&resp_buf);
+				rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+				resp_buf = rx_buf;
+				if ( rx_buf && rx_buf_len )
+				{
+					if ( rx_uid != current_uid )
+						continue;
+
+					/* Check for "WIFI GOT IP" */
+					if ( strstr(rx_buf, ESP32C6_AT_RES_WIFI_GOT_IP) )
+						got_ip = 1;
+
+					/* Check for error: +CWJAP:<error_code> */
+					ok_buf = strstr(rx_buf, ESP32C6_AT_RES_CONNECT_AP_KEY);
+					if ( ok_buf )
+					{
+						/* Parse error code */
+						app_req->resp_event_status = strtol(ok_buf + strlen(ESP32C6_AT_RES_CONNECT_AP_KEY), NULL, 10);
+					}
+
+					/* Check for final "OK" or "FAIL" */
+					ok_buf = strstr(rx_buf, ESP32C6_AT_RES_OK);
+					if ( ok_buf )
+					{
+						if ( got_ip )
+							app_req->resp_event_status = SUCCESS;
+						break;
+					}
+					ok_buf = strstr(rx_buf, ESP32C6_AT_RES_FAIL);
+					if ( ok_buf )
+					{
+						ret = ERROR;
+						break;
+					}
+
+					tick_pass = HAL_GetTick() - tick_t0;
+					tick_pass /= MILLISEC_TO_SEC;
+					if ( tick_pass )
+					{
+						tick_t0 += MILLISEC_TO_SEC;
+						if ( app_req->cmd_timeout_sec > tick_pass )
+							app_req->cmd_timeout_sec -= tick_pass;
+						else
+							break;
+					}
+				}
+				else
+				{
+					ret = ERROR;
+				}
+			} // while ( ret==SUCCESS )
+		} // if ( ret==SUCCESS ) step 2
+	} // if ( ret==SUCCESS ) step 1
+
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	if ( ret==SUCCESS && app_req->resp_event_status==SUCCESS )
+	{
+		app_req->msg_type = CTRL_RESP;
+	}
+	else
+	{
+		ret = ERROR;
+		M1_LOG_E(TAG, "WiFi connect failed (status %ld)\r\n", app_req->resp_event_status);
+	}
+
+	return ret;
+} // uint8_t wifi_connect_ap(ctrl_cmd_t *app_req)
+
+
+
+uint8_t wifi_disconnect_ap(ctrl_cmd_t *app_req)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0, tick_pass;
+
+	tick_t0 = HAL_GetTick();
+	esp_queue_reset(ctrl_msg_Q);
+	app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_DISCONNECT_AP, ""));
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		ret = ERROR;
+		while (true)
+		{
+			tick_pass = HAL_GetTick() - tick_t0;
+			tick_pass /= MILLISEC_TO_SEC;
+			if ( tick_pass )
+			{
+				tick_t0 += MILLISEC_TO_SEC;
+				if ( app_req->cmd_timeout_sec > tick_pass )
+					app_req->cmd_timeout_sec -= tick_pass;
+				else
+					break;
+			}
+			esp_free_mem(&resp_buf);
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+			resp_buf = rx_buf;
+			rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+			if ( !rx_buf )
+				continue;
+			if ( rx_uid != current_uid )
+				continue;
+			if ( strcmp(rx_buf, app_req->cmd_resp) )
+				continue;
+			ret = SUCCESS;
+			break;
+		}
+	}
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	if ( ret==SUCCESS )
+	{
+		app_req->msg_type = CTRL_RESP;
+		app_req->resp_event_status = SUCCESS;
+	}
+	else
+	{
+		M1_LOG_E(TAG, "WiFi disconnect failed\r\n");
+	}
+
+	return ret;
+} // uint8_t wifi_disconnect_ap(ctrl_cmd_t *app_req)
+
+
+
+uint8_t wifi_get_ip(ctrl_cmd_t *app_req)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	char *index, *end_index;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0, tick_pass;
+	size_t cp_len;
+
+	tick_t0 = HAL_GetTick();
+	esp_queue_reset(ctrl_msg_Q);
+
+	/* Clear output fields */
+	memset(app_req->u.wifi_ap_config.status, 0, STATUS_LENGTH);
+	memset(app_req->u.wifi_ap_config.out_mac, 0, MAX_MAC_STR_SIZE);
+
+	app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_GET_IP, ""));
+	app_req->cmd_resp = NULL;
+	app_req->cmd_len = strlen(app_req->at_cmd);
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		ret = ERROR;
+		while (true)
+		{
+			tick_pass = HAL_GetTick() - tick_t0;
+			tick_pass /= MILLISEC_TO_SEC;
+			if ( tick_pass )
+			{
+				tick_t0 += MILLISEC_TO_SEC;
+				if ( app_req->cmd_timeout_sec > tick_pass )
+					app_req->cmd_timeout_sec -= tick_pass;
+				else
+					break;
+			}
+			esp_free_mem(&resp_buf);
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+			resp_buf = rx_buf;
+			if ( !rx_buf || !rx_buf_len )
+				continue;
+			if ( rx_uid != current_uid )
+				continue;
+
+			/* Parse +CIFSR:STAIP,"x.x.x.x" */
+			index = strstr(rx_buf, ESP32C6_AT_RES_STAIP_KEY);
+			if ( index )
+			{
+				index += strlen(ESP32C6_AT_RES_STAIP_KEY);
+				if ( *index == '\"' ) index++;
+				end_index = strstr(index, "\"");
+				if ( end_index )
+				{
+					cp_len = end_index - index;
+					if ( cp_len >= STATUS_LENGTH ) cp_len = STATUS_LENGTH - 1;
+					strncpy(app_req->u.wifi_ap_config.status, index, cp_len);
+					app_req->u.wifi_ap_config.status[cp_len] = '\0';
+				}
+			}
+
+			/* Parse +CIFSR:STAMAC,"xx:xx:xx:xx:xx:xx" */
+			index = strstr(rx_buf, ESP32C6_AT_RES_STAMAC_KEY);
+			if ( index )
+			{
+				index += strlen(ESP32C6_AT_RES_STAMAC_KEY);
+				if ( *index == '\"' ) index++;
+				end_index = strstr(index, "\"");
+				if ( end_index )
+				{
+					cp_len = end_index - index;
+					if ( cp_len >= MAX_MAC_STR_SIZE ) cp_len = MAX_MAC_STR_SIZE - 1;
+					strncpy(app_req->u.wifi_ap_config.out_mac, index, cp_len);
+					app_req->u.wifi_ap_config.out_mac[cp_len] = '\0';
+				}
+			}
+
+			/* Check for final "OK" */
+			if ( strstr(rx_buf, ESP32C6_AT_RES_OK) )
+			{
+				ret = SUCCESS;
+				break;
+			}
+		}
+	}
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	if ( ret==SUCCESS )
+	{
+		app_req->msg_type = CTRL_RESP;
+		app_req->resp_event_status = SUCCESS;
+	}
+	else
+	{
+		M1_LOG_E(TAG, "WiFi get IP failed\r\n");
+	}
+
+	return ret;
+} // uint8_t wifi_get_ip(ctrl_cmd_t *app_req)
+
+#endif /* M1_APP_WIFI_CONNECT_ENABLE */

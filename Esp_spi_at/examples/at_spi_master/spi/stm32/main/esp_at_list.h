@@ -45,4 +45,26 @@
 
 #define ESP32C6_AT_RESET				"AT+RST"
 
+// WiFi Connect/Disconnect/Status
+// Syntax: AT+CWJAP="<ssid>","<pwd>"[,<bssid>]
+// Success response: WIFI CONNECTED\r\nWIFI GOT IP\r\n\r\nOK
+// Error response: +CWJAP:<error_code>\r\n\r\nFAIL
+//   error_code: 1=timeout, 2=wrong password, 3=AP not found, 4=connect fail
+#define ESP32C6_AT_REQ_CONNECT_AP		"AT+CWJAP="
+#define ESP32C6_AT_RES_CONNECT_AP_KEY	"+CWJAP:"
+#define ESP32C6_AT_RES_WIFI_CONNECTED	"WIFI CONNECTED"
+#define ESP32C6_AT_RES_WIFI_GOT_IP		"WIFI GOT IP"
+#define ESP32C6_AT_RES_FAIL				"FAIL"
+
+// Syntax: AT+CWQAP
+// Response: OK
+#define ESP32C6_AT_REQ_DISCONNECT_AP	"AT+CWQAP"
+
+// Syntax: AT+CIFSR
+// Response: +CIFSR:STAIP,"<ip>"\r\n+CIFSR:STAMAC,"<mac>"
+#define ESP32C6_AT_REQ_GET_IP			"AT+CIFSR"
+#define ESP32C6_AT_RES_GET_IP_KEY		"+CIFSR:"
+#define ESP32C6_AT_RES_STAIP_KEY		"+CIFSR:STAIP,"
+#define ESP32C6_AT_RES_STAMAC_KEY		"+CIFSR:STAMAC,"
+
 #endif /* ESP32C6_AT_LIST_H_ */

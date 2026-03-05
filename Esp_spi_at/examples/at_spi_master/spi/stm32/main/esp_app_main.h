@@ -23,4 +23,10 @@ uint8_t ble_scan_list(ctrl_cmd_t *app_req);
 uint8_t ble_advertise(ctrl_cmd_t *app_req);
 uint8_t esp_dev_reset(ctrl_cmd_t *app_req);
 
+#ifdef M1_APP_WIFI_CONNECT_ENABLE
+uint8_t wifi_connect_ap(ctrl_cmd_t *app_req);
+uint8_t wifi_disconnect_ap(ctrl_cmd_t *app_req);
+uint8_t wifi_get_ip(ctrl_cmd_t *app_req);
+#endif
+
 #endif /* ESP_APP_MAIN_H_ */

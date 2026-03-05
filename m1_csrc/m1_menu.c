@@ -346,21 +346,39 @@ S_M1_Menu_t menu_Settings =
 
 /*--------------------------------- > Wifi -----------------------------------*/
 
-S_M1_Menu_t menu_Wifi_Config =
-{
-    "Config", wifi_config, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
 S_M1_Menu_t menu_Wifi_Scan_AP =
 {
-    "Scan AP", wifi_scan_ap, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "Scan & Connect", wifi_scan_ap, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Config =
+{
+    "Saved Networks", wifi_config, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+#ifdef M1_APP_WIFI_CONNECT_ENABLE
+S_M1_Menu_t menu_Wifi_Status =
+{
+    "Status", wifi_show_status, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Disconnect =
+{
+    "Disconnect", wifi_disconnect, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 2, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Config, &menu_Wifi_Scan_AP}
+    "Wifi", menu_wifi_init, NULL, NULL, 4, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
 };
+#else
+S_M1_Menu_t menu_Wifi =
+{
+    "Wifi", menu_wifi_init, NULL, NULL, 2, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_Wifi_Config}
+};
+#endif
 
 /*--------------------------------- > Wifi -----------------------------------*/
 S_M1_Menu_t menu_Bluetooth_Config =
