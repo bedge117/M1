@@ -95,7 +95,13 @@ typedef enum
 	SUB_GHZ_BAND_433,
 	SUB_GHZ_BAND_433_92,
 	SUB_GHZ_BAND_915,
-	SUB_GHZ_BAND_EOL
+	/* Extended bands below 300 MHz (init with 300 config, retune via SI446x_Set_Frequency) */
+	SUB_GHZ_BAND_150,
+	SUB_GHZ_BAND_200,
+	SUB_GHZ_BAND_250,
+	SUB_GHZ_BAND_EOL,
+	/* Arbitrary frequency via SI446x_Set_Frequency() */
+	SUB_GHZ_BAND_CUSTOM = 0x80
 } S_M1_SubGHz_Band;
 
 typedef enum
@@ -139,6 +145,11 @@ void sub_ghz_replay(void);
 void sub_ghz_frequency_reader(void);
 void sub_ghz_regional_information(void);
 void sub_ghz_radio_settings(void);
+void sub_ghz_spectrum_analyzer(void);
+void sub_ghz_weather_station(void);
+void sub_ghz_brute_force(void);
+void sub_ghz_rssi_meter(void);
+void sub_ghz_freq_scanner(void);
 
 extern EXTI_HandleTypeDef 	si4463_exti_hdl;
 extern TIM_HandleTypeDef   	timerhdl_subghz_tx;

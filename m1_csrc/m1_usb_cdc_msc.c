@@ -21,6 +21,9 @@
 #include "m1_cli.h"
 #include "m1_compile_cfg.h"
 #include "m1_sdcard.h"
+#ifdef M1_APP_RPC_ENABLE
+#include "m1_rpc.h"
+#endif
 
 /*************************** D E F I N E S ************************************/
 
@@ -117,10 +120,10 @@ uint8_t CDC_EpAdd_Inst[3] = {CDC_IN_EP, CDC_OUT_EP, CDC_CMD_EP};  /* CDC Endpoin
 uint8_t CDC_InstID = 0;
 uint8_t MSC_InstID = 0;
 
-#if 1
-enCdcMode m1_usbcdc_mode = CDC_MODE_LOG_CLI;
+#ifdef M1_APP_RPC_ENABLE
+enCdcMode m1_usbcdc_mode = CDC_MODE_VCP;    /* RPC needs VCP path */
 #else
-enCdcMode m1_usbcdc_mode = CDC_MODE_VCP;
+enCdcMode m1_usbcdc_mode = CDC_MODE_LOG_CLI;
 #endif
 
 //#define TASKDELAY_Usb2Ser_handler_task  100 //ms
@@ -388,6 +391,28 @@ void vUsb2SerTask(void *pvParameters)
 
     if (received_bytes > 0)
     {
+#ifdef M1_APP_RPC_ENABLE
+      /* RPC routing: once RPC mode is active, ALL data goes to the
+       * RPC parser (frames may span multiple stream buffer reads).
+       * Before RPC is active, detect the first sync byte to enter
+       * RPC mode. */
+      if (m1_rpc_active || m1_rpc_is_sync(logdb_tx_buffer, received_bytes))
+      {
+        m1_rpc_feed(logdb_tx_buffer, received_bytes);
+
+        /* Re-arm USB endpoint if paused */
+        if (usbcdc_rx_paused == 1)
+        {
+          taskENTER_CRITICAL();
+          usbcdc_rx_paused = 0;
+          __DSB();
+          USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+          taskEXIT_CRITICAL();
+        }
+        continue;  /* Skip UART forwarding */
+      }
+#endif /* M1_APP_RPC_ENABLE */
+
       bytes_remaining = received_bytes;
       current_buffer_ptr = logdb_tx_buffer;
 
@@ -887,3 +912,185 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* hpcd)
 } // void HAL_PCD_MspDeInit(PCD_HandleTypeDef* hpcd)
 
 
+#ifdef M1_APP_BADUSB_ENABLE
+#include "usbd_hid.h"
+#include "m1_log_debug.h"
+
+#define BUSB_TAG  "BUSB"
+
+extern uint8_t USBD_DeviceDesc[];
+
+/* Saved device descriptor bytes to restore after HID mode */
+static uint8_t saved_desc[7]; /* bytes 4-6 (class), 8-11 (VID+PID) */
+
+/* Use STM32 VID with a unique PID that has no cached driver association.
+ * This forces Windows to install the generic USB HID keyboard driver.
+ * Avoid vendor VIDs (Logitech etc.) — their filter drivers send proprietary
+ * control requests that our simple HID device can't handle. */
+#define BADUSB_HID_VID   0x0483
+#define BADUSB_HID_PID   0x572B
+
+/* Disconnect settle time: host needs time to fully process the USB disconnect
+ * event and clear its driver state before we present a new device.
+ * Flipper Zero uses 500ms; this is a known USB best practice. */
+#define USB_DISCONNECT_DELAY_MS  500
+
+/*============================================================================*/
+/**
+  * @brief  Switch USB from CDC+MSC to HID keyboard mode (for BadUSB)
+  *
+  * Based on the Flipper Zero approach:
+  *   1. Electrically disconnect D+ pullup
+  *   2. Wait 500ms for host to fully process disconnect
+  *   3. Patch device descriptor (class=0x00, spoof Logitech VID/PID)
+  *   4. Re-init USB stack with HID class
+  *   5. Populate tclasslist[0] for composite code path compatibility
+  *   6. Reconnect D+ pullup → host enumerates fresh HID keyboard
+  */
+/*============================================================================*/
+void m1_usb_switch_to_hid(void)
+{
+    /* Block CDC/MSC log routing BEFORE tearing down USB.
+     * Sentinel -2 prevents Suspend/Resume callbacks from re-enabling CDC. */
+    m1_USB_CDC_ready = -2;
+    m1_USB_MSC_ready = -2;
+
+    M1_LOG_I(BUSB_TAG, "Switching to HID keyboard mode\r\n");
+
+    /* ---- Phase 1: Disconnect USB ---- */
+    USBD_Stop(&hUsbDeviceFS);   /* D+ pullup OFF, class DeInit */
+    USBD_DeInit(&hUsbDeviceFS);
+
+    /* Fully reset PCD hardware */
+    HAL_PCD_DeInit(&hpcd_USB_DRD_FS);
+    hpcd_USB_DRD_FS.State = HAL_PCD_STATE_RESET;
+
+    /* ---- Phase 2: Wait for host to process disconnect ---- */
+    /* Critical: Flipper Zero waits 500ms here. Without this delay the host
+     * may not fully unload the old (composite) driver, causing the new HID
+     * device to fail enumeration or bind to the wrong driver. */
+    osDelay(USB_DISCONNECT_DELAY_MS);
+
+    /* ---- Phase 3: Patch device descriptor ---- */
+    /* Save original values */
+    saved_desc[0] = USBD_DeviceDesc[4];   /* bDeviceClass */
+    saved_desc[1] = USBD_DeviceDesc[5];   /* bDeviceSubClass */
+    saved_desc[2] = USBD_DeviceDesc[6];   /* bDeviceProtocol */
+    saved_desc[3] = USBD_DeviceDesc[8];   /* idVendor low */
+    saved_desc[4] = USBD_DeviceDesc[9];   /* idVendor high */
+    saved_desc[5] = USBD_DeviceDesc[10];  /* idProduct low */
+    saved_desc[6] = USBD_DeviceDesc[11];  /* idProduct high */
+
+    /* Patch for standalone HID: class 0x00 = use interface class */
+    USBD_DeviceDesc[4]  = 0x00;
+    USBD_DeviceDesc[5]  = 0x00;
+    USBD_DeviceDesc[6]  = 0x00;
+    /* Spoof Logitech keyboard VID/PID — Windows has cached HID drivers for
+     * these, guaranteeing instant keyboard driver binding. */
+    USBD_DeviceDesc[8]  = (uint8_t)(BADUSB_HID_VID & 0xFF);
+    USBD_DeviceDesc[9]  = (uint8_t)(BADUSB_HID_VID >> 8);
+    USBD_DeviceDesc[10] = (uint8_t)(BADUSB_HID_PID & 0xFF);
+    USBD_DeviceDesc[11] = (uint8_t)(BADUSB_HID_PID >> 8);
+
+    /* ---- Phase 4: Re-init USB hardware and stack ---- */
+    hpcd_USB_DRD_FS.Instance = USB_DRD_FS;
+    hpcd_USB_DRD_FS.Init.dev_endpoints = 8;
+    hpcd_USB_DRD_FS.Init.speed = USBD_FS_SPEED;
+    hpcd_USB_DRD_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
+    hpcd_USB_DRD_FS.Init.Sof_enable = DISABLE;
+    hpcd_USB_DRD_FS.Init.low_power_enable = DISABLE;
+    hpcd_USB_DRD_FS.Init.lpm_enable = DISABLE;
+    hpcd_USB_DRD_FS.Init.battery_charging_enable = DISABLE;
+    hpcd_USB_DRD_FS.Init.vbus_sensing_enable = DISABLE;
+    hpcd_USB_DRD_FS.Init.bulk_doublebuffer_enable = DISABLE;
+    hpcd_USB_DRD_FS.Init.iso_singlebuffer_enable = DISABLE;
+    if (HAL_PCD_Init(&hpcd_USB_DRD_FS) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* USBD_Init clears NumClasses, classId, pClass[], tclasslist[].Active */
+    if (USBD_Init(&hUsbDeviceFS, &Class_Desc, 0) != USBD_OK)
+        Error_Handler();
+
+    /* Register HID class — sets pClass[0], increments NumClasses to 1 */
+    if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_HID) != USBD_OK)
+        Error_Handler();
+
+    /* ---- Phase 5: Composite code path compatibility ----
+     * The firmware is built with USE_USBD_COMPOSITE, so ALL USB core code
+     * paths (SetClassConfig, DataIn/Out routing, GET_DESCRIPTOR, setup
+     * request dispatch) use tclasslist[].Active for class lookup.
+     * USBD_RegisterClass() does NOT populate tclasslist, so we must.
+     *
+     * NumClasses = 0 forces GET_DESCRIPTOR(CONFIGURATION) to return
+     * pClass[0]->GetFSConfigDescriptor (our HID descriptor) instead of
+     * USBD_CMPSIT.GetFSConfigDescriptor (the old composite descriptor). */
+    hUsbDeviceFS.NumClasses = 0;
+
+    hUsbDeviceFS.tclasslist[0].ClassType = CLASS_TYPE_HID;
+    hUsbDeviceFS.tclasslist[0].ClassId   = 0;
+    hUsbDeviceFS.tclasslist[0].Active    = 1;
+    hUsbDeviceFS.tclasslist[0].NumIf     = 1;
+    hUsbDeviceFS.tclasslist[0].Ifs[0]    = 0;
+    hUsbDeviceFS.tclasslist[0].NumEps    = 1;
+    hUsbDeviceFS.tclasslist[0].Eps[0].add     = HID_EPIN_ADDR;    /* 0x81 */
+    hUsbDeviceFS.tclasslist[0].Eps[0].type    = USBD_EP_TYPE_INTR;
+    hUsbDeviceFS.tclasslist[0].Eps[0].size    = HID_EPIN_SIZE;    /* 8 */
+    hUsbDeviceFS.tclasslist[0].Eps[0].is_used = 1;
+
+    /* ---- Phase 6: Reconnect — D+ pullup ON ---- */
+    if (USBD_Start(&hUsbDeviceFS) != USBD_OK)
+        Error_Handler();
+
+    hpcd_USB_DRD_FS.pData = &hUsbDeviceFS;
+
+    /* m1_USB_CDC_ready / m1_USB_MSC_ready already set to -2 at function entry */
+
+    M1_LOG_I(BUSB_TAG, "HID mode active, waiting for host enum\r\n");
+}
+
+
+/*============================================================================*/
+/**
+  * @brief  Switch USB back from HID to CDC+MSC (normal mode)
+  */
+/*============================================================================*/
+void m1_usb_switch_to_normal(void)
+{
+    M1_LOG_I(BUSB_TAG, "Switching back to CDC+MSC\r\n");
+
+    /* Stop and deinit HID USB — D+ pullup OFF */
+    USBD_Stop(&hUsbDeviceFS);
+    USBD_DeInit(&hUsbDeviceFS);
+
+    /* Clear HID tclasslist entry */
+    hUsbDeviceFS.tclasslist[0].Active = 0;
+
+    /* Fully reset PCD */
+    HAL_PCD_DeInit(&hpcd_USB_DRD_FS);
+    hpcd_USB_DRD_FS.State = HAL_PCD_STATE_RESET;
+
+    /* Wait for host to process HID disconnect */
+    osDelay(USB_DISCONNECT_DELAY_MS);
+
+    /* Restore original device descriptor */
+    USBD_DeviceDesc[4]  = saved_desc[0];  /* bDeviceClass: 0xEF (composite) */
+    USBD_DeviceDesc[5]  = saved_desc[1];  /* bDeviceSubClass: 0x02 */
+    USBD_DeviceDesc[6]  = saved_desc[2];  /* bDeviceProtocol: 0x01 (IAD) */
+    USBD_DeviceDesc[8]  = saved_desc[3];  /* idVendor low */
+    USBD_DeviceDesc[9]  = saved_desc[4];  /* idVendor high */
+    USBD_DeviceDesc[10] = saved_desc[5];  /* idProduct low */
+    USBD_DeviceDesc[11] = saved_desc[6];  /* idProduct high */
+
+    /* Reinit as CDC+MSC */
+    MX_USB_PCD_Init();
+
+    /* Allow ResumeCallback to restore CDC routing once host enumerates.
+     * Set to -1 (normal suspend) so ResumeCallback can transition to 0. */
+    m1_USB_CDC_ready = -1;
+    m1_USB_MSC_ready = -1;
+
+    M1_LOG_I(BUSB_TAG, "CDC+MSC mode restored\r\n");
+}
+#endif /* M1_APP_BADUSB_ENABLE */

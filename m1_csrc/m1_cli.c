@@ -36,6 +36,7 @@
 //#include "app_main.h"
 #include "spi_master.h"
 #include "ctrl_api.h"
+#include "esp_app_main.h"
 #include "m1_lcd.h"
 #include "m1_bq25896.h"
 #include "m1_bq27421.h"
@@ -998,13 +999,23 @@ void cmd_m1_mtest_esp32(char *pconsole, char *input_params[], uint8_t n_params, 
     			if ( !get_esp32_main_init_status() )
     				esp32_main_init();
     			strcat(input_params[1], "\r\n");
-				app_req.at_cmd = input_params[1];
-				app_req.cmd_len = strlen(input_params[1]);
-    			spi_AT_app_send_command(&app_req);
-    		} // if ( get_esp32_ready_status() )
+    			{
+    				static char at_resp[512];
+    				uint8_t at_ret = spi_AT_send_recv(input_params[1], at_resp, sizeof(at_resp), 10);
+    				if (at_ret == SUCCESS)
+    				{
+    					/* Truncate to fit CLI buffer */
+    					snprintf(pconsole, 190, "SPI_AT> %s", at_resp);
+    				}
+    				else
+    				{
+    					snprintf(pconsole, 190, "SPI_AT err=%d: %s", at_ret, at_resp);
+    				}
+    			}
+    		} // if ( m1_esp32_get_init_status() )
     		else
     		{
-    			strcpy(pconsole, "ESP32 not ready!\r\n");
+    			strcpy(pconsole, "ESP32 not init!\r\n");
     		}
     		break;
 

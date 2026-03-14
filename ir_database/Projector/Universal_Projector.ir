@@ -1,0 +1,114 @@
+Filetype: IR signals file
+Version: 1
+
+#
+name: Epson_Power
+type: parsed
+protocol: NEC
+address: 05 00 00 00
+command: 00 00 00 00
+
+#
+name: Epson_2
+type: parsed
+protocol: NEC
+address: 05 00 00 00
+command: 47 00 00 00
+
+#
+name: BenQ_Power
+type: parsed
+protocol: NEC
+address: 30 00 00 00
+command: 0C 00 00 00
+
+#
+name: BenQ_2
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 08 00 00 00
+
+#
+name: Optoma_Power
+type: parsed
+protocol: NEC
+address: 44 00 00 00
+command: 02 00 00 00
+
+#
+name: ViewSonic_Power
+type: parsed
+protocol: NEC
+address: 01 00 00 00
+command: 02 00 00 00
+
+#
+name: Acer_Power
+type: parsed
+protocol: NEC
+address: 44 00 00 00
+command: 0C 00 00 00
+
+#
+name: InFocus_Power
+type: parsed
+protocol: NEC
+address: 45 00 00 00
+command: 02 00 00 00
+
+#
+name: NEC_Projector
+type: parsed
+protocol: NEC
+address: 38 00 00 00
+command: 02 00 00 00
+
+#
+name: Casio_Power
+type: parsed
+protocol: NEC
+address: 44 00 00 00
+command: 08 00 00 00
+
+#
+name: LG_Projector
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 08 00 00 00
+
+#
+name: Sony_Projector
+type: parsed
+protocol: SIRC
+address: 49 00 00 00
+command: 15 00 00 00
+
+#
+name: Panasonic_Proj
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 3D 00 00 00
+
+#
+name: Samsung_Proj
+type: parsed
+protocol: Samsung32
+address: 07 00 00 00
+command: 02 00 00 00
+
+#
+name: Generic_NEC_1
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 02 00 00 00
+
+#
+name: Generic_NEC_2
+type: parsed
+protocol: NEC
+address: 40 00 00 00
+command: 02 00 00 00

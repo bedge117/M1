@@ -16,10 +16,18 @@
 #define T2T_CMD_COMPAT_WRITE 0xA0 /* optional / legacy */
 
 
+/* MIFARE Classic commands (shared with T2T GET_VERSION 0x60 — persona disambiguates) */
+#define MFC_CMD_AUTH_A      0x60
+#define MFC_CMD_AUTH_B      0x61
+#define MFC_CMD_READ        0x30
+#define MFC_CMD_WRITE       0xA0
+#define MFC_CMD_HALT        0x50
+
 typedef enum {
-    EMU_PERSONA_T4T = 0,   
+    EMU_PERSONA_T4T = 0,
     EMU_PERSONA_T2T,
-    EMU_PERSONA_RAW,    // Use ATQA/SAK from read card as-is (e.g., SAK=08)
+    EMU_PERSONA_MFC,    /* MIFARE Classic emulation (Crypto-1) */
+    EMU_PERSONA_RAW,    /* Use ATQA/SAK from read card as-is */
 } EmuPersona_t;
 
 /**

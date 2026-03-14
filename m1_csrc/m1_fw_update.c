@@ -52,6 +52,7 @@ void firmware_update_exit(void);
 void firmware_update_gui_update(const S_M1_Menu_t *phmenu, uint8_t sel_item);
 void firmware_update_get_image_file(void);
 void firmware_update_start(void);
+void firmware_swap_banks(void);
 static void firmware_update_info_box(uint8_t sel_item);
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
@@ -549,3 +550,82 @@ void firmware_update_IWDG_disable(void)
 	HAL_FLASH_Lock(); // Locks the FLASH control registers access
 	// Disable IWDG - End
 } // void firmware_update_IWDG_disable(void)
+
+
+
+/*============================================================================*/
+/**
+  * @brief  Swap boot banks from the device menu.
+  *         Shows bank status, confirms with user, then swaps.
+  * @param  None
+  * @retval None
+  */
+/*============================================================================*/
+void firmware_swap_banks(void)
+{
+    S_M1_Buttons_Status this_button_status;
+    S_M1_Main_Q_t q_item;
+    BaseType_t ret;
+    uint16_t active_bank;
+    uint8_t target_bank;
+    char line1[30], line2[30];
+    bool bank_valid;
+
+    active_bank = bl_get_active_bank();
+    target_bank = (active_bank == BANK1_ACTIVE) ? 2 : 1;
+    bank_valid = bl_is_inactive_bank_valid();
+
+    /* Draw status screen */
+    m1_u8g2_firstpage();
+    do {
+        u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
+        u8g2_DrawStr(&m1_u8g2, 4, 11, "Swap Banks");
+
+        u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+
+        sprintf(line1, "Active: Bank %d", (active_bank == BANK1_ACTIVE) ? 1 : 2);
+        u8g2_DrawStr(&m1_u8g2, 4, 24, line1);
+
+        if (bank_valid) {
+            sprintf(line2, "Swap to Bank %d?", target_bank);
+            u8g2_DrawStr(&m1_u8g2, 4, 36, line2);
+
+            m1_info_box_display_init(false);
+            m1_info_box_display_draw(INFO_BOX_ROW_1, (const uint8_t *)"OK=Swap  BACK=Cancel");
+        } else {
+            u8g2_DrawStr(&m1_u8g2, 4, 36, "Bank empty!");
+
+            m1_info_box_display_init(false);
+            m1_info_box_display_draw(INFO_BOX_ROW_1, (const uint8_t *)"No FW. BACK=Cancel");
+        }
+    } while (m1_u8g2_nextpage());
+
+    /* Wait for button input */
+    while (1)
+    {
+        ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+        if (ret != pdTRUE) continue;
+        if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+
+        ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+        if (ret != pdTRUE) continue;
+
+        if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            xQueueReset(main_q_hdl);
+            break;  /* Cancel — return to menu */
+        }
+        else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK && bank_valid)
+        {
+            /* Show swapping message */
+            m1_u8g2_firstpage();
+            do {
+                u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
+                u8g2_DrawStr(&m1_u8g2, 4, 32, "Swapping...");
+            } while (m1_u8g2_nextpage());
+
+            bl_swap_banks();
+            /* Does not return — system resets */
+        }
+    }
+} // void firmware_swap_banks(void)

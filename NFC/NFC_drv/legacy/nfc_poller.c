@@ -46,6 +46,9 @@
 #include "utils.h"
 #include "rfal_nfc.h"
 #include "rfal_t2t.h"
+#include "rfal_isoDep.h"
+#include "rfal_nfcv.h"
+#include "rfal_st25tb.h"
 
 #include "st25r3916.h"
 #include "st25r3916_com.h"
@@ -60,8 +63,9 @@
 #include "common/nfc_storage.h"
 #include "m1_sdcard.h"
 #include "m1_storage.h"
-#include "common/nfc_fileio.h"  
+#include "common/nfc_fileio.h"
 #include "logger.h"
+#include "mfc_crypto1.h"
 #include <stdio.h>  
 
 #define NOTINIT              0     /*!< Demo State:  Not initialized        */
@@ -74,32 +78,48 @@
  ******************************************************************************
  */
 
-#define MFC_DICT_PATH   "NFC/system/mf_classic_dict.nfc"   // Adjust to actual path
-#define MFC_MAX_DICT_KEYS   2042
-#define MFC_KEY_LEN         6
-#define MFC_BLOCK_SIZE      16
+#define MFC_DICT_PATH   "NFC/system/mf_classic_dict.nfc"
 
+/* Streaming key dictionary: reads one key at a time from SD card to avoid
+ * allocating thousands of keys on the stack. */
 typedef struct {
-    uint8_t keys[MFC_MAX_DICT_KEYS][MFC_KEY_LEN];
-    uint16_t count;
-} mfc_key_dict_t;
+    nfcfio_t io;
+    char     line[32];
+    bool     is_open;
+    uint16_t count;   /* Total keys counted (for logging) */
+} mfc_key_iter_t;
 
-typedef enum {
-    MFC_KEYTYPE_A = 0x60,
-    MFC_KEYTYPE_B = 0x61,
-} mfc_key_type_t;
+static bool mfc_key_iter_open(mfc_key_iter_t *it);
+static bool mfc_key_iter_next(mfc_key_iter_t *it, uint8_t key_out[MFC_KEY_LEN]);
+static void mfc_key_iter_rewind(mfc_key_iter_t *it);
+static void mfc_key_iter_close(mfc_key_iter_t *it);
 
-static bool mfc_load_key_dict(mfc_key_dict_t *dict);
-
-#ifdef MIFARE_CLASSIC_AUTH_TEST
-/* Low-level Mifare Classic authentication/read functions should be implemented in a separate file (only prototypes declared here) */
-static ReturnCode mfc_authenticate_block(const rfalNfcDevice *dev, uint8_t blockNo, mfc_key_type_t keyType, const uint8_t key[6]);
-static ReturnCode mfc_read_block(const rfalNfcDevice *dev, uint8_t blockNo, uint8_t out[MFC_BLOCK_SIZE]);
-/* Key dictionary loading, sector/block layout helper functions */
-static bool mfc_load_key_dict(mfc_key_dict_t *dict);
 static void mfc_get_layout_from_sak(uint8_t sak, uint16_t *outSectors, uint16_t *outBlocks);
 static uint16_t mfc_sector_to_first_block(uint16_t sector);
-#endif
+
+/* Returns true if SAK indicates any MIFARE Classic variant */
+static bool mfc_is_classic_sak(uint8_t sak)
+{
+    switch (sak) {
+    case 0x01: /* Classic 1K (TNP3xxx) */
+    case 0x08: /* Classic 1K */
+    case 0x09: /* MIFARE Mini */
+    case 0x10: /* Plus 2K SL2 */
+    case 0x11: /* Plus 4K SL2 */
+    case 0x18: /* Classic 4K */
+    case 0x19: /* Classic 2K */
+    case 0x28: /* Classic EV1 1K */
+    case 0x38: /* Classic EV1 4K */
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Forward declarations for NFC-V / ST25TB reading */
+static void m1_nfcv_read(const rfalNfcDevice *dev);
+static void m1_st25tb_read(const rfalNfcDevice *dev);
+static void m1_read_mifareclassic(const rfalNfcDevice *dev);
 
 extern uint8_t g_nfc_dump_buf[NFC_DUMP_BUF_SIZE];
 extern uint8_t g_nfc_valid_bits[NFC_VALID_BITS_SIZE];
@@ -129,29 +149,110 @@ static uint16_t LogParsedNtagVersion(const uint8_t *version, uint16_t len);
 /*------------------------------------------------------------------------------------------*/
 #define SET_FAMILY(fmt, ...)  do { snprintf(NFC_Family, sizeof(NFC_Family), fmt, ##__VA_ARGS__); } while(0)
 
-// (Optional) Advanced detection is disabled. Change to 1 if needed for implementation.
-#define ENABLE_DESFIRE_PROBE   0
-#define ENABLE_MAGIC_PROBE     0
+/*
+ * DESFire detection via ISO-DEP APDU: send GET_VERSION (0x60) wrapped
+ * in ISO 7816 framing. If the card responds with 0x91AF it's DESFire.
+ */
+static bool desfire_probe_iso_dep(const rfalNfcDevice* dev)
+{
+    if (!dev || dev->rfInterface != RFAL_NFC_INTERFACE_ISODEP)
+        return false;
 
-// (Optional) DESFire detection (ISO-DEP APDU GET_VERSION)
-// Currently false as implementation is not ready. Connect actual exchange function here if available.
-static bool desfire_probe_iso_dep(const rfalNfcDevice* dev) {
-#if ENABLE_DESFIRE_PROBE
-    // Connect APDU exchange routine like demoAPDU_Exchange(...)
+    static rfalIsoDepApduBufFormat txApdu;
+    static rfalIsoDepApduBufFormat rxApdu;
+    static rfalIsoDepBufFormat     tmpBuf;
+    uint16_t rxLen = 0;
+
+    /* DESFire GET_VERSION wrapped APDU: CLA=0x90, INS=0x60, P1=0, P2=0, Lc=0 */
+    txApdu.apdu[0] = 0x90;
+    txApdu.apdu[1] = 0x60;
+    txApdu.apdu[2] = 0x00;
+    txApdu.apdu[3] = 0x00;
+    txApdu.apdu[4] = 0x00; /* Le */
+
+    const rfalIsoDepInfo *info = &dev->proto.isoDep.info;
+
+    rfalIsoDepApduTxRxParam param;
+    param.txBuf    = &txApdu;
+    param.txBufLen = 5;
+    param.rxBuf    = &rxApdu;
+    param.rxLen    = &rxLen;
+    param.tmpBuf   = &tmpBuf;
+    param.FWT      = info->FWT;
+    param.dFWT     = info->dFWT;
+    param.FSx      = info->FSx;
+    param.ourFSx   = RFAL_ISODEP_DEFAULT_FSC;
+    param.DID      = info->supDID ? info->DID : RFAL_ISODEP_NO_DID;
+
+    ReturnCode err = rfalIsoDepStartApduTransceive(param);
+    if (err != RFAL_ERR_NONE)
+        return false;
+
+    /* Poll for completion (max ~100 iterations) */
+    for (int i = 0; i < 100; i++) {
+        rfalNfcWorker();
+        err = rfalIsoDepGetApduTransceiveStatus();
+        if (err == RFAL_ERR_NONE) break;
+        if (err != RFAL_ERR_BUSY) return false;
+    }
+    if (err != RFAL_ERR_NONE)
+        return false;
+
+    /* Check response: DESFire answers with SW1=0x91, SW2=0xAF (more data)
+     * or 0x91 0x00 (success). Response has 7+ bytes of version data + SW. */
+    if (rxLen >= 2) {
+        uint8_t sw1 = rxApdu.apdu[rxLen - 2];
+        uint8_t sw2 = rxApdu.apdu[rxLen - 1];
+        if (sw1 == 0x91 && (sw2 == 0xAF || sw2 == 0x00)) {
+            return true;
+        }
+    }
+
     return false;
-#else
-    return false;
-#endif
 }
 
-// (Optional) Magic(Gen1A) detection (backdoor 0x40 0x43)
-// Currently false as implementation is not ready.
-static bool mfclassic_is_magic_backdoor_supported(void) {
-#if ENABLE_MAGIC_PROBE
+/* Magic card (Gen1A) detection: Send backdoor command 0x40 then 0x43 */
+static bool mfclassic_is_magic_backdoor_supported(void)
+{
+    /* Gen1A detection requires sending raw short frames (0x40, 0x43) outside
+     * of normal ISO14443A framing. The ST25R3916 can do 7-bit frames via
+     * RFAL but it requires the card to be in HALT state first. For now,
+     * this is best-effort — we attempt it but don't block on failure. */
+    uint8_t txBuf[1];
+    uint8_t rxBuf[4];
+    uint16_t rcvLen = 0;
+
+    /* Send HALT first */
+    txBuf[0] = 0x50;
+    rfalTransceiveBlockingTxRx(txBuf, 1, rxBuf, sizeof(rxBuf),
+                               &rcvLen, RFAL_TXRX_FLAGS_DEFAULT,
+                               rfalConvMsTo1fc(5));
+
+    /* Send magic backdoor wakeup: 0x40 as 7-bit short frame */
+    txBuf[0] = 0x40;
+    rcvLen = 0;
+    ReturnCode err = rfalTransceiveBlockingTxRx(
+        txBuf, 1, rxBuf, sizeof(rxBuf), &rcvLen,
+        (uint32_t)(RFAL_TXRX_FLAGS_CRC_TX_MANUAL | RFAL_TXRX_FLAGS_CRC_RX_KEEP),
+        rfalConvMsTo1fc(5));
+
+    if (err != RFAL_ERR_NONE || rcvLen < 1)
+        return false;
+
+    /* If we got an ACK (0x0A, 4-bit), send 0x43 */
+    if ((rxBuf[0] & 0x0F) == 0x0A) {
+        txBuf[0] = 0x43;
+        rcvLen = 0;
+        err = rfalTransceiveBlockingTxRx(
+            txBuf, 1, rxBuf, sizeof(rxBuf), &rcvLen,
+            (uint32_t)(RFAL_TXRX_FLAGS_CRC_TX_MANUAL | RFAL_TXRX_FLAGS_CRC_RX_KEEP),
+            rfalConvMsTo1fc(5));
+        if (err == RFAL_ERR_NONE && rcvLen >= 1 && (rxBuf[0] & 0x0F) == 0x0A) {
+            return true;
+        }
+    }
+
     return false;
-#else
-    return false;
-#endif
 }
 /*============================================================================*/
 /**
@@ -186,40 +287,39 @@ static void nfc_a_fill_uid_and_family(const rfalNfcDevice *dev)
 
     platformLog("[NFCA] type=%d ATQA=%02X%02X SAK=%02X\r\n", t, atqa0, atqa1, sak);
 
-    /* 1) Classic has highest priority: Force classification by SAK regardless of RFAL type */
-    if (sak == 0x08) { /* 1K */
-        if (mfclassic_is_magic_backdoor_supported())
-            SET_FAMILY("Magic MIFARE Classic 1K");
-        else
-            SET_FAMILY("MIFARE Classic 1K");
-        return;
-    }
-    if (sak == 0x18) { /* 4K */
-        if (mfclassic_is_magic_backdoor_supported())
-            SET_FAMILY("Magic MIFARE Classic 4K");
-        else
-            SET_FAMILY("MIFARE Classic 4K");
-        return;
-    }
-    if (sak == 0x09) { /* Mini */
-        SET_FAMILY("MIFARE Mini 0.3K");
+    /* 1) MIFARE Classic / Plus variants — classify by SAK */
+    if (mfc_is_classic_sak(sak)) {
+        const char *variant = "MIFARE Classic";
+        switch (sak) {
+        case 0x01: variant = "MIFARE Classic 1K (TNP3xxx)"; break;
+        case 0x08: variant = "MIFARE Classic 1K"; break;
+        case 0x09: variant = "MIFARE Mini 0.3K"; break;
+        case 0x10: variant = "MIFARE Plus 2K (SL2)"; break;
+        case 0x11: variant = "MIFARE Plus 4K (SL2)"; break;
+        case 0x18: variant = "MIFARE Classic 4K"; break;
+        case 0x19: variant = "MIFARE Classic 2K"; break;
+        case 0x28: variant = "MIFARE Classic EV1 1K"; break;
+        case 0x38: variant = "MIFARE Classic EV1 4K"; break;
+        default:   variant = "MIFARE Classic"; break;
+        }
+        SET_FAMILY("%s", variant);
         return;
     }
 
-    /* 2) Type 4A / DESFire */
+    /* 2) Type 4A / DESFire — SAK bit 5 set (0x20) */
     if (sak == 0x20 || t == RFAL_NFCA_T4T || t == RFAL_NFCA_T4T_NFCDEP) {
         if (desfire_probe_iso_dep(dev)) SET_FAMILY("MIFARE DESFire (Type 4A)");
         else                            SET_FAMILY("Type 4A (ISO-DEP)");
         return;
     }
 
-    /* 3) Ultralight/NTAG (typical ATQA 0x44 0x00 or T2T) */
-    if ( (sak == 0x00 && atqa0 == 0x44) || t == RFAL_NFCA_T2T ) {
+    /* 3) Ultralight/NTAG — SAK=0x00 with T2T type, or ATQA indicating Ultralight */
+    if (sak == 0x00 && (t == RFAL_NFCA_T2T || atqa0 == 0x44)) {
         SET_FAMILY("Ultralight/NTAG");
         return;
     }
 
-    /* 4) Topaz (rare but if type is certain) */
+    /* 4) Topaz (Type 1 Tag, rare) */
     if (t == RFAL_NFCA_T1T) {
         SET_FAMILY("Topaz (Type 1)");
         return;
@@ -301,34 +401,15 @@ void ReadCycle(void)
                     const uint8_t atqa0 = nfcDevice->dev.nfca.sensRes.anticollisionInfo;
                     const uint8_t atqa1 = nfcDevice->dev.nfca.sensRes.platformInfo;
 
-                    /* --- MIFARE Classic identification: ATQA + SAK combination --- */
-                    bool isMfcClassic = false;
-                    bool isUid4Byte   = ((atqa0 == 0x04U) && (atqa1 == 0x00U));  /* ATQA = 0x0400 → 4B UID */
-                    bool isUid7Byte   = ((atqa0 == 0x44U) && (atqa1 == 0x00U));  /* ATQA = 0x4400 → 7B UID */
-                    bool isMfc1K      = (sak == 0x08U);                          /* SAK = 0x08 → Classic 1K */
-                    bool isMfc4K      = (sak == 0x18U);                          /* SAK = 0x18 → Classic 4K */
+                    /* --- MIFARE Classic identification by SAK --- */
+                    bool isMfcClassic = mfc_is_classic_sak(sak);
 
-                    if ((isMfc1K || isMfc4K) && (isUid4Byte || isUid7Byte)) {
-                        isMfcClassic = true;
+                    if (isMfcClassic) {
+                        platformLog("MIFARE Classic detected. ATQA=%02X%02X, SAK=%02X, UIDLen=%u\r\n",
+                                    atqa0, atqa1, sak, nfcDevice->nfcidLen);
 
-                        const char *memSizeStr = isMfc1K ? "1K" : "4K";
-                        const char *uidTypeStr = isUid4Byte ? "4-byte UID" : "7-byte UID";
-
-                        platformLog("MIFARE Classic %s detected (%s). ATQA=%02X%02X, SAK=%02X, UIDLen=%u\r\n",
-                                    memSizeStr,
-                                    uidTypeStr,
-                                    atqa0, atqa1, sak,
-                                    nfcDevice->nfcidLen);
-                        // If needed, Family string can be overwritten here
-                        SET_FAMILY("MIFARE Classic %s (%s)", memSizeStr, uidTypeStr);
-                        //m1_read_mifareclassic(nfcDevice);
-                            /* Step 1: Check only if system key dictionary exists */
-                        mfc_key_dict_t dict;
-                        if (mfc_load_key_dict(&dict)) {
-                            platformLog("[MFC] system key dict OK (%u keys)\r\n", dict.count);
-                        } else {
-                            platformLog("[MFC] system key dict missing or invalid\r\n");
-                        }
+                        /* Attempt to read sectors using key dictionary */
+                        m1_read_mifareclassic(nfcDevice);
                     }
 
                     /* Store in emulation context (UID/ATQA/SAK) */
@@ -387,18 +468,30 @@ void ReadCycle(void)
                     platformLog("ISO15693/NFC-V TAG found. UID=%s\r\n",
                                 hex2Str(devUID, RFAL_NFCV_UID_LEN));
                     strcpy(NFC_Type, "ISO15693/NFC-V");
+                    SET_FAMILY("ISO15693");
                     nfc_tx_type = NFC_TX_V;
+
+                    /* Read NFC-V blocks */
+                    m1_nfcv_read(nfcDevice);
+
                     notifyRead  = true;
                 }
                 break;
 
                 /*******************************************************************************/
                 case RFAL_NFC_LISTEN_TYPE_ST25TB:
+                {
                     platformLog("ST25TB TAG found. UID=%s\r\n",
                                 hex2Str(nfcDevice->nfcid, nfcDevice->nfcidLen));
                     strcpy(NFC_Type, "ST25TB");
+                    SET_FAMILY("ST25TB");
+
+                    /* Read ST25TB blocks */
+                    m1_st25tb_read(nfcDevice);
+
                     notifyRead = true;
-                    break;
+                }
+                break;
 
                 /*******************************************************************************/
                 /* CE/P2P types are ignored in READ-ONLY mode */
@@ -922,76 +1015,128 @@ static void m1_t2t_read_ntag(const rfalNfcDevice *dev)
 */
 
 /*============================================================================*/
-/**
- * @brief mfc_load_key_dict - Load key list from mf_classic_dict.nfc file
- * 
- * Loads MIFARE Classic key dictionary from SD card file.
- * Currently only validates file format and counts keys.
- * 
- * @param[out] dict Pointer to key dictionary structure
- * @retval true If dictionary loaded successfully
- * @retval false If file not found or invalid
- */
+/* Streaming key dictionary iterator — reads one key at a time from SD card   */
 /*============================================================================*/
-static bool mfc_load_key_dict(mfc_key_dict_t *dict)
+
+static int mfc_hex_nibble(char c)
 {
-    nfcfio_t io;
-    char line[64];
-    int  n;
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    return -1;
+}
 
-    if (!dict) return false;
-    dict->count = 0;
+static bool mfc_key_iter_open(mfc_key_iter_t *it)
+{
+    if (!it) return false;
+    it->count   = 0;
+    it->is_open = false;
 
-    /* 1) Open key dictionary file from SD card */
-    if (!nfcfio_open_read(&io, MFC_DICT_PATH)) {
-        platformLog("MFC dict open failed: %s\r\n", MFC_DICT_PATH);
+    if (!nfcfio_open_read(&it->io, MFC_DICT_PATH)) {
+        platformLog("[MFC] dict open failed: %s\r\n", MFC_DICT_PATH);
         return false;
     }
+    it->is_open = true;
+    return true;
+}
 
-    platformLog("MFC dict opened: %s\r\n", MFC_DICT_PATH);
+static bool mfc_key_iter_next(mfc_key_iter_t *it, uint8_t key_out[MFC_KEY_LEN])
+{
+    if (!it || !it->is_open) return false;
 
-    /* 2) Read and parse line by line (currently only validates format, key application later) */
-    while ((n = nfcfio_getline(&io, line, sizeof(line))) >= 0) {
-        char *p = line;
+    int n;
+    while ((n = nfcfio_getline(&it->io, it->line, sizeof(it->line))) >= 0) {
+        char *p = it->line;
 
-        /* Skip whitespace/newlines */
+        /* Skip whitespace */
         while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-        if (*p == '\0') continue;      // Empty line
-        if (*p == '#')  continue;      // Comment
+        if (*p == '\0') continue;
+        if (*p == '#')  continue;
 
-        /* From here, parse hex keys according to mf_classic_dict.nfc actual format
-           and put them in dict->keys[dict->count].
-           In this step, we only check "if file reads correctly",
-           so simply increment line count. */
-
-        if (dict->count < MFC_MAX_DICT_KEYS) {
-            dict->count++;
-        } else {
-            platformLog("MFC dict key overflow (>%d)\r\n", MFC_MAX_DICT_KEYS);
-            break;
+        /* Parse 12 hex chars → 6 bytes */
+        uint8_t key[MFC_KEY_LEN];
+        bool ok = true;
+        for (int i = 0; i < MFC_KEY_LEN && ok; i++) {
+            int hi = mfc_hex_nibble(*p++);
+            int lo = mfc_hex_nibble(*p++);
+            if (hi < 0 || lo < 0) { ok = false; break; }
+            key[i] = (uint8_t)((hi << 4) | lo);
         }
+        if (!ok) continue;
+
+        memcpy(key_out, key, MFC_KEY_LEN);
+        it->count++;
+        return true;
     }
+    return false;
+}
 
-    nfcfio_close(&io);
+static void mfc_key_iter_rewind(mfc_key_iter_t *it)
+{
+    if (!it || !it->is_open) return;
+    nfcfio_close(&it->io);
+    it->is_open = false;
+    it->count   = 0;
+    if (nfcfio_open_read(&it->io, MFC_DICT_PATH)) {
+        it->is_open = true;
+    }
+}
 
-    platformLog("MFC dict loaded, lines(keys)=%u\r\n", dict->count);
-    return (dict->count > 0);
+static void mfc_key_iter_close(mfc_key_iter_t *it)
+{
+    if (!it) return;
+    if (it->is_open) {
+        nfcfio_close(&it->io);
+        it->is_open = false;
+    }
 }
 
 
 
-#ifdef MIFARE_CLASSIC_AUTH_TEST
 /*============================================================================*/
-/**
- * @brief m1_read_mifareclassic - Read MIFARE Classic using key dictionary
- * 
- * Reads MIFARE Classic card using key dictionary attack.
- * Authenticates sectors with dictionary keys and reads all blocks.
- * 
- * @param[in] dev Pointer to NFC device
- * @retval None
- */
+/* MIFARE Classic read using software Crypto-1 + streaming key dictionary     */
 /*============================================================================*/
+
+static void mfc_get_layout_from_sak(uint8_t sak, uint16_t *outSectors, uint16_t *outBlocks)
+{
+    switch (sak) {
+    case 0x09: /* Mini */
+        *outSectors = 5;
+        *outBlocks  = 20;
+        break;
+    case 0x01: /* Classic 1K TNP3xxx */
+    case 0x08: /* Classic 1K */
+    case 0x28: /* Classic EV1 1K */
+        *outSectors = 16;
+        *outBlocks  = 64;
+        break;
+    case 0x10: /* Plus 2K SL2 */
+    case 0x19: /* Classic 2K */
+        *outSectors = 32;
+        *outBlocks  = 128;
+        break;
+    case 0x11: /* Plus 4K SL2 */
+    case 0x18: /* Classic 4K */
+    case 0x38: /* Classic EV1 4K */
+        *outSectors = 40;
+        *outBlocks  = 256;
+        break;
+    default:
+        platformLog("[MFC] unknown SAK 0x%02X, fallback to 1K layout\r\n", sak);
+        *outSectors = 16;
+        *outBlocks  = 64;
+        break;
+    }
+}
+
+static uint16_t mfc_sector_to_first_block(uint16_t sector)
+{
+    if (sector < 32)
+        return (uint16_t)(sector * 4);
+    else
+        return (uint16_t)(128 + (sector - 32) * 16);
+}
+
 static void m1_read_mifareclassic(const rfalNfcDevice *dev)
 {
     const rfalNfcaListenDevice *nfca = &dev->dev.nfca;
@@ -999,72 +1144,59 @@ static void m1_read_mifareclassic(const rfalNfcDevice *dev)
     uint16_t totalBlocks  = 0;
     uint16_t maxBlocks    = NFC_DUMP_MAX_UNITS;
 
-    mfc_key_dict_t dict;
-    uint16_t lastSeenBlock = 0;
-    uint16_t successSectors = 0;
-
-    /* Determine card capacity (sector/block count) */
     mfc_get_layout_from_sak(nfca->selRes.sak, &totalSectors, &totalBlocks);
+    if (totalBlocks > maxBlocks) totalBlocks = maxBlocks;
 
-    if (totalBlocks > maxBlocks) {
-        platformLog("[MFC] totalBlocks(%u) > NFC_DUMP_MAX_UNITS(%u), clamp\r\n",
-                    totalBlocks, maxBlocks);
-        totalBlocks = maxBlocks;
+    /* UID: first 4 bytes for Crypto-1 (even for 7-byte UID cards) */
+    uint8_t uid4[4];
+    if (dev->nfcidLen >= 7) {
+        /* For 7-byte UID: use bytes 3..6 (the second cascade level) */
+        memcpy(uid4, &dev->nfcid[3], 4);
+    } else {
+        memcpy(uid4, dev->nfcid, 4);
     }
 
-    /* Load key dictionary */
-    if (!mfc_load_key_dict(&dict)) {
+    memset(g_nfc_dump_buf, 0x00, NFC_DUMP_BUF_SIZE);
+    memset(g_nfc_valid_bits, 0x00, NFC_VALID_BITS_SIZE);
+
+    platformLog("[MFC] start dump: sectors=%u blocks=%u\r\n", totalSectors, totalBlocks);
+
+    uint16_t lastSeenBlock  = 0;
+    uint16_t successSectors = 0;
+
+    mfc_key_iter_t iter;
+    if (!mfc_key_iter_open(&iter)) {
         platformLog("[MFC] no key dict, skip MFC dump\r\n");
         return;
     }
 
-    /* Initialize dump buffer / valid bits */
-    memset(g_nfc_dump_buf, 0x00, NFC_DUMP_BUF_SIZE);
-    memset(g_nfc_valid_bits, 0x00, NFC_DUMP_MAX_UNITS / 8);
-
-    platformLog("[MFC] start dump: sectors=%u blocks=%u\r\n",
-                totalSectors, totalBlocks);
+    crypto1_state_t cstate;
 
     for (uint16_t sector = 0; sector < totalSectors; sector++) {
-
-        uint16_t firstBlock = mfc_sector_to_first_block(sector);
-        uint16_t blocksInSector =
-            (sector < 32 || totalSectors <= 16) ? 4 : 16;
-
-        if (firstBlock >= totalBlocks) {
-            break;
-        }
+        uint16_t firstBlock     = mfc_sector_to_first_block(sector);
+        uint16_t blocksInSector = (sector < 32 || totalSectors <= 16) ? 4 : 16;
+        if (firstBlock >= totalBlocks) break;
 
         bool sectorAuthed = false;
-        mfc_key_type_t usedType = MFC_KEYTYPE_A;
-        uint8_t usedKey[MFC_KEY_LEN];
+        uint8_t key[MFC_KEY_LEN];
 
-        /* ---------- Sector authentication: Try all dictionary keys for both A/B ---------- */
-        for (uint16_t ki = 0; ki < dict.count && !sectorAuthed; ki++) {
+        /* Rewind key iterator for each sector */
+        mfc_key_iter_rewind(&iter);
 
-            const uint8_t *key = dict.keys[ki];
+        while (mfc_key_iter_next(&iter, key) && !sectorAuthed) {
+            m1_wdt_reset();
 
-            /* Key A */
-            if (mfc_authenticate_block(dev, (uint8_t)firstBlock,
-                                       MFC_KEYTYPE_A, key) == RFAL_ERR_NONE) {
-
+            /* Try Key A */
+            if (mfc_auth(&cstate, uid4, (uint8_t)firstBlock, MFC_AUTH_CMD_A, key)) {
                 sectorAuthed = true;
-                usedType = MFC_KEYTYPE_A;
-                memcpy(usedKey, key, MFC_KEY_LEN);
-                platformLog("[MFC] sector %u auth OK with dict[%u] as KeyA\r\n",
-                            sector, ki);
+                platformLog("[MFC] sector %u auth OK KeyA\r\n", sector);
                 break;
             }
 
-            /* Key B */
-            if (mfc_authenticate_block(dev, (uint8_t)firstBlock,
-                                       MFC_KEYTYPE_B, key) == RFAL_ERR_NONE) {
-
+            /* Try Key B */
+            if (mfc_auth(&cstate, uid4, (uint8_t)firstBlock, MFC_AUTH_CMD_B, key)) {
                 sectorAuthed = true;
-                usedType = MFC_KEYTYPE_B;
-                memcpy(usedKey, key, MFC_KEY_LEN);
-                platformLog("[MFC] sector %u auth OK with dict[%u] as KeyB\r\n",
-                            sector, ki);
+                platformLog("[MFC] sector %u auth OK KeyB\r\n", sector);
                 break;
             }
         }
@@ -1076,147 +1208,144 @@ static void m1_read_mifareclassic(const rfalNfcDevice *dev)
 
         successSectors++;
 
-        /* ---------- Read all blocks of successfully authenticated sector ---------- */
+        /* Read all blocks of authenticated sector */
         for (uint16_t bi = 0; bi < blocksInSector; bi++) {
-
             uint16_t blockNo = firstBlock + bi;
-            if (blockNo >= totalBlocks) {
-                break;
-            }
+            if (blockNo >= totalBlocks) break;
 
             uint8_t *dst = &g_nfc_dump_buf[blockNo * MFC_BLOCK_SIZE];
 
-            ReturnCode rc = mfc_read_block(dev, (uint8_t)blockNo, dst);
-            if (rc == RFAL_ERR_NONE) {
-                /* Set flag that this block is valid */
+            if (mfc_read_block_crypto(&cstate, (uint8_t)blockNo, dst)) {
                 g_nfc_valid_bits[blockNo >> 3] |= (uint8_t)(1u << (blockNo & 0x7));
-
-                if (blockNo + 1 > lastSeenBlock) {
-                    lastSeenBlock = blockNo + 1;
-                }
+                if (blockNo + 1 > lastSeenBlock) lastSeenBlock = blockNo + 1;
             } else {
-                platformLog("[MFC] read block %u failed: %d\r\n", blockNo, rc);
+                platformLog("[MFC] read block %u failed\r\n", blockNo);
             }
         }
     }
 
-    /* Register dump metadata in NFC context */
-    nfc_ctx_set_dump(
-        MFC_BLOCK_SIZE,          /* unit_size (block size 16B) */
-        totalBlocks,             /* max_units */
-        lastSeenBlock,           /* max_seen_unit */
-        g_nfc_dump_buf,
-        g_nfc_valid_bits,
-        0,                       /* begin_unit */
-        (lastSeenBlock > 0)      /* has_dump */
-    );
+    mfc_key_iter_close(&iter);
+
+    nfc_ctx_set_dump(MFC_BLOCK_SIZE, totalBlocks, 0,
+                     g_nfc_dump_buf, g_nfc_valid_bits,
+                     lastSeenBlock, (lastSeenBlock > 0));
 
     platformLog("[MFC] dump done: successSectors=%u lastBlock=%u\r\n",
                 successSectors, lastSeenBlock);
 }
 
 /*============================================================================*/
-/**
- * @brief mfc_hex_nibble - Convert one character to 0~15 nibble, return -1 on failure
- * 
- * @param[in] c Character to convert
- * @retval 0-15 Nibble value
- * @retval -1 Conversion failed
- */
+/* NFC-V (ISO15693) block reading                                             */
 /*============================================================================*/
-static int mfc_hex_nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-    return -1;
-}
-/*============================================================================*/
-/**
- * @brief mfc_get_layout_from_sak - Estimate Mifare Classic capacity from SAK value
- * 
- * @param[in] sak SAK value
- * @param[out] outSectors Pointer to store sector count
- * @param[out] outBlocks Pointer to store block count
- * @retval None
- */
-/*============================================================================*/
-static void mfc_get_layout_from_sak(uint8_t sak, uint16_t *outSectors, uint16_t *outBlocks)
-{
-    uint8_t base = sak & 0x1F;
 
-    if (base == 0x08) {
-        /* Mifare Classic 1K */
-        *outSectors = 16;
-        *outBlocks  = 64;
-    } else if (base == 0x18) {
-        /* Mifare Classic 4K */
-        *outSectors = 40;
-        *outBlocks  = 256;
+static void m1_nfcv_read(const rfalNfcDevice *dev)
+{
+    uint8_t rxBuf[32];
+    uint16_t rcvLen = 0;
+
+    /* Get system information to determine block count and size */
+    ReturnCode err = rfalNfcvPollerGetSystemInformation(
+        RFAL_NFCV_REQ_FLAG_DEFAULT, dev->nfcid, rxBuf, sizeof(rxBuf), &rcvLen);
+
+    uint16_t blockCount = 0;
+    uint8_t  blockSize  = 4; /* default */
+
+    if (err == RFAL_ERR_NONE && rcvLen >= 12) {
+        /* System info response: flags(1) + DSFID + UID(8) + ... */
+        /* Per ISO15693: if INFO_FLAGS bit 0 set, includes block info */
+        uint8_t infoFlags = rxBuf[1]; /* After response flags byte */
+        /* Parse based on standard system info layout */
+        int offset = 10; /* skip flags(1) + infoFlags(1) + UID(8) */
+        if (infoFlags & 0x01) { /* DSFID present */
+            offset++;
+        }
+        if (infoFlags & 0x02) { /* AFI present */
+            offset++;
+        }
+        if (infoFlags & 0x04) { /* Memory size present */
+            if (offset + 2 <= (int)rcvLen) {
+                blockCount = (uint16_t)(rxBuf[offset] + 1); /* Number of blocks - 1 */
+                blockSize  = (uint8_t)(rxBuf[offset + 1] + 1); /* Block size - 1 */
+            }
+        }
+        platformLog("[NFC-V] SysInfo: blocks=%u blockSize=%u\r\n", blockCount, blockSize);
     } else {
-        /* If ambiguous, treat as 1K for now */
-        platformLog("[MFC] unknown SAK 0x%02X, fallback to 1K layout\r\n", sak);
-        *outSectors = 16;
-        *outBlocks  = 64;
+        /* Fallback: try reading blocks until failure */
+        blockCount = 64; /* Common default */
+        platformLog("[NFC-V] SysInfo failed, trying %u blocks\r\n", blockCount);
+    }
+
+    if (blockCount == 0) return;
+    if (blockSize > 32) blockSize = 32;
+
+    memset(g_nfc_dump_buf, 0x00, NFC_DUMP_BUF_SIZE);
+    memset(g_nfc_valid_bits, 0x00, NFC_VALID_BITS_SIZE);
+    uint32_t maxSeen = 0;
+
+    for (uint16_t blk = 0; blk < blockCount; blk++) {
+        rcvLen = 0;
+        err = rfalNfcvPollerReadSingleBlock(
+            RFAL_NFCV_REQ_FLAG_DEFAULT, dev->nfcid, (uint8_t)blk,
+            rxBuf, sizeof(rxBuf), &rcvLen);
+
+        if (err == RFAL_ERR_NONE && rcvLen >= (uint16_t)(1 + blockSize)) {
+            /* First byte is response flags, then data */
+            uint32_t offset_dst = (uint32_t)blk * blockSize;
+            if (offset_dst + blockSize <= NFC_DUMP_BUF_SIZE) {
+                memcpy(&g_nfc_dump_buf[offset_dst], &rxBuf[1], blockSize);
+                g_nfc_valid_bits[blk >> 3] |= (uint8_t)(1u << (blk & 7));
+                if (blk > maxSeen) maxSeen = blk;
+            }
+        } else {
+            /* Stop on first read error (likely end of memory) */
+            if (blk > 0) break;
+        }
+        m1_wdt_reset();
+    }
+
+    if (maxSeen > 0) {
+        nfc_ctx_set_dump(blockSize, blockCount, 0,
+                         g_nfc_dump_buf, g_nfc_valid_bits,
+                         maxSeen, true);
+        platformLog("[NFC-V] dump done: %u blocks\r\n", maxSeen + 1);
     }
 }
 
 /*============================================================================*/
-/**
- * @brief mfc_sector_to_first_block - Convert sector number to first block number
- * 
- * @param[in] sector Sector number
- * @retval First block number of the sector
- */
+/* ST25TB block reading                                                       */
 /*============================================================================*/
-static uint16_t mfc_sector_to_first_block(uint16_t sector)
+
+static void m1_st25tb_read(const rfalNfcDevice *dev)
 {
-    if (sector < 32) {
-        /* Sectors 0~31 have 4 blocks per sector */
-        return (uint16_t)(sector * 4);
-    } else {
-        /* Sectors 32~39 have 16 blocks per sector */
-        return (uint16_t)(128 + (sector - 32) * 16);
+    (void)dev;
+    rfalSt25tbBlock blockData;
+    uint8_t blockSize = RFAL_ST25TB_BLOCK_LEN; /* 4 bytes */
+    uint16_t blockCount = 64; /* ST25TB512 has 16 blocks, ST25TB2K has 64 */
+
+    memset(g_nfc_dump_buf, 0x00, NFC_DUMP_BUF_SIZE);
+    memset(g_nfc_valid_bits, 0x00, NFC_VALID_BITS_SIZE);
+    uint32_t maxSeen = 0;
+
+    for (uint16_t blk = 0; blk < blockCount; blk++) {
+        ReturnCode err = rfalSt25tbPollerReadBlock((uint8_t)blk, &blockData);
+
+        if (err == RFAL_ERR_NONE) {
+            uint32_t offset = (uint32_t)blk * blockSize;
+            if (offset + blockSize <= NFC_DUMP_BUF_SIZE) {
+                memcpy(&g_nfc_dump_buf[offset], blockData, blockSize);
+                g_nfc_valid_bits[blk >> 3] |= (uint8_t)(1u << (blk & 7));
+                if (blk > maxSeen) maxSeen = blk;
+            }
+        } else {
+            if (blk > 0) break; /* End of memory */
+        }
+        m1_wdt_reset();
+    }
+
+    if (maxSeen > 0) {
+        nfc_ctx_set_dump(blockSize, maxSeen + 1, 0,
+                         g_nfc_dump_buf, g_nfc_valid_bits,
+                         maxSeen, true);
+        platformLog("[ST25TB] dump done: %u blocks\r\n", maxSeen + 1);
     }
 }
-
-/* --- MIFARE Classic low-level stubs (Step 1: Not actually used) --- */
-/*============================================================================*/
-/**
- * @brief mfc_authenticate_block - Authenticate MIFARE Classic block (stub)
- * 
- * @param[in] dev Pointer to NFC device
- * @param[in] blockNo Block number
- * @param[in] keyType Key type (A or B)
- * @param[in] key Key data (6 bytes)
- * @retval RFAL_ERR_NOTSUPP Not supported (stub)
- */
-/*============================================================================*/
-static ReturnCode mfc_authenticate_block(const rfalNfcDevice *dev,
-                                         uint8_t blockNo,
-                                         mfc_key_type_t keyType,
-                                         const uint8_t key[6])
-{
-    (void)dev; (void)blockNo; (void)keyType; (void)key;
-    return RFAL_ERR_NOTSUPP;
-}
-
-/*============================================================================*/
-/**
- * @brief mfc_read_block - Read MIFARE Classic block (stub)
- * 
- * @param[in] dev Pointer to NFC device
- * @param[in] blockNo Block number
- * @param[out] out Output buffer (16 bytes)
- * @retval RFAL_ERR_NOTSUPP Not supported (stub)
- */
-/*============================================================================*/
-static ReturnCode mfc_read_block(const rfalNfcDevice *dev,
-                                 uint8_t blockNo,
-                                 uint8_t out[MFC_BLOCK_SIZE])
-{
-    (void)dev; (void)blockNo;
-    memset(out, 0x00, MFC_BLOCK_SIZE);
-    return RFAL_ERR_NOTSUPP;
-}
-#endif

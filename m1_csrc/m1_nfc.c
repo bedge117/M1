@@ -61,6 +61,14 @@ const char *m1_nfc_more_options_file[] = {
 		"Delete"
 };
 
+/* Menu for NFC Tools (both top-level nfc_tools() and Utils view) */
+#define NFC_TOOL_OPTIONS_COUNT  3
+static const char *m1_nfc_tool_options[] = {
+	"Tag Info",
+	"Clone Emulate",
+	"NFC Fuzzer"
+};
+
 //************************** S T R U C T U R E S *******************************
 
 typedef enum
@@ -153,6 +161,11 @@ static void nfc_utils_gui_destroy(uint8_t param);
 static void nfc_utils_gui_update(uint8_t param);
 static int  nfc_utils_gui_message(void);
 static int nfc_utils_kp_handler(void);
+
+/* Forward declarations for NFC tools (used by nfc_utils view and nfc_tools) */
+static const char* nfc_tool_manufacturer_name(uint8_t mfr_byte);
+static const char* nfc_tool_sak_meaning(uint8_t sak, const uint8_t atqa[2]);
+static void nfc_tool_fuzzer(void);
 
 static void nfc_info_gui_init(void);
 static void nfc_info_gui_create(uint8_t param);
@@ -1134,9 +1147,187 @@ static int nfc_utils_kp_handler(void)
 	{
 		if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
 		{
-			m1_uiView_display_switch(VIEW_MODE_NFC_READ_MORE, X_MENU_UPDATE_REFRESH);// Return submenu to stored index
+			m1_uiView_display_switch(VIEW_MODE_NFC_READ_MORE, X_MENU_UPDATE_REFRESH);
 		}
-	} // if (ret==pdTRUE)
+		else if (this_button_status.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK)
+		{
+			uint8_t sel = m1_gui_submenu_update(NULL, 0, 0, MENU_UPDATE_NONE);
+			switch (sel)
+			{
+				case 0: /* Tag Info — show enhanced info from current context */
+				{
+					nfc_run_ctx_t *c = nfc_ctx_get();
+					if (c && c->head.uid_len > 0)
+					{
+						uint16_t info_pg = 0;
+						uint16_t pg_scroll = 0;
+						bool show_info = true;
+
+						while (1)
+						{
+							if (show_info)
+							{
+								show_info = false;
+								if (info_pg == 0)
+								{
+									char line[40];
+									u8g2_FirstPage(&m1_u8g2);
+									u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+									u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+									u8g2_DrawStr(&m1_u8g2, 2, 10, c->ui.title_text);
+									u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+									snprintf(line, sizeof(line), "Mfr: %s (0x%02X)",
+									         nfc_tool_manufacturer_name(c->head.uid[0]), c->head.uid[0]);
+									u8g2_DrawStr(&m1_u8g2, 2, 20, line);
+									snprintf(line, sizeof(line), "UID: %s",
+									         hex2Str(c->head.uid, c->head.uid_len));
+									u8g2_DrawStr(&m1_u8g2, 2, 30, line);
+									if (c->head.a.has_atqa && c->head.a.has_sak)
+									{
+										snprintf(line, sizeof(line), "ATQA:%02X %02X SAK:%02X",
+										         c->head.a.atqa[0], c->head.a.atqa[1], c->head.a.sak);
+										u8g2_DrawStr(&m1_u8g2, 2, 40, line);
+										snprintf(line, sizeof(line), "Type: %s",
+										         nfc_tool_sak_meaning(c->head.a.sak, c->head.a.atqa));
+										u8g2_DrawStr(&m1_u8g2, 2, 50, line);
+									}
+									u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+									u8g2_DrawBox(&m1_u8g2, 0, 54, 128, 10);
+									u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+									u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+									u8g2_DrawXBMP(&m1_u8g2, 119, 55, 8, 8, arrowright_8x8);
+									u8g2_DrawStr(&m1_u8g2, 97, 62, "More");
+									m1_u8g2_nextpage();
+								}
+								else
+								{
+									uint16_t total = nfc_ctx_get_t2t_page_count();
+									char line[32], header[32];
+									u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+									u8g2_FirstPage(&m1_u8g2);
+									u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+									if (total == 0) {
+										u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+										u8g2_DrawStr(&m1_u8g2, 2, 20, "No page data");
+										u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+										u8g2_DrawStr(&m1_u8g2, 2, 32, "Only UID-level info");
+									} else {
+										uint16_t max_s = (total > NFC_INFO_LINES_PER_SCREEN)
+										    ? (total - NFC_INFO_LINES_PER_SCREEN) : 0;
+										if (pg_scroll > max_s) pg_scroll = max_s;
+										snprintf(header, sizeof(header), "Max %03u  [hex]  | [Asc]",
+										         (unsigned)(total - 1));
+										u8g2_DrawStr(&m1_u8g2, 2, 8, header);
+										u8g2_DrawStr(&m1_u8g2, 2, 16, "------------------------");
+										for (uint8_t row = 0; row < NFC_INFO_LINES_PER_SCREEN; row++) {
+											uint16_t pg = pg_scroll + row;
+											if (pg >= total) break;
+											if (!nfc_ctx_format_t2t_page_line(pg, line, sizeof(line)))
+												continue;
+											u8g2_DrawStr(&m1_u8g2, 2, 24 + row * 8, line);
+										}
+									}
+									m1_u8g2_nextpage();
+								}
+							}
+
+							S_M1_Main_Q_t qi;
+							S_M1_Buttons_Status bs2;
+							BaseType_t r2 = xQueueReceive(main_q_hdl, &qi, portMAX_DELAY);
+							if (r2 != pdTRUE) continue;
+							if (qi.q_evt_type != Q_EVENT_KEYPAD) continue;
+							r2 = xQueueReceive(button_events_q_hdl, &bs2, 0);
+							if (r2 != pdTRUE) continue;
+							if (bs2.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK) break;
+							if (bs2.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK && info_pg == 0) {
+								info_pg = 1; pg_scroll = 0; show_info = true;
+							}
+							if (bs2.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK && info_pg == 1) {
+								info_pg = 0; show_info = true;
+							}
+							if (bs2.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK && info_pg == 1 && pg_scroll > 0) {
+								pg_scroll--; show_info = true;
+							}
+							if (bs2.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK && info_pg == 1) {
+								uint16_t total = nfc_ctx_get_t2t_page_count();
+								uint16_t max_s = (total > NFC_INFO_LINES_PER_SCREEN)
+								    ? (total - NFC_INFO_LINES_PER_SCREEN) : 0;
+								if (pg_scroll < max_s) { pg_scroll++; show_info = true; }
+							}
+						}
+					}
+					/* Refresh utils submenu */
+					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
+					break;
+				}
+
+				case 1: /* Clone Emulate — emulate the already-read card */
+				{
+					nfc_run_ctx_t *c = nfc_ctx_get();
+					if (c && c->head.uid_len > 0)
+					{
+						nfc_ctx_sync_emu();
+						m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+						m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_EMULATE);
+						vTaskDelay(50);
+
+						const char *et = "Emulate UID";
+						if (c->head.family == M1NFC_FAM_ULTRALIGHT &&
+						    c->dump.has_dump && c->dump.data && c->dump.unit_size == 4 && c->dump.unit_count > 0)
+							et = "Emulate";
+						else if (c->head.family == M1NFC_FAM_CLASSIC &&
+						         c->dump.has_dump && c->dump.data && c->dump.unit_size == 16 && c->dump.unit_count > 0)
+							et = "Emulate";
+
+						u8g2_FirstPage(&m1_u8g2);
+						u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+						u8g2_DrawXBMP(&m1_u8g2, 0, 0, 48, 48, nfc_emit_48x48);
+						u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+						u8g2_DrawStr(&m1_u8g2, 50, 15, et);
+						u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+						u8g2_DrawStr(&m1_u8g2, 50, 26, "UID:");
+						u8g2_DrawStr(&m1_u8g2, 50, 36, hex2Str(c->head.uid, c->head.uid_len));
+						u8g2_DrawStr(&m1_u8g2, 50, 46, "Tag M1 on reader");
+						m1_u8g2_nextpage();
+
+						while (1) {
+							S_M1_Main_Q_t qi;
+							S_M1_Buttons_Status bs2;
+							BaseType_t r2 = xQueueReceive(main_q_hdl, &qi, portMAX_DELAY);
+							if (r2 != pdTRUE) continue;
+							if (qi.q_evt_type != Q_EVENT_KEYPAD) continue;
+							r2 = xQueueReceive(button_events_q_hdl, &bs2, 0);
+							if (r2 == pdTRUE && bs2.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+								break;
+						}
+
+						ListenerRequestStop();
+						m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+						m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_EMULATE_STOP);
+						vTaskDelay(50);
+					}
+					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
+					break;
+				}
+
+				case 2: /* NFC Fuzzer */
+					nfc_tool_fuzzer();
+					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
+					break;
+
+				default:
+					break;
+			}
+		}
+		else if (this_button_status.event[BUTTON_UP_KP_ID]==BUTTON_EVENT_CLICK)
+		{
+			m1_uiView_display_update(X_MENU_UPDATE_MOVE_UP);
+		}
+		else if (this_button_status.event[BUTTON_DOWN_KP_ID]==BUTTON_EVENT_CLICK)
+		{
+			m1_uiView_display_update(X_MENU_UPDATE_MOVE_DOWN);
+		}
+	}
 
 	return 1;
 }
@@ -1181,8 +1372,7 @@ static void nfc_utils_gui_destroy(uint8_t param)
 /*============================================================================*/
 static void nfc_utils_gui_update(uint8_t param)
 {
-	m1_gui_let_update_fw();
-	/*	utils_menu	*/
+	m1_gui_submenu_update(m1_nfc_tool_options, NFC_TOOL_OPTIONS_COUNT, 0, param);
 }
 
 /*============================================================================*/
@@ -1580,7 +1770,12 @@ void m1_nfc_info_more_draw(void)
     u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
     if (total_pages==0)
     {
-		m1_gui_let_update_fw();
+		u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+		u8g2_DrawStr(&m1_u8g2, 2, 20, "No page data");
+		u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+		u8g2_DrawStr(&m1_u8g2, 2, 32, "Only UID-level info");
+		u8g2_DrawStr(&m1_u8g2, 2, 42, "available for this tag");
+		m1_u8g2_nextpage();
     }
     else
     {
@@ -1613,12 +1808,620 @@ void m1_nfc_info_more_draw(void)
 }
 
 /*============================================================================*/
+/*                   NFC TOOLS — Helpers                                      */
+/*============================================================================*/
+
+/* NFC-A manufacturer lookup (ISO/IEC 7816-6 / JIS X 6319-4, byte 0 of UID) */
+static const char* nfc_tool_manufacturer_name(uint8_t mfr_byte)
+{
+	switch (mfr_byte) {
+		case 0x01: return "Motorola";
+		case 0x02: return "STMicro";
+		case 0x03: return "Hitachi";
+		case 0x04: return "NXP";
+		case 0x05: return "Infineon";
+		case 0x06: return "Cylink";
+		case 0x07: return "TI";
+		case 0x08: return "Fujitsu";
+		case 0x09: return "Matsushita";
+		case 0x0A: return "NEC";
+		case 0x0B: return "Oki";
+		case 0x0C: return "Toshiba";
+		case 0x0D: return "Mitsubishi";
+		case 0x0E: return "Samsung";
+		case 0x0F: return "Hyundai";
+		case 0x10: return "LG";
+		case 0x16: return "EM Micro";
+		case 0x28: return "SiliconCraft";
+		default:   return "Unknown";
+	}
+}
+
+/* SAK meaning for NFC-A */
+static const char* nfc_tool_sak_meaning(uint8_t sak, const uint8_t atqa[2])
+{
+	if (sak == 0x08) return "Classic 1K";
+	if (sak == 0x18) return "Classic 4K";
+	if (sak == 0x09) return "Classic Mini";
+	if (sak == 0x10) return "Classic 2K";
+	if (sak == 0x11) return "Classic 4K (Plus)";
+	if (sak == 0x00 && atqa[0] == 0x44) return "Ultralight/NTAG";
+	if (sak == 0x20) return "DESFire/ISO-DEP";
+	if (sak == 0x28) return "Classic+ISO-DEP";
+	if (sak == 0x60) return "Classic+DESFire";
+	return "Other";
+}
+
+/* Fuzzer card profiles for NFC-A emulation */
+#define NFC_FUZZ_PROFILE_COUNT  4
+static const char *nfc_fuzz_profile_names[] = {
+	"Classic 1K", "Classic 4K", "Ultralight", "DESFire"
+};
+static const uint8_t nfc_fuzz_profile_atqa[][2] = {
+	{0x04, 0x00}, {0x02, 0x00}, {0x44, 0x00}, {0x04, 0x03}
+};
+static const uint8_t nfc_fuzz_profile_sak[] = {
+	0x08, 0x18, 0x00, 0x20
+};
+static const uint8_t nfc_fuzz_profile_uid_len[] = {
+	4, 4, 7, 7
+};
+
+static void nfc_fuzz_uid_step(uint8_t *uid, uint8_t uid_len, int8_t dir)
+{
+	if (dir > 0) {
+		for (int i = uid_len - 1; i >= 0; i--) {
+			uid[i]++;
+			if (uid[i] != 0) break;
+		}
+	} else {
+		for (int i = uid_len - 1; i >= 0; i--) {
+			uid[i]--;
+			if (uid[i] != 0xFF) break;
+		}
+	}
+}
+
+static void nfc_fuzz_draw_setup(uint8_t prof_sel, const uint8_t *uid, uint8_t uid_len,
+                                int8_t dir, uint16_t delay_ms)
+{
+	char line[32];
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 2, 10, "NFC Fuzzer Setup");
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	snprintf(line, sizeof(line), "Type: %s", nfc_fuzz_profile_names[prof_sel]);
+	u8g2_DrawStr(&m1_u8g2, 2, 22, line);
+
+	snprintf(line, sizeof(line), "UID: %s", hex2Str((unsigned char*)uid, uid_len));
+	u8g2_DrawStr(&m1_u8g2, 2, 32, line);
+
+	snprintf(line, sizeof(line), "Dir: %s  Dly: %ums",
+	         (dir > 0) ? "UP" : "DN", delay_ms);
+	u8g2_DrawStr(&m1_u8g2, 2, 42, line);
+
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 4, 61, "UP/DN:adj");
+	u8g2_DrawStr(&m1_u8g2, 74, 61, "OK:Start");
+
+	m1_u8g2_nextpage();
+}
+
+static void nfc_fuzz_draw_running(uint8_t prof_sel, const uint8_t *uid, uint8_t uid_len,
+                                  uint32_t count)
+{
+	char line[32];
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 2, 10, "NFC Fuzzer");
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	snprintf(line, sizeof(line), "Type: %s", nfc_fuzz_profile_names[prof_sel]);
+	u8g2_DrawStr(&m1_u8g2, 2, 22, line);
+
+	snprintf(line, sizeof(line), "UID: %s", hex2Str((unsigned char*)uid, uid_len));
+	u8g2_DrawStr(&m1_u8g2, 2, 32, line);
+
+	snprintf(line, sizeof(line), "Count: %lu", (unsigned long)count);
+	u8g2_DrawStr(&m1_u8g2, 2, 42, line);
+
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 2, 61, "Emulating...");
+	u8g2_DrawStr(&m1_u8g2, 86, 61, "Bk:Stop");
+
+	m1_u8g2_nextpage();
+}
+
+/*============================================================================*/
 /**
- * @brief nfc_tools - NFC tools menu function (To Be Determined)
- * 
- * Placeholder function for NFC tools menu. Currently displays
- * "Tools(TBD)" message and waits for BACK button to exit.
- * 
+ * @brief nfc_tool_tag_info - Read NFC tag and display enhanced info
+ *
+ * Initiates an NFC read, then displays detailed card metadata including
+ * manufacturer, card type, ATQA/SAK analysis, and memory info.
+ *
+ * @retval None
+ */
+/*============================================================================*/
+static void nfc_tool_tag_info(void)
+{
+	S_M1_Buttons_Status bs;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+
+	/* Show "Place card" screen */
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawXBMP(&m1_u8g2, 0, 0, 48, 48, nfc_read_48x48);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 55, 20, "Tag Info");
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 50, 30, "Hold card next");
+	u8g2_DrawStr(&m1_u8g2, 50, 40, "to M1's back");
+	m1_u8g2_nextpage();
+
+	/* Start NFC read */
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_READ);
+	vTaskDelay(50);
+
+	/* Wait for read complete or BACK */
+	bool read_done = false;
+	while (!read_done)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+
+		if (q_item.q_evt_type == Q_EVENT_NFC_READ_COMPLETE)
+		{
+			read_done = true;
+			m1_buzzer_notification();
+			m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+		}
+		else if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+			if (ret == pdTRUE && bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+				m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_READ_COMPLETE);
+				return;
+			}
+		}
+	}
+
+	/* Display enhanced tag info */
+	nfc_run_ctx_t *c = nfc_ctx_get();
+	if (!c || c->head.uid_len == 0)
+	{
+		m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_READ_COMPLETE);
+		return;
+	}
+
+	uint16_t info_page = 0;   /* 0 = summary, 1 = more detail */
+	uint16_t page_scroll = 0;
+	bool show = true;
+
+	while (1)
+	{
+		if (show)
+		{
+			show = false;
+
+			if (info_page == 0)
+			{
+				/* Page 0: Summary info */
+				char line[40];
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				u8g2_DrawStr(&m1_u8g2, 2, 10, c->ui.title_text);
+
+				u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+				snprintf(line, sizeof(line), "Mfr: %s (0x%02X)",
+				         nfc_tool_manufacturer_name(c->head.uid[0]), c->head.uid[0]);
+				u8g2_DrawStr(&m1_u8g2, 2, 20, line);
+
+				snprintf(line, sizeof(line), "UID: %s",
+				         hex2Str(c->head.uid, c->head.uid_len));
+				u8g2_DrawStr(&m1_u8g2, 2, 30, line);
+
+				if (c->head.a.has_atqa && c->head.a.has_sak)
+				{
+					snprintf(line, sizeof(line), "ATQA:%02X %02X SAK:%02X",
+					         c->head.a.atqa[0], c->head.a.atqa[1], c->head.a.sak);
+					u8g2_DrawStr(&m1_u8g2, 2, 40, line);
+
+					snprintf(line, sizeof(line), "Type: %s",
+					         nfc_tool_sak_meaning(c->head.a.sak, c->head.a.atqa));
+					u8g2_DrawStr(&m1_u8g2, 2, 50, line);
+				}
+
+				/* Bottom bar */
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_DrawBox(&m1_u8g2, 0, 54, 128, 10);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+				u8g2_DrawXBMP(&m1_u8g2, 119, 55, 8, 8, arrowright_8x8);
+				u8g2_DrawStr(&m1_u8g2, 97, 62, "More");
+
+				m1_u8g2_nextpage();
+			}
+			else
+			{
+				/* Page 1: T2T page dump (if available) */
+				uint16_t total = nfc_ctx_get_t2t_page_count();
+				char line[32];
+				char header[32];
+
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+
+				if (total == 0)
+				{
+					u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+					u8g2_DrawStr(&m1_u8g2, 2, 20, "No page data");
+					u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+					u8g2_DrawStr(&m1_u8g2, 2, 32, "Only UID-level info");
+					u8g2_DrawStr(&m1_u8g2, 2, 42, "available for this tag");
+				}
+				else
+				{
+					uint16_t max_scroll = (total > NFC_INFO_LINES_PER_SCREEN)
+					    ? (total - NFC_INFO_LINES_PER_SCREEN) : 0;
+					if (page_scroll > max_scroll) page_scroll = max_scroll;
+
+					snprintf(header, sizeof(header), "Max %03u  [hex]  | [Asc]",
+					         (unsigned)(total - 1));
+					u8g2_DrawStr(&m1_u8g2, 2, 8, header);
+					u8g2_DrawStr(&m1_u8g2, 2, 16, "------------------------");
+
+					for (uint8_t row = 0; row < NFC_INFO_LINES_PER_SCREEN; row++)
+					{
+						uint16_t pg = page_scroll + row;
+						if (pg >= total) break;
+						if (!nfc_ctx_format_t2t_page_line(pg, line, sizeof(line)))
+							continue;
+						u8g2_DrawStr(&m1_u8g2, 2, 24 + row * 8, line);
+					}
+				}
+				m1_u8g2_nextpage();
+			}
+		}
+
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+
+		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+			if (ret != pdTRUE) continue;
+
+			if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				break;
+			}
+			else if (bs.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				if (info_page == 0)
+				{
+					info_page = 1;
+					page_scroll = 0;
+					show = true;
+				}
+			}
+			else if (bs.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				if (info_page == 1)
+				{
+					info_page = 0;
+					show = true;
+				}
+			}
+			else if (bs.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				if (info_page == 1 && page_scroll > 0)
+				{
+					page_scroll--;
+					show = true;
+				}
+			}
+			else if (bs.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				if (info_page == 1)
+				{
+					uint16_t total = nfc_ctx_get_t2t_page_count();
+					uint16_t max_scroll = (total > NFC_INFO_LINES_PER_SCREEN)
+					    ? (total - NFC_INFO_LINES_PER_SCREEN) : 0;
+					if (page_scroll < max_scroll)
+					{
+						page_scroll++;
+						show = true;
+					}
+				}
+			}
+		}
+	}
+
+	/* Cleanup: stop any active read operation */
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_READ_COMPLETE);
+}
+
+
+/*============================================================================*/
+/**
+ * @brief nfc_tool_clone_emu - Read NFC card then immediately emulate it
+ *
+ * One-step clone workflow: reads a source card, then starts emulating its
+ * UID so another NFC reader/writer can capture it.
+ *
+ * @retval None
+ */
+/*============================================================================*/
+static void nfc_tool_clone_emu(void)
+{
+	S_M1_Buttons_Status bs;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+
+	/* Show "Place source card" screen */
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawXBMP(&m1_u8g2, 0, 0, 48, 48, nfc_read_48x48);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 50, 15, "Clone Emulate");
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 50, 26, "Place source");
+	u8g2_DrawStr(&m1_u8g2, 50, 36, "card on M1's");
+	u8g2_DrawStr(&m1_u8g2, 50, 46, "back to read");
+	m1_u8g2_nextpage();
+
+	/* Start NFC read */
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_READ);
+	vTaskDelay(50);
+
+	/* Wait for read complete or BACK */
+	bool read_done = false;
+	while (!read_done)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+
+		if (q_item.q_evt_type == Q_EVENT_NFC_READ_COMPLETE)
+		{
+			read_done = true;
+			m1_buzzer_notification();
+			m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+		}
+		else if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+			if (ret == pdTRUE && bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+				m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_READ_COMPLETE);
+				return;
+			}
+		}
+	}
+
+	nfc_run_ctx_t *c = nfc_ctx_get();
+	if (!c || c->head.uid_len == 0)
+	{
+		m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_READ_COMPLETE);
+		return;
+	}
+
+	/* Sync emulator context and start emulation */
+	nfc_ctx_sync_emu();
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_EMULATE);
+	vTaskDelay(50);
+
+	/* Show emulating screen */
+	const char *emu_text = "Emulate UID";
+	if (c->head.family == M1NFC_FAM_ULTRALIGHT &&
+	    c->dump.has_dump && c->dump.data != NULL &&
+	    c->dump.unit_size == 4 && c->dump.unit_count > 0)
+	{
+		emu_text = "Emulate";
+	}
+	else if (c->head.family == M1NFC_FAM_CLASSIC &&
+	         c->dump.has_dump && c->dump.data != NULL &&
+	         c->dump.unit_size == 16 && c->dump.unit_count > 0)
+	{
+		emu_text = "Emulate";
+	}
+
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawXBMP(&m1_u8g2, 0, 0, 48, 48, nfc_emit_48x48);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 50, 15, emu_text);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 50, 26, "UID:");
+	u8g2_DrawStr(&m1_u8g2, 50, 36, hex2Str(c->head.uid, c->head.uid_len));
+	u8g2_DrawStr(&m1_u8g2, 50, 46, "Tag M1 on reader");
+	m1_u8g2_nextpage();
+
+	/* Wait for BACK to stop emulation */
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+
+		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+			if (ret == pdTRUE && bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				break;
+			}
+		}
+	}
+
+	/* Stop emulation */
+	ListenerRequestStop();
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_EMULATE_STOP);
+	vTaskDelay(50);
+}
+
+
+/*============================================================================*/
+/**
+ * @brief nfc_tool_fuzzer - NFC UID fuzzer via emulation
+ *
+ * Cycles through NFC UIDs while emulating, allowing card type selection,
+ * direction (increment/decrement), and delay configuration.
+ *
+ * @retval None
+ */
+/*============================================================================*/
+static void nfc_tool_fuzzer(void)
+{
+	S_M1_Buttons_Status bs;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+
+	uint8_t prof_sel = 0;
+	int8_t dir = 1;
+	uint16_t delay_ms = 500;
+	uint8_t setup_field = 0; /* 0=type, 1=dir, 2=delay */
+	uint8_t uid[10];
+	memset(uid, 0, sizeof(uid));
+	uid[0] = 0x04; /* NXP manufacturer byte */
+
+	/* --- Setup screen --- */
+	nfc_fuzz_draw_setup(prof_sel, uid, nfc_fuzz_profile_uid_len[prof_sel], dir, delay_ms);
+
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+
+		if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+
+		ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+		if (ret != pdTRUE) continue;
+
+		if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			return; /* Exit to tools menu */
+		}
+		else if (bs.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			break; /* Start fuzzing */
+		}
+		else if (bs.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (setup_field == 0) {
+				prof_sel = (prof_sel + 1) % NFC_FUZZ_PROFILE_COUNT;
+				memset(uid, 0, sizeof(uid));
+				uid[0] = 0x04;
+			} else if (setup_field == 1) {
+				dir = (dir > 0) ? -1 : 1;
+			} else {
+				if (delay_ms < 2000) delay_ms += 100;
+			}
+			nfc_fuzz_draw_setup(prof_sel, uid, nfc_fuzz_profile_uid_len[prof_sel], dir, delay_ms);
+		}
+		else if (bs.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (setup_field == 0) {
+				prof_sel = (prof_sel == 0) ? (NFC_FUZZ_PROFILE_COUNT - 1) : (prof_sel - 1);
+				memset(uid, 0, sizeof(uid));
+				uid[0] = 0x04;
+			} else if (setup_field == 1) {
+				dir = (dir > 0) ? -1 : 1;
+			} else {
+				if (delay_ms > 100) delay_ms -= 100;
+			}
+			nfc_fuzz_draw_setup(prof_sel, uid, nfc_fuzz_profile_uid_len[prof_sel], dir, delay_ms);
+		}
+		else if (bs.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			setup_field = (setup_field + 1) % 3;
+			nfc_fuzz_draw_setup(prof_sel, uid, nfc_fuzz_profile_uid_len[prof_sel], dir, delay_ms);
+		}
+		else if (bs.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			setup_field = (setup_field == 0) ? 2 : (setup_field - 1);
+			nfc_fuzz_draw_setup(prof_sel, uid, nfc_fuzz_profile_uid_len[prof_sel], dir, delay_ms);
+		}
+	}
+
+	/* --- Start emulation fuzzing --- */
+	uint8_t uid_len = nfc_fuzz_profile_uid_len[prof_sel];
+	uint32_t count = 0;
+
+	/* Set initial emulator parameters */
+	Emu_SetNfcA(uid, uid_len,
+	            nfc_fuzz_profile_atqa[prof_sel][0],
+	            nfc_fuzz_profile_atqa[prof_sel][1],
+	            nfc_fuzz_profile_sak[prof_sel]);
+
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_EMULATE);
+	vTaskDelay(50);
+
+	nfc_fuzz_draw_running(prof_sel, uid, uid_len, count);
+
+	/* Fuzzing loop: use timed queue receive for delay between UID steps */
+	bool running = true;
+	while (running)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(delay_ms));
+		if (ret == pdTRUE)
+		{
+			if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+			{
+				ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+				if (ret == pdTRUE && bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					running = false;
+					break;
+				}
+			}
+		}
+
+		/* Timeout = step to next UID */
+		nfc_fuzz_uid_step(uid, uid_len, dir);
+		count++;
+
+		/* Update emulator with new UID (live update, no stop/start needed) */
+		Emu_SetNfcA(uid, uid_len,
+		            nfc_fuzz_profile_atqa[prof_sel][0],
+		            nfc_fuzz_profile_atqa[prof_sel][1],
+		            nfc_fuzz_profile_sak[prof_sel]);
+
+		nfc_fuzz_draw_running(prof_sel, uid, uid_len, count);
+	}
+
+	/* Stop emulation */
+	ListenerRequestStop();
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_EMULATE_STOP);
+	vTaskDelay(50);
+}
+
+
+/*============================================================================*/
+/**
+ * @brief nfc_tools - NFC tools menu with Tag Info, Clone Emulate, NFC Fuzzer
+ *
+ * Provides a submenu of NFC utility tools accessible from the main NFC menu.
+ *
  * @retval None
  */
 /*============================================================================*/
@@ -1628,48 +2431,54 @@ void nfc_tools(void)
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
 
-	//const char * msg = "Tools(TBD)";
-	m1_gui_let_update_fw();
-	/*	Tools_Menu	*/
+	/* Drain stale events from parent menu selection */
+	while (xQueueReceive(main_q_hdl, &q_item, 0) == pdTRUE)
+	{
+		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+	}
 
 	m1_gui_submenu_update(NULL, 0, 0, X_MENU_UPDATE_INIT);
-	nfc_uiview_gui_latest_param = 0xFF; // Initialize with an invalid parameter
-	while (1) // Main loop of this task
+	m1_gui_submenu_update(m1_nfc_tool_options, NFC_TOOL_OPTIONS_COUNT, 0, X_MENU_UPDATE_RESET);
+
+	while (1)
 	{
 		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
-		if (ret==pdTRUE)
+		if (ret != pdTRUE) continue;
+
+		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
-			if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
+			ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+			if (ret != pdTRUE) continue;
+
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 			{
-				// Notification is only sent to this task when there's any button activity,
-				// so it doesn't need to wait when reading the event from the queue
-				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK ) // user wants to exit?
-				{
-					; // Do extra tasks here if needed
-
-					xQueueReset(main_q_hdl); // Reset main q before return
-					break; // Exit and return to the calling task (subfunc_handler_task)
-				} 
-				else if(this_button_status.event[BUTTON_UP_KP_ID]==BUTTON_EVENT_CLICK )
-				{
-					// Do other things for this task, if needed
-					platformLog("nfc_tools[BUTTON_UP_KP_ID]\r\n");
-
-				}
-				else if(this_button_status.event[BUTTON_DOWN_KP_ID]==BUTTON_EVENT_CLICK )
-				{
-					// Do other things for this task, if needed
-					platformLog("nfc_tools[BUTTON_DOWN_KP_ID]\r\n");
-
-				}
-			} 
-			else
-			{
-				; // Do other things for this task
+				xQueueReset(main_q_hdl);
+				break;
 			}
-		} 
-	} // while (1)
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				uint8_t sel = m1_gui_submenu_update(NULL, 0, 0, MENU_UPDATE_NONE);
+				switch (sel)
+				{
+					case 0: nfc_tool_tag_info();  break;
+					case 1: nfc_tool_clone_emu(); break;
+					case 2: nfc_tool_fuzzer();    break;
+					default: break;
+				}
+				/* Redraw submenu after returning from a tool */
+				m1_gui_submenu_update(m1_nfc_tool_options, NFC_TOOL_OPTIONS_COUNT, 0, X_MENU_UPDATE_REFRESH);
+			}
+			else if (this_button_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				m1_gui_submenu_update(m1_nfc_tool_options, NFC_TOOL_OPTIONS_COUNT, 0, X_MENU_UPDATE_MOVE_UP);
+			}
+			else if (this_button_status.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				m1_gui_submenu_update(m1_nfc_tool_options, NFC_TOOL_OPTIONS_COUNT, 0, X_MENU_UPDATE_MOVE_DOWN);
+			}
+		}
+	}
 } 
 
 /*============================================================================*/

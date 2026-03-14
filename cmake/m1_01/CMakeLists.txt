@@ -61,6 +61,7 @@ target_include_directories(m1_01 INTERFACE
     ../../USB/Class/CompositeBuilder/Src
     ../../USB/Class/MSC/Inc
     ../../USB/Class/MSC/Src
+    ../../USB/Class/HID/Inc
     ../../USB/Core/Inc
     ../../USB/Core/Scr
 )
@@ -305,12 +306,34 @@ target_sources(m1_01 INTERFACE
     ../../NFC/NFC_drv/legacy/nfc_driver.c
     ../../NFC/NFC_drv/legacy/nfc_listener.c
     ../../NFC/NFC_drv/legacy/nfc_poller.c
+    ../../NFC/NFC_drv/legacy/mfc_crypto1.c
     ../../NFC/app_x-cube-nfcx.c
     ../../Sub_Ghz/datatypes_utils.c
     ../../Sub_Ghz/m1_sub_ghz_api.c
     ../../Sub_Ghz/m1_sub_ghz_decenc.c
     ../../Sub_Ghz/protocols/m1_princeton_decode.c
     ../../Sub_Ghz/protocols/m1_secplus_v2_decode.c
+    ../../Sub_Ghz/protocols/m1_came_decode.c
+    ../../Sub_Ghz/protocols/m1_nice_flo_decode.c
+    ../../Sub_Ghz/protocols/m1_linear_decode.c
+    ../../Sub_Ghz/protocols/m1_holtek_decode.c
+    ../../Sub_Ghz/protocols/m1_keeloq_decode.c
+    ../../Sub_Ghz/protocols/m1_oregon_v2_decode.c
+    ../../Sub_Ghz/protocols/m1_acurite_decode.c
+    ../../Sub_Ghz/protocols/m1_lacrosse_tx_decode.c
+    ../../Sub_Ghz/protocols/m1_faac_slh_decode.c
+    ../../Sub_Ghz/protocols/m1_hormann_decode.c
+    ../../Sub_Ghz/protocols/m1_marantec_decode.c
+    ../../Sub_Ghz/protocols/m1_somfy_telis_decode.c
+    ../../Sub_Ghz/protocols/m1_starline_decode.c
+    ../../Sub_Ghz/protocols/m1_gate_tx_decode.c
+    ../../Sub_Ghz/protocols/m1_smc5326_decode.c
+    ../../Sub_Ghz/protocols/m1_power_smart_decode.c
+    ../../Sub_Ghz/protocols/m1_ido_decode.c
+    ../../Sub_Ghz/protocols/m1_ansonic_decode.c
+    ../../Sub_Ghz/protocols/m1_infactory_decode.c
+    ../../Sub_Ghz/protocols/m1_schrader_decode.c
+    ../../Sub_Ghz/protocols/m1_bin_raw_decode.c
     ../../USB/Class/CDC/Src/usbd_cdc.c
     ../../USB/Class/CDC/Src/usbd_cdc_if.c
     ../../USB/Class/CompositeBuilder/Src/usbd_composite_builder.c
@@ -330,6 +353,27 @@ target_sources(m1_01 INTERFACE
     ../../lfrfid/lfrfid_protocol.c
     ../../lfrfid/lfrfid_protocol_em4100.c
     ../../lfrfid/lfrfid_protocol_h10301.c
+    ../../lfrfid/lfrfid_protocol_hid_generic.c
+    ../../lfrfid/lfrfid_protocol_indala26.c
+    ../../lfrfid/lfrfid_manchester.c
+    ../../lfrfid/lfrfid_protocol_awid.c
+    ../../lfrfid/lfrfid_protocol_pyramid.c
+    ../../lfrfid/lfrfid_protocol_paradox.c
+    ../../lfrfid/lfrfid_protocol_ioprox.c
+    ../../lfrfid/lfrfid_protocol_fdx_a.c
+    ../../lfrfid/lfrfid_protocol_hid_ex.c
+    ../../lfrfid/lfrfid_protocol_viking.c
+    ../../lfrfid/lfrfid_protocol_fdx_b.c
+    ../../lfrfid/lfrfid_protocol_electra.c
+    ../../lfrfid/lfrfid_protocol_gallagher.c
+    ../../lfrfid/lfrfid_protocol_jablotron.c
+    ../../lfrfid/lfrfid_protocol_pac_stanley.c
+    ../../lfrfid/lfrfid_protocol_securakey.c
+    ../../lfrfid/lfrfid_protocol_gproxii.c
+    ../../lfrfid/lfrfid_protocol_noralsy.c
+    ../../lfrfid/lfrfid_protocol_idteck.c
+    ../../lfrfid/lfrfid_protocol_keri.c
+    ../../lfrfid/lfrfid_protocol_nexwatch.c
     ../../lfrfid/t5577.c
     ../../m1_csrc/res_string.c
     ../../m1_csrc/bit_util.c
@@ -351,6 +395,7 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_fusb302.c
     ../../m1_csrc/m1_fw_update.c
     ../../m1_csrc/m1_fw_update_bl.c
+    ../../m1_csrc/m1_rpc.c
     ../../m1_csrc/m1_gpio.c
     ../../m1_csrc/m1_i2c.c
     ../../m1_csrc/m1_infrared.c
@@ -394,6 +439,23 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_wifi_cred.c
     # === Enhanced firmware: Flipper integration (Phase 6) ===
     ../../m1_csrc/m1_flipper_integration.c
+    # === Enhanced firmware: BadUSB (Phase 7) ===
+    ../../USB/Class/HID/Src/usbd_hid.c
+    ../../m1_csrc/m1_badusb.c
+    # === Enhanced firmware: Bad-BT (Phase 8) ===
+    ../../m1_csrc/m1_badbt.c
+    # === Enhanced firmware: Built-in Games (Phase 9) ===
+    ../../m1_csrc/m1_games.c
+    ../../m1_csrc/game_snake.c
+    ../../m1_csrc/game_tetris.c
+    ../../m1_csrc/game_trex.c
+    ../../m1_csrc/game_pong.c
+    ../../m1_csrc/game_dice.c
+    # === Enhanced firmware: ELF App Loader (Phase 10) ===
+    ../../m1_csrc/m1_elf_loader.c
+    ../../m1_csrc/m1_app_api.c
+    ../../m1_csrc/m1_app_manager.c
+    ../../m1_csrc/m1_field_detect.c
 )
 
 target_link_directories(m1_01 INTERFACE

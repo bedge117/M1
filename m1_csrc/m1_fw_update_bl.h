@@ -36,7 +36,18 @@
 #define FW_CRC_EXT_MAGIC_VALUE     ((uint32_t)0x43524332)   /* "CRC2" sentinel */
 #define FW_CRC_EXT_ERASED          ((uint32_t)0xFFFFFFFF)   /* Erased flash value */
 
+/* C3 build metadata — injected by append_crc32.py at offset 32 in the reserved area */
+#define FW_C3_META_BASE_OFFSET     32
+#define FW_C3_META_BASE            (FW_CONFIG_RESERVED_ADDRESS + FW_C3_META_BASE_OFFSET)
+#define FW_C3_META_MAGIC_VALUE     ((uint32_t)0x43334D44)   /* "C3MD" sentinel */
+
 #define BOOT_FAIL_SIGNATURE        ((uint32_t)0xDEADBEEF)
+
+/* RAM address range for vector table validation */
+#define STM32H5_RAM_START          ((uint32_t)0x20000000)
+#define STM32H5_RAM_END            ((uint32_t)0x200A0000)  /* 640KB */
+#define STM32H5_FLASH_START        ((uint32_t)0x08000000)
+#define STM32H5_FLASH_END          ((uint32_t)0x08200000)  /* 2MB */
 
 /* ROM DFU Bootloader entry point for STM32H5 */
 #define STM32H5_SYSTEM_MEMORY_ADDR ((uint32_t)0x0BF90000)
@@ -61,6 +72,8 @@ typedef struct {
 #define FW_VERSION_MINOR   			8
 #define FW_VERSION_BUILD   			0
 #define FW_VERSION_RC   			0
+
+#define M1_C3_REVISION				1
 
 #define FW_CONFIG_MAGIC_NUMBER_1	((uint32_t)0x4D493235)
 #define FW_CONFIG_MAGIC_NUMBER_2    ((uint32_t)0x534A1F41)
@@ -136,13 +149,20 @@ typedef enum
 
 uint32_t bl_get_crc_chunk(uint32_t *data_scr, uint32_t len, bool crc_init, bool last_chunk);
 uint8_t bl_flash_app(FIL *hfile);
+uint8_t bl_flash_if_write(uint8_t *src, uint8_t *dest, uint32_t len);
 uint16_t bl_get_active_bank(void);
 uint8_t bl_crc_check(uint32_t image_size);
-void bl_swap_banks(void);
+bool bl_swap_banks(void);
 void fw_gui_progress_update(size_t remainder);
 
 void boot_recovery_check(void);
 void bl_jump_to_dfu(void);
+bool bl_is_inactive_bank_valid(void);
+bool bl_verify_bank_crc(uint32_t bank_base);
+bool bl_safe_flash_read_u32(uint32_t addr, uint32_t *value);
+
+extern volatile bool g_flash_read_protected;
+extern volatile bool g_flash_read_faulted;
 
 extern FW_CFG_SECTION S_M1_FW_CONFIG_t m1_fw_config;
 

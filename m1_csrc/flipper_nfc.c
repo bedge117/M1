@@ -181,6 +181,98 @@ bool flipper_nfc_load(const char *path, flipper_nfc_card_t *out)
  * @param  card  card structure to save
  * @return true on success
  */
+/*============================================================================*/
+/**
+ * @brief  Load dump data (Page/Block lines) from a Flipper .nfc file
+ *
+ *         Parses lines like:
+ *           Page 0: 04 68 95 71        (NTAG/Ultralight, 4 bytes)
+ *           Block 0: AA BB CC DD ...   (Classic, 16 bytes)
+ *
+ * @param  path           file path on FatFs filesystem
+ * @param  dump_buf       output buffer for dump data
+ * @param  dump_buf_size  size of dump_buf in bytes
+ * @param  valid_bits     bitmap marking which units were parsed (caller zeroes)
+ * @param  unit_size      output: 4 for pages, 16 for blocks
+ * @return Number of units (pages or blocks) successfully parsed
+ */
+uint16_t flipper_nfc_load_dump(const char *path,
+                               uint8_t *dump_buf, uint16_t dump_buf_size,
+                               uint8_t *valid_bits,
+                               uint16_t *unit_size)
+{
+	flipper_file_t ff;
+	uint16_t count = 0;
+	uint16_t usize = 0;
+
+	if (!path || !dump_buf || !valid_bits || !unit_size)
+		return 0;
+
+	*unit_size = 0;
+
+	if (!ff_open(&ff, path))
+		return 0;
+
+	/* Skip header — read lines until we find Page or Block entries */
+	while (ff_read_line(&ff))
+	{
+		if (ff_is_separator(&ff))
+			continue;
+
+		if (!ff_parse_kv(&ff))
+			continue;
+
+		const char *key = ff_get_key(&ff);
+		const char *val = ff_get_value(&ff);
+
+		/* Match "Page N" or "Block N" */
+		bool is_page  = (strncmp(key, "Page ", 5) == 0);
+		bool is_block = (strncmp(key, "Block ", 6) == 0);
+
+		if (!is_page && !is_block)
+			continue;
+
+		/* Determine unit size on first match */
+		if (usize == 0)
+			usize = is_page ? 4 : 16;
+
+		/* Parse unit index */
+		const char *numStr = is_page ? (key + 5) : (key + 6);
+		uint16_t idx = (uint16_t)atoi(numStr);
+
+		/* Parse hex bytes from value */
+		uint8_t tmp[16];
+		uint8_t parsed = ff_parse_hex_bytes(val, tmp, usize);
+		if (parsed < usize)
+			continue; /* Incomplete line */
+
+		/* Store into dump buffer */
+		uint32_t offset = (uint32_t)idx * usize;
+		if (offset + usize > dump_buf_size)
+			continue; /* Buffer too small */
+
+		memcpy(&dump_buf[offset], tmp, usize);
+
+		/* Mark unit as valid */
+		valid_bits[idx >> 3] |= (uint8_t)(1u << (idx & 7));
+
+		if (idx + 1 > count)
+			count = idx + 1;
+	}
+
+	ff_close(&ff);
+
+	*unit_size = usize;
+	return count;
+}
+
+/*============================================================================*/
+/**
+ * @brief  Save a .nfc file
+ * @param  path  file path on FatFs filesystem
+ * @param  card  card structure to save
+ * @return true on success
+ */
 bool flipper_nfc_save(const char *path, const flipper_nfc_card_t *card)
 {
 	flipper_file_t ff;

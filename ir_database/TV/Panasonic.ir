@@ -1,0 +1,100 @@
+Filetype: IR signals file
+Version: 1
+
+#
+name: Power
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 3D 00 00 00
+
+#
+name: Vol_Up
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 20 00 00 00
+
+#
+name: Vol_Down
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 21 00 00 00
+
+#
+name: Ch_Up
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 34 00 00 00
+
+#
+name: Ch_Down
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 35 00 00 00
+
+#
+name: Mute
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 32 00 00 00
+
+#
+name: Input
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: A0 00 00 00
+
+#
+name: OK
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 49 00 00 00
+
+#
+name: Up
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 52 00 00 00
+
+#
+name: Down
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 53 00 00 00
+
+#
+name: Left
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 72 00 00 00
+
+#
+name: Right
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 73 00 00 00
+
+#
+name: Back
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 2B 00 00 00
+
+#
+name: Menu
+type: parsed
+protocol: Kaseikyo
+address: 00 40 04 00
+command: 06 00 00 00

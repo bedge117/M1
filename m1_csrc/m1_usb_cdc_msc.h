@@ -91,5 +91,12 @@ extern volatile int8_t m1_USB_MSC_ready;
 uint8_t m1_usb_msc_process(void);
 uint8_t m1_usb_msc_sd_detected(void);
 
+/*********************************************/
+// USB mode switching (BadUSB)
+#ifdef M1_APP_BADUSB_ENABLE
+void m1_usb_switch_to_hid(void);
+void m1_usb_switch_to_normal(void);
+#endif
+
 #endif /* M1_USB_CDC_MSC_H_ */
 

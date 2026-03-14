@@ -107,8 +107,8 @@ extern TIM_HandleTypeDef    Timerhdl_IrTx;
 extern TIM_HandleTypeDef    Timerhdl_IrRx;
 
 extern volatile uint8_t ir_ota_data_tx_active;
-extern uint8_t ir_ota_data_tx_len;
-extern volatile uint8_t ir_ota_data_tx_counter;
+extern uint16_t ir_ota_data_tx_len;
+extern volatile uint16_t ir_ota_data_tx_counter;
 extern uint16_t *pir_ota_data_tx_buffer;
 
 #endif /* M1_INFRARED_H_ */

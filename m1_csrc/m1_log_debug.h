@@ -57,4 +57,10 @@ extern TaskHandle_t log_db_task_hdl;
 extern QueueHandle_t log_q_hdl;
 
 void m1_logdb_deinit(void);
+
+/* RPC CLI output capture — when enabled, _write() also copies output
+ * to a side buffer so rpc_handle_cli_exec() can return it via RPC. */
+void m1_logdb_capture_start(char *buf, uint16_t buf_size);
+uint16_t m1_logdb_capture_stop(void);
+
 #endif /* M1_LOG_DEBUG_H_ */

@@ -444,19 +444,31 @@ void GPDMA1_Channel5_IRQHandler(void)
  * UART4 Interrupt handler, Rx/Tx for ESP32
  */
 /******************************************************************************/
+/* Diagnostic counter: incremented each time UART4 hardware FIFO overruns.
+ * Readable via esp32_uart4_overrun_count from m1_rpc.c for flash diagnostics. */
+volatile uint32_t esp32_uart4_overrun_count = 0;
+
 void UART4_IRQHandler(void)
 {
-    if ( __HAL_UART_GET_FLAG(&huart_esp, UART_FLAG_RXFNE) || __HAL_UART_GET_FLAG(&huart_esp, UART_FLAG_ORE) )
+    /* Drain all bytes from the hardware FIFO in one ISR call.
+     * With FIFO enabled, multiple bytes may have accumulated between
+     * interrupts (e.g., while a USB ISR was executing).  Reading them
+     * all here prevents FIFO overflow and reduces ISR entry overhead. */
+    if ( __HAL_UART_GET_IT_SOURCE(&huart_esp, UART_IT_RXFNE) != 0U )
     {
-    	/* Check if interrupt source is enabled */
-    	if ( __HAL_UART_GET_IT_SOURCE(&huart_esp, UART_IT_RXFNE) != 0U )
-    	{
-    		esp32_uartrx_handler(huart_esp.Instance->RDR);
-    	}
-        // Error(s) should be cleared here before calling the default ISR
-        // ISR may disable interrupt unexpectedly if it detects error(s) in the Status Register
-    	__HAL_UART_CLEAR_FLAG(&huart_esp, UART_CLEAR_OREF);
-    } // if ( __HAL_UART_GET_FLAG(&huart_esp, UART_FLAG_RXFNE) || __HAL_UART_GET_FLAG(&huart_esp, UART_FLAG_ORE) )
+        while ( __HAL_UART_GET_FLAG(&huart_esp, UART_FLAG_RXFNE) )
+        {
+            esp32_uartrx_handler(huart_esp.Instance->RDR);
+        }
+    }
+
+    /* Clear overrun — data was already lost but prevent the flag from
+     * blocking further reception.  Count it for diagnostics. */
+    if ( __HAL_UART_GET_FLAG(&huart_esp, UART_FLAG_ORE) )
+    {
+        __HAL_UART_CLEAR_FLAG(&huart_esp, UART_CLEAR_OREF);
+        esp32_uart4_overrun_count++;
+    }
 
     HAL_UART_IRQHandler(&huart_esp);
 } // void UART4_IRQHandler(void)

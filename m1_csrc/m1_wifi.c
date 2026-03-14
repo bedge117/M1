@@ -82,12 +82,15 @@ static bool wifi_ensure_esp32_ready(void)
 	if ( !m1_esp32_get_init_status() )
 	{
 		m1_esp32_init();
-		if ( !get_esp32_main_init_status() )
-			esp32_main_init();
+	}
+
+	if ( !get_esp32_main_init_status() )
+	{
 		m1_u8g2_firstpage();
 		u8g2_DrawStr(&m1_u8g2, 6, 15, "Initializing...");
 		u8g2_DrawXBMP(&m1_u8g2, M1_LCD_DISPLAY_WIDTH/2 - 18/2, M1_LCD_DISPLAY_HEIGHT/2 - 2, 18, 32, hourglass_18x32);
 		m1_u8g2_nextpage();
+		esp32_main_init();
 	}
 	return get_esp32_main_init_status();
 }
@@ -162,7 +165,7 @@ void wifi_scan_ap(void)
 			u8g2_DrawBox(&m1_u8g2, M1_LCD_DISPLAY_WIDTH/2 - 18/2, M1_LCD_DISPLAY_HEIGHT/2 - 2, 18, 32); // Clear old image
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 			u8g2_DrawXBMP(&m1_u8g2, M1_LCD_DISPLAY_WIDTH/2 - 32/2, M1_LCD_DISPLAY_HEIGHT/2 - 2, 32, 32, wifi_error_32x32);
-			u8g2_DrawStr(&m1_u8g2, 6, 15 + M1_GUI_ROW_SPACING + M1_GUI_FONT_HEIGHT, "Failed. Let retry!");
+			u8g2_DrawStr(&m1_u8g2, 6, 15 + M1_GUI_ROW_SPACING + M1_GUI_FONT_HEIGHT, "Failed. Retrying...");
 			m1_u8g2_nextpage();
 			// Reset the ESP module
 			esp32_disable();

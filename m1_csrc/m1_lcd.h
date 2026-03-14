@@ -54,6 +54,7 @@ uint8_t u8x8_byte_stm32_4wire_hw_spi(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int,
 uint8_t u8x8_stm32_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr); // The "uC specific" GPIO and Delay callback function
 
 void m1_lcd_init(SPI_HandleTypeDef *phspi);
+void m1_lcd_set_southpaw(uint8_t enable);
 void m1_u8g2_firstpage(void);
 uint8_t m1_u8g2_nextpage(void);
 void m1_lcd_cleardisplay(void);

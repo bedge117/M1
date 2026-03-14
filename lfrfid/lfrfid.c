@@ -31,7 +31,8 @@
 /*************************** D E F I N E S ************************************/
 #define LFRFID_QUEUE_ITEMS_MAX_N		10
 
-#define LFRFID_READ_TIMEOUT_MS   (2500)
+#define LFRFID_READ_TIMEOUT_MS   (6000)
+#define LFRFID_CARRIER_STABILIZE_MS  50
 //************************** C O N S T A N T **********************************/
 
 //************************** S T R U C T U R E S *******************************
@@ -41,6 +42,8 @@ TaskHandle_t	lfrfid_task_hdl;
 TaskHandle_t	lfrfid_rx_task_hdl;
 QueueHandle_t	lfrfid_q_hdl;
 TimerHandle_t 	lfrfid_read_timeout_handle;
+TimerHandle_t	lfrfid_carrier_switch_handle;
+volatile lfrfid_carrier_t lfrfid_current_carrier;
 
 LFRFID_TAG_INFO lfrfid_tag_info;
 LFRFID_TAG_INFO *lfrfid_tag_info_back;
@@ -186,6 +189,51 @@ void lfrfid_read_timeout_stop(void)
 
 
 /*============================================================================*/
+/* Carrier auto-switch timer (ASK <-> PSK)                                    */
+/*============================================================================*/
+static void lfrfid_carrier_switch_cb(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    m1_app_send_q_message(lfrfid_q_hdl, Q_EVENT_UI_LFRFID_CARRIER_SWITCH);
+}
+
+void lfrfid_carrier_switch_timer_create(void)
+{
+    if (lfrfid_carrier_switch_handle != NULL)
+        return;
+
+    lfrfid_carrier_switch_handle = xTimerCreate(
+        "LFRFID_CS",
+        pdMS_TO_TICKS(LFRFID_CARRIER_SWITCH_MS),
+        pdTRUE,                                     /* auto-reload */
+        (void *)0,
+        lfrfid_carrier_switch_cb
+    );
+    configASSERT(lfrfid_carrier_switch_handle != NULL);
+}
+
+void lfrfid_carrier_switch_timer_delete(void)
+{
+    if (lfrfid_carrier_switch_handle == NULL)
+        return;
+    (void)xTimerStop(lfrfid_carrier_switch_handle, 0);
+    (void)xTimerDelete(lfrfid_carrier_switch_handle, portMAX_DELAY);
+    lfrfid_carrier_switch_handle = NULL;
+}
+
+void lfrfid_carrier_switch_timer_start(void)
+{
+    (void)xTimerChangePeriod(lfrfid_carrier_switch_handle,
+                             pdMS_TO_TICKS(LFRFID_CARRIER_SWITCH_MS), 0);
+}
+
+void lfrfid_carrier_switch_timer_stop(void)
+{
+    (void)xTimerStop(lfrfid_carrier_switch_handle, 0);
+}
+
+
+/*============================================================================*/
 /**
   * @brief
   * @param
@@ -215,6 +263,8 @@ void lfrfid_Init(void)
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
 
 	lfrfid_read_timeout_timer_create();
+	lfrfid_carrier_switch_timer_create();
+	lfrfid_current_carrier = LFRFID_CARRIER_ASK;
 
 	set_line_buffer_size(512);
 
@@ -263,6 +313,7 @@ void lfrfid_DeInit(void)
 	}
 
 	lfrfid_read_timeout_timer_delete();
+	lfrfid_carrier_switch_timer_delete();
 
 	lfrfid_stream_deinit();
 
@@ -404,6 +455,12 @@ void lfrfid_rxThread(void *param)
             continue;
         }
 
+        /* Determine which feature set to try based on current carrier.
+         * Both ASK 125 kHz and ASK 134.2 kHz use ASK decoders — the
+         * FDX-B timing windows (68-188 / 196-316 µs) cover both frequencies. */
+        uint32_t active_feature = (lfrfid_current_carrier == LFRFID_CARRIER_PSK)
+                                  ? LFRFIDFeaturePSK : LFRFIDFeatureASK;
+
         uint16_t total_events = n / LFR_ITEM_SIZE;
         uint8_t CHUNK_SIZE = FRAME_CHUNK_SIZE>>1;
         lfrfid_evt_t* p = (lfrfid_evt_t*)batch_buf;
@@ -414,12 +471,17 @@ void lfrfid_rxThread(void *param)
 
             for(int protoIdx=LFRFIDProtocolEM4100; protoIdx<LFRFIDProtocolMax; protoIdx++)
             {
-             	if(lfrfid_decoder_execute(protoIdx, &p[i], events_to_process))
-               	{
-              		lfrfid_tag_info.protocol = protoIdx;
-
-               		m1_app_send_q_message(lfrfid_q_hdl, Q_EVENT_LFRFID_TAG_DETECTED);
-               	}
+                /* Only run decoders that match the current carrier mode */
+                if(lfrfid_protocols[protoIdx] &&
+                   (lfrfid_protocols[protoIdx]->features & active_feature))
+                {
+                    if(lfrfid_decoder_execute(protoIdx, &p[i], events_to_process))
+                    {
+                        lfrfid_tag_info.protocol = protoIdx;
+                        m1_app_send_q_message(lfrfid_q_hdl, Q_EVENT_LFRFID_TAG_DETECTED);
+                        break;  /* first match wins — stop checking other protocols */
+                    }
+                }
             }
         }
 
@@ -449,6 +511,7 @@ void lfrfidThread(void *param)
 				lfrfid_lock = 0;
 
 				lfrfid_read_timeout_stop();
+				lfrfid_carrier_switch_timer_stop();
 
 				lfrfid_read_hw_deinit();
 				osDelay(10);
@@ -465,11 +528,13 @@ void lfrfidThread(void *param)
 				task_resume_safe(lfrfid_rx_task_hdl);
 
 				lfrfid_isr_init();
+				lfrfid_current_carrier = LFRFID_CARRIER_ASK;
 				lfrfid_read_hw_init();
 				lfrfid_decoder_begin();
 				lfrfid_tag_info_init();
 
 				lfrfid_read_timeout_start();
+				lfrfid_carrier_switch_timer_start();
 
 				lfrfid_state = LFRFID_STATE_READ;
 				lfrfid_lock = 1;
@@ -477,6 +542,37 @@ void lfrfidThread(void *param)
 				HAL_GPIO_WritePin(RFID_PULL_GPIO_Port, RFID_PULL_Pin, GPIO_PIN_RESET);
 				//READ_STEP = RFIN_PREAMBLE;
 				osDelay(50);
+			}
+			else if(q_item.q_evt_type==Q_EVENT_UI_LFRFID_CARRIER_SWITCH)
+			{
+				if(lfrfid_lock && lfrfid_state == LFRFID_STATE_READ)
+				{
+					/* Cycle carrier: ASK 125k -> ASK 134.2k -> PSK -> ASK 125k ...
+					 * ASK 134.2 kHz supports FDX-B pet/animal chips (ISO 11784/11785) */
+					if(lfrfid_current_carrier == LFRFID_CARRIER_ASK)
+					{
+						lfrfid_current_carrier = LFRFID_CARRIER_ASK_134;
+						lfrfid_carrier_switch(LFRFID_CARRIER_ASK_134_FREQ,
+						                      LFRFID_CARRIER_ASK_134_DUTY);
+					}
+					else if(lfrfid_current_carrier == LFRFID_CARRIER_ASK_134)
+					{
+						lfrfid_current_carrier = LFRFID_CARRIER_PSK;
+						lfrfid_carrier_switch(LFRFID_CARRIER_PSK_FREQ,
+						                      LFRFID_CARRIER_PSK_DUTY);
+					}
+					else
+					{
+						lfrfid_current_carrier = LFRFID_CARRIER_ASK;
+						lfrfid_carrier_switch(LFRFID_CARRIER_ASK_FREQ,
+						                      LFRFID_CARRIER_ASK_DUTY);
+					}
+					/* Reset decoders after carrier switch */
+					lfrfid_isr_init();
+					lfrfid_decoder_begin();
+					/* Brief stabilization delay */
+					osDelay(LFRFID_CARRIER_STABILIZE_MS);
+				}
 			}
 			else if(q_item.q_evt_type==Q_EVENT_UI_LFRFID_STOP)
 			{
@@ -487,6 +583,7 @@ void lfrfidThread(void *param)
 					lfrfid_state = LFRFID_STATE_IDLE;
 
 					lfrfid_read_timeout_stop();
+					lfrfid_carrier_switch_timer_stop();
 					lfrfid_read_hw_deinit();
 					osDelay(10);
 

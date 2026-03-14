@@ -47,6 +47,29 @@ const LFRFIDProtocolBase* lfrfid_protocols[] = {
     [LFRFIDProtocolEM4100_32] = &protocol_em4100_32,
     [LFRFIDProtocolEM4100_16] = &protocol_em4100_16,
     [LFRFIDProtocolH10301] = &protocol_h10301,
+    [LFRFIDProtocolHIDGeneric] = &protocol_hid_generic,
+    [LFRFIDProtocolIndala26] = &protocol_indala26,
+    /* FSK protocols */
+    [LFRFIDProtocolAWID] = &protocol_awid,
+    [LFRFIDProtocolPyramid] = &protocol_pyramid,
+    [LFRFIDProtocolParadox] = &protocol_paradox,
+    [LFRFIDProtocolIoProxXSF] = &protocol_ioprox,
+    [LFRFIDProtocolFDX_A] = &protocol_fdx_a,
+    [LFRFIDProtocolHIDExGeneric] = &protocol_hid_ex,
+    /* Manchester protocols */
+    [LFRFIDProtocolViking] = &protocol_viking,
+    [LFRFIDProtocolFDX_B] = &protocol_fdx_b,
+    [LFRFIDProtocolElectra] = &protocol_electra,
+    [LFRFIDProtocolGallagher] = &protocol_gallagher,
+    [LFRFIDProtocolJablotron] = &protocol_jablotron,
+    [LFRFIDProtocolPACStanley] = &protocol_pac_stanley,
+    [LFRFIDProtocolSecurakey] = &protocol_securakey,
+    [LFRFIDProtocolGProxII] = &protocol_gproxii,
+    [LFRFIDProtocolNoralsy] = &protocol_noralsy,
+    [LFRFIDProtocolIdteck] = &protocol_idteck,
+    /* PSK protocols */
+    [LFRFIDProtocolKeri] = &protocol_keri,
+    [LFRFIDProtocolNexwatch] = &protocol_nexwatch,
 };
 
 //************************** S T R U C T U R E S *******************************

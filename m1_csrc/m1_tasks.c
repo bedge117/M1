@@ -20,6 +20,10 @@
 #include "lfrfid.h"
 //#include "m1_nfc.h"
 #include "nfc_driver.h"
+#include "m1_compile_cfg.h"
+#ifdef M1_APP_RPC_ENABLE
+#include "m1_rpc.h"
+#endif
 
 /*************************** D E F I N E S ************************************/
 
@@ -124,6 +128,13 @@ void m1_tasks_init(void)
 	assert(usb2ser_task_hdl!=NULL);
 	free_heap = xPortGetFreeHeapSize();
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
+
+#ifdef M1_APP_RPC_ENABLE
+	/* Initialize the RPC subsystem (creates the RPC task internally) */
+	m1_rpc_init();
+	free_heap = xPortGetFreeHeapSize();
+	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
+#endif
 } // void m1_tasks_init(void)
 
 

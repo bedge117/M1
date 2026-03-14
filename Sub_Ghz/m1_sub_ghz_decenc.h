@@ -22,7 +22,7 @@
 #define INTERPACKET_GAP_MAX					80000//5000 // uS
 #define PACKET_PULSE_TIME_MIN				120 // uS
 #define PACKET_PULSE_COUNT_MIN				48 // 24 bits
-#define PACKET_PULSE_COUNT_MAX				128 // 64 bits
+#define PACKET_PULSE_COUNT_MAX				256 // 128 bits (weather protocols need longer packets)
 
 #define PACKET_PULSE_TIME_TOLERANCE20		20 // percentage
 #define PACKET_PULSE_TIME_TOLERANCE25		25
@@ -84,8 +84,39 @@ typedef struct
 
 enum {
 	PRINCETON = 0,
-	SECURITY_PLUS_20
+	SECURITY_PLUS_20,
+	CAME_12BIT,
+	NICE_FLO,
+	LINEAR_10BIT,
+	HOLTEK_HT12E,
+	KEELOQ,
+	OREGON_V2,
+	ACURITE,
+	LACROSSE_TX,
+	FAAC_SLH,
+	HORMANN,
+	MARANTEC,
+	SOMFY_TELIS,
+	STAR_LINE,
+	GATE_TX,
+	SMC5326,
+	POWER_SMART,
+	IDO,
+	ANSONIC,
+	INFACTORY,
+	SCHRADER_TPMS,
+	BIN_RAW
 };
+
+/* Weather station decoded data */
+typedef struct {
+    uint16_t id;            /* Sensor ID */
+    uint8_t  channel;       /* Channel (1-8) */
+    int16_t  temp_raw;      /* Temperature in 0.1 deg C units */
+    uint8_t  humidity;      /* Humidity 0-100% */
+    uint8_t  battery_low;   /* 1 = battery low */
+    uint8_t  valid;         /* 1 = checksum/CRC passed */
+} SubGHz_Weather_Data_t;
 
 extern SubGHz_DecEnc_t subghz_decenc_ctl;
 extern const char *protocol_text[];
@@ -94,8 +125,39 @@ extern const SubGHz_protocol_t subghz_protocols_list[];
 void subghz_decenc_init(void);
 bool subghz_decenc_read(SubGHz_Dec_Info_t *received, bool raw);
 uint16_t get_diff(uint16_t n_a, uint16_t n_b);
+
+/* Protocol decoders */
 uint8_t subghz_decode_princeton(uint16_t p, uint16_t pulsecount);
 uint8_t subghz_decode_security_plus_20(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_came(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_nice_flo(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_linear(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_holtek(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_keeloq(uint16_t p, uint16_t pulsecount);
+
+/* Weather station decoders */
+uint8_t subghz_decode_oregon_v2(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_acurite(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_lacrosse_tx(uint16_t p, uint16_t pulsecount);
+
+/* Additional protocol decoders */
+uint8_t subghz_decode_faac_slh(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_hormann(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_marantec(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_somfy_telis(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_starline(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_gate_tx(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_smc5326(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_power_smart(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_ido(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_ansonic(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_infactory(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_schrader(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_bin_raw(uint16_t p, uint16_t pulsecount);
+
+/* Weather data access */
+const SubGHz_Weather_Data_t* subghz_get_weather_data(void);
+
 uint8_t m1_secplus_v2_decode(uint32_t fixed[], uint8_t half_codes[][10], uint32_t *rolling_code, uint64_t *out_bits);
 uint8_t m1_secplus_v2_decode_half(uint64_t in_bits, uint8_t *half_code, uint32_t *out_bits);
 

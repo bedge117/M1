@@ -18,7 +18,7 @@
 #include "m1_system.h"
 
 #define MENU_TITLE_LEN          30
-#define SUB_MENU_ITEMS_MAX      10
+#define SUB_MENU_ITEMS_MAX      12
 #define SUB_MENU_LEVEL_MAX      5
 #define RUN_MENU_ITEMS_MAX      5
 

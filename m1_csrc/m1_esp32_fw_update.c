@@ -472,6 +472,9 @@ static esp_loader_error_t m1_fw_app(FIL *hfile)
 
 	HAL_GPIO_WritePin(ESP32_IO9_GPIO_Port, ESP32_IO9_Pin, GPIO_PIN_SET);
 
+	// Flush stale AT response data before ROM bootloader sync
+	m1_ringbuffer_reset(&esp32_rb_hdl);
+
 	flash_err = ESP_LOADER_ERROR_FAIL;
 	while (connect_to_target(ESP32_UART_HIGH_BAUDRATE)==ESP_LOADER_SUCCESS)
 	{

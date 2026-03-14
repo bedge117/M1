@@ -24,6 +24,10 @@
 #include "m1_rf_spi.h"
 //#include "u8x8.h"
 //#include "U8g2lib.h"
+#include "m1_compile_cfg.h"
+#ifdef M1_APP_RPC_ENABLE
+#include "m1_rpc.h"
+#endif
 
 /*************************** D E F I N E S ************************************/
 
@@ -119,28 +123,23 @@ uint8_t u8x8_stm32_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, vo
 			break;
 
 		case U8X8_MSG_GPIO_MENU_NEXT:
-			//u8x8->gpio_result = HAL_GPIO_ReadPin(BUTTON_RIGHT_GPIO_Port, BUTTON_RIGHT_GPIO_Pin);
-			u8x8->gpio_result = (buttons_ctl[BUTTON_RIGHT_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
+			u8x8->gpio_result = (buttons_ctl[m1_southpaw_mode ? BUTTON_LEFT_KP_ID : BUTTON_RIGHT_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
 			break;
 
 		case U8X8_MSG_GPIO_MENU_PREV:
-			//u8x8->gpio_result = HAL_GPIO_ReadPin(BUTTON_LEFT_GPIO_Port, BUTTON_LEFT_GPIO_Pin);
-			u8x8->gpio_result = (buttons_ctl[BUTTON_LEFT_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
+			u8x8->gpio_result = (buttons_ctl[m1_southpaw_mode ? BUTTON_RIGHT_KP_ID : BUTTON_LEFT_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
 			break;
 
 		case U8X8_MSG_GPIO_MENU_HOME:
-			//u8x8->gpio_result = HAL_GPIO_ReadPin(BUTTON_BACK_GPIO_Port, BUTTON_BACK_GPIO_Pin);
 			u8x8->gpio_result = (buttons_ctl[BUTTON_BACK_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
 			break;
 
 		case U8X8_MSG_GPIO_MENU_UP:
-			//u8x8->gpio_result = HAL_GPIO_ReadPin(BUTTON_UP_GPIO_Port, BUTTON_UP_GPIO_Pin);
-			u8x8->gpio_result = (buttons_ctl[BUTTON_UP_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
+			u8x8->gpio_result = (buttons_ctl[m1_southpaw_mode ? BUTTON_DOWN_KP_ID : BUTTON_UP_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
 			break;
 
 		case U8X8_MSG_GPIO_MENU_DOWN:
-			//u8x8->gpio_result = HAL_GPIO_ReadPin(BUTTON_DOWN_GPIO_Port, BUTTON_DOWN_GPIO_Pin);
-			u8x8->gpio_result = (buttons_ctl[BUTTON_DOWN_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
+			u8x8->gpio_result = (buttons_ctl[m1_southpaw_mode ? BUTTON_UP_KP_ID : BUTTON_DOWN_KP_ID].event==BUTTON_EVENT_CLICK) ? 0 : 1;
 			break;
 
 		case U8X8_MSG_GPIO_AND_DELAY_INIT:
@@ -200,6 +199,18 @@ void m1_lcd_init(SPI_HandleTypeDef *phspi)
 } // void m1_lcd_init(SPI_HandleTypeDef *phspi)
 
 
+/*============================================================================*/
+/**
+  * @brief  Set southpaw (left-handed) display rotation
+  * @param  enable: 1=southpaw (R0), 0=normal (R2)
+  */
+/*============================================================================*/
+void m1_lcd_set_southpaw(uint8_t enable)
+{
+    const u8g2_cb_t *rot = enable ? U8G2_R0 : U8G2_R2;
+    u8g2_SetDisplayRotation(&m1_u8g2, rot);
+}
+
 
 /*============================================================================*/
 /*
@@ -222,6 +233,14 @@ uint8_t m1_u8g2_nextpage(void)
 {
 	u8g2_SendBuffer(&m1_u8g2);
 	u8x8_RefreshDisplay( u8g2_GetU8x8(&m1_u8g2) );
+
+#ifdef M1_APP_RPC_ENABLE
+	/* Notify the RPC task that a new frame is ready for streaming */
+	if (m1_rpc_screen_streaming_active())
+	{
+		m1_rpc_notify_screen_update();
+	}
+#endif
 
 	return 0;
 } // uint8_t m1_u8g2_nextpage(void)

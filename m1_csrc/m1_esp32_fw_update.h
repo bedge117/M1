@@ -24,6 +24,8 @@
 #define MD5_ENABLED
 
 //This configures the amount of retries for writing blocks either to target flash or RAM.
+//The retry loop in esp_loader_flash_write() saves and restores the sequence number
+//so that retries re-send the same block index instead of corrupting flash.
 #define SERIAL_FLASHER_WRITE_BLOCK_RETRIES		3
 
 //This is the time for which the reset pin is asserted when doing a hard reset in milliseconds.

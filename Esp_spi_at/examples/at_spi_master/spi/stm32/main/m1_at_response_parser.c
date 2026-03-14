@@ -18,6 +18,7 @@
 #include "stm32h5xx_hal.h"
 #include "main.h"
 #include "ctrl_api.h"
+#include "m1_compile_cfg.h"
 #include "m1_at_response_parser.h"
 
 /*************************** D E F I N E S ************************************/
@@ -175,6 +176,243 @@ uint8_t m1_parse_spi_at_resp(char *resp, const char *resp_key, ctrl_cmd_t *app_r
 
 	return ret;
 } // uint8_t m1_parse_spi_at_resp(char *resp, const char *resp_key, ctrl_cmd_t *app_resp)
+
+
+
+#ifdef M1_APP_BT_MANAGE_ENABLE
+
+/******************************************************************************/
+/**
+  * @brief  Convert a hex character to its nibble value (0-15)
+  */
+/******************************************************************************/
+static uint8_t hex_char_to_nibble(char c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return 0;
+}
+
+/******************************************************************************/
+/**
+  * @brief  Convert two hex characters to a byte value
+  */
+/******************************************************************************/
+static uint8_t hex_pair_to_byte(const char *hex)
+{
+	return (hex_char_to_nibble(hex[0]) << 4) | hex_char_to_nibble(hex[1]);
+}
+
+/******************************************************************************/
+/**
+  * @brief  Parse BLE advertisement data hex string for device name
+  *         Searches AD structures for type 0x08 (Shortened) or 0x09 (Complete)
+  *         Local Name.
+  * @param  hex_data: hex-encoded advertisement data string
+  * @param  name_out: output buffer for decoded name
+  * @param  max_len: size of name_out buffer
+  */
+/******************************************************************************/
+static void ble_parse_adv_name(const char *hex_data, char *name_out, size_t max_len)
+{
+	size_t hex_len;
+	size_t i, j, hex_off;
+	uint8_t ad_len, ad_type;
+	size_t name_len;
+	char ch;
+
+	name_out[0] = '\0';
+	if (!hex_data || !hex_data[0]) return;
+
+	hex_len = strlen(hex_data);
+	if (hex_len < 4) return;  /* minimum: 2 hex for len + 2 hex for type */
+
+	i = 0;
+	while (i + 3 < hex_len)
+	{
+		ad_len = hex_pair_to_byte(&hex_data[i]);
+		if (ad_len == 0) break;
+		if (i + 2 + (size_t)ad_len * 2 > hex_len) break;  /* not enough data */
+
+		ad_type = hex_pair_to_byte(&hex_data[i + 2]);
+
+		if (ad_type == 0x08 || ad_type == 0x09)  /* Shortened or Complete Local Name */
+		{
+			name_len = ad_len - 1;  /* subtract type byte */
+			if (name_len >= max_len) name_len = max_len - 1;
+			for (j = 0; j < name_len; j++)
+			{
+				hex_off = i + 4 + j * 2;  /* skip len(2) + type(2) + j*2 */
+				ch = (char)hex_pair_to_byte(&hex_data[hex_off]);
+				if (ch == '\0') break;
+				/* Only keep printable ASCII characters */
+				if (ch >= 0x20 && ch <= 0x7E)
+					name_out[j] = ch;
+				else
+					name_out[j] = '?';
+			}
+			name_out[j] = '\0';
+			return;
+		}
+
+		i += 2 + (size_t)ad_len * 2;  /* skip len byte + ad_len data bytes */
+	}
+} // static void ble_parse_adv_name(...)
+
+
+/******************************************************************************/
+/**
+  * @brief  Parse BLE scan responses into ble_scan_list_t with device names
+  *         and MAC deduplication.
+  *         Format: +BLESCAN:"MAC",RSSI,adv_data,scan_rsp_data,addr_type,evt_type
+  * @param  resp: AT response string
+  * @param  resp_key: response key to look for ("+BLESCAN:")
+  * @param  app_resp: ctrl_cmd_t with ble_scan union member
+  * @retval SUCCESS or ERROR
+  */
+/******************************************************************************/
+uint8_t m1_parse_ble_scan_resp(char *resp, const char *resp_key, ctrl_cmd_t *app_resp)
+{
+	uint8_t ret = ERROR;
+	char *index, *start_index, *mac_end, *line_end, *next_index;
+	char *comma1, *comma2, *comma3;
+	uint16_t prev_count;
+	ble_scanlist_t *out_list;
+	char name_buf[SSID_LENGTH];
+	char mac_buf[BSSID_STR_SIZE];
+	int i, found_idx;
+	size_t cp_len, field_len;
+	int rssi;
+	uint8_t addr_type;
+
+	if (!resp || !resp_key || !app_resp) return ERROR;
+	if (!strlen(resp_key) || !strlen(resp)) return ERROR;
+
+	index = strstr(resp, resp_key);
+	if (!index) return ERROR;
+
+	prev_count = app_resp->u.ble_scan.count;
+	out_list = app_resp->u.ble_scan.out_list;
+
+	while (1)
+	{
+		/* Find MAC address between quotes */
+		start_index = strstr(index, "\"");
+		if (!start_index) break;
+		line_end = strstr(index, "\r\n");
+		if (!line_end) break;
+		next_index = line_end;
+
+		/* Extract MAC */
+		mac_end = strstr(&start_index[1], "\"");
+		if (!mac_end || mac_end > line_end) break;
+		cp_len = mac_end - start_index - 1;
+		if (cp_len >= BSSID_STR_SIZE) cp_len = BSSID_STR_SIZE - 1;
+		strncpy(mac_buf, &start_index[1], cp_len);
+		mac_buf[cp_len] = '\0';
+
+		/* Extract RSSI */
+		rssi = strtol(&mac_end[2], &start_index, 10);
+
+		/* Find commas for fields 3 (adv_data), 4 (scan_rsp_data), 5 (addr_type) */
+		/* start_index now points to comma after RSSI */
+		comma1 = strstr(start_index, ",");
+		if (!comma1 || comma1 > line_end) break;
+		comma1++;  /* start of field 3 (adv_data) */
+
+		comma2 = strstr(comma1, ",");
+		if (!comma2 || comma2 > line_end) break;
+		/* field 3 = adv_data runs from comma1 to comma2 */
+
+		/* Try to parse name from adv_data (field 3) */
+		name_buf[0] = '\0';
+		field_len = comma2 - comma1;
+		if (field_len >= 4)
+		{
+			char saved = *comma2;
+			*comma2 = '\0';
+			ble_parse_adv_name(comma1, name_buf, SSID_LENGTH);
+			*comma2 = saved;
+		}
+
+		/* Field 4 (scan_rsp_data): after comma2 to next comma */
+		comma3 = strstr(comma2 + 1, ",");
+		if (!comma3 || comma3 > line_end) break;
+
+		/* Try scan_rsp_data for name if not found in adv_data */
+		if (name_buf[0] == '\0')
+		{
+			field_len = comma3 - (comma2 + 1);
+			if (field_len >= 4)
+			{
+				char saved = *comma3;
+				*comma3 = '\0';
+				ble_parse_adv_name(comma2 + 1, name_buf, SSID_LENGTH);
+				*comma3 = saved;
+			}
+		}
+
+		/* Field 5 (addr_type) */
+		addr_type = (uint8_t)strtol(comma3 + 1, NULL, 10);
+
+		/* Check if this MAC already exists (dedup) */
+		found_idx = -1;
+		for (i = 0; i < app_resp->u.ble_scan.count; i++)
+		{
+			if (strcmp((char *)out_list[i].addr, mac_buf) == 0)
+			{
+				found_idx = i;
+				break;
+			}
+		}
+
+		if (found_idx >= 0)
+		{
+			/* Update existing: better RSSI, fill in name if missing */
+			if (rssi > out_list[found_idx].rssi)
+				out_list[found_idx].rssi = rssi;
+			if (name_buf[0] != '\0' && out_list[found_idx].name[0] == '\0')
+				strncpy((char *)out_list[found_idx].name, name_buf, SSID_LENGTH - 1);
+		}
+		else
+		{
+			/* Add new entry */
+			out_list = realloc(out_list, sizeof(ble_scanlist_t) * (app_resp->u.ble_scan.count + 1));
+			if (!out_list) break;
+
+			strncpy((char *)out_list[app_resp->u.ble_scan.count].addr, mac_buf, BSSID_STR_SIZE - 1);
+			out_list[app_resp->u.ble_scan.count].addr[BSSID_STR_SIZE - 1] = '\0';
+			strncpy((char *)out_list[app_resp->u.ble_scan.count].name, name_buf, SSID_LENGTH - 1);
+			out_list[app_resp->u.ble_scan.count].name[SSID_LENGTH - 1] = '\0';
+			out_list[app_resp->u.ble_scan.count].rssi = rssi;
+			out_list[app_resp->u.ble_scan.count].addr_type = addr_type;
+
+			app_resp->u.ble_scan.count++;
+		}
+
+		/* Try to get another record */
+		index = strstr(next_index, resp_key);
+		if (!index) break;
+	} // while (1)
+
+	if (prev_count < app_resp->u.ble_scan.count)
+	{
+		ret = SUCCESS;
+		app_resp->u.ble_scan.out_list = out_list;
+	}
+	else if (out_list && app_resp->u.ble_scan.count > 0)
+	{
+		/* Count didn't increase but we still have valid data (all dupes) */
+		ret = SUCCESS;
+		app_resp->u.ble_scan.out_list = out_list;
+	}
+
+	return ret;
+} // uint8_t m1_parse_ble_scan_resp(...)
+
+#endif /* M1_APP_BT_MANAGE_ENABLE */
+
 
 /*
 https://docs.espressif.com/projects/esp-at/en/latest/esp32/AT_Command_Set/BLE_AT_Commands.html#cmd-bscan

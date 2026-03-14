@@ -160,11 +160,14 @@ typedef enum _CtrlMsgId {
   CTRL_MSG_ID__Req_BLEScanList = 126,
   CTRL_MSG_ID__Req_BLEAdvertise = 127,
   CTRL_MSG_ID__Req_BLEReset = 128,
+  CTRL_MSG_ID__Req_GetVersion = 129,
+  CTRL_MSG_ID__Req_BLEConnect = 130,
+  CTRL_MSG_ID__Req_BLEDisconnect = 131,
   /*
    * Add new control path command response before Req_Max
    * and update Req_Max
    */
-  CTRL_MSG_ID__Req_Max = 129,
+  CTRL_MSG_ID__Req_Max = 132,
   /*
    ** Response Msgs *
    */
@@ -197,11 +200,14 @@ typedef enum _CtrlMsgId {
   CTRL_MSG_ID__Resp_BLEScanList = 226,
   CTRL_MSG_ID__Resp_BLEAdvertise = 227,
   CTRL_MSG_ID__Resp_BLEReset = 228,
+  CTRL_MSG_ID__Resp_GetVersion = 229,
+  CTRL_MSG_ID__Resp_BLEConnect = 230,
+  CTRL_MSG_ID__Resp_BLEDisconnect = 231,
   /*
    * Add new control path command response before Resp_Max
    * and update Resp_Max
    */
-  CTRL_MSG_ID__Resp_Max = 229,
+  CTRL_MSG_ID__Resp_Max = 232,
   /*
    ** Event Msgs *
    */
@@ -283,6 +289,9 @@ typedef enum {
 	CTRL_REQ_GET_BLE_SCAN_LIST		   = CTRL_MSG_ID__Req_BLEScanList,		//0x7e
 	CTRL_REQ_SET_BLE_ADVERTISE		   = CTRL_MSG_ID__Req_BLEAdvertise,		//0x7f
 	CTRL_REQ_SET_BLE_RESET		   	   = CTRL_MSG_ID__Req_BLEReset,			//0x80
+	CTRL_REQ_GET_VERSION		   = CTRL_MSG_ID__Req_GetVersion,		//0x81
+	CTRL_REQ_BLE_CONNECT		   = CTRL_MSG_ID__Req_BLEConnect,		//0x82
+	CTRL_REQ_BLE_DISCONNECT		   = CTRL_MSG_ID__Req_BLEDisconnect,	//0x83
 	/*
 	 * Add new control path command response before Req_Max
 	 * and update Req_Max
@@ -329,8 +338,11 @@ typedef enum {
 	CTRL_RESP_GET_BLE_SCAN_LIST        	= CTRL_MSG_ID__Resp_BLEScanList,		//0x7e -> 0xe2
 	CTRL_RESP_SET_BLE_ADVERTISE        	= CTRL_MSG_ID__Resp_BLEAdvertise,		//0x7f -> 0xe3
 	CTRL_RESP_SET_BLE_RESET        		= CTRL_MSG_ID__Resp_BLEReset,			//0x80 -> 0xe4
+	CTRL_RESP_GET_VERSION				= CTRL_MSG_ID__Resp_GetVersion,			//0x81 -> 0xe5
+	CTRL_RESP_BLE_CONNECT				= CTRL_MSG_ID__Resp_BLEConnect,			//0x82 -> 0xe6
+	CTRL_RESP_BLE_DISCONNECT			= CTRL_MSG_ID__Resp_BLEDisconnect,		//0x83 -> 0xe7
 	/*
-	 * Add new control path comm       and response before Resp_Max
+	 * Add new control path command response before Resp_Max
 	 * and update Resp_Max
 	 */
 	CTRL_RESP_MAX = CTRL_MSG_ID__Resp_Max,
@@ -496,6 +508,19 @@ typedef struct {
 } wifi_ap_scan_list_t;
 
 typedef struct {
+	uint8_t name[SSID_LENGTH];         /* Decoded device name (from adv data) */
+	uint8_t addr[BSSID_STR_SIZE];      /* BLE MAC address string */
+	int rssi;                           /* Signal strength (dBm) */
+	uint8_t addr_type;                  /* Address type (0=public, 1=random) */
+} ble_scanlist_t;
+
+typedef struct {
+	int count;
+	/* dynamic size */
+	ble_scanlist_t *out_list;
+} ble_scan_list_t;
+
+typedef struct {
 	int count;
 	/* dynamic list*/
 	wifi_connected_stations_list_t *out_list;
@@ -596,6 +621,7 @@ typedef struct Ctrl_cmd_t {
 	union {
 		wifi_ap_scan_list_t         wifi_ap_scan;
 		wifi_ap_config_t            wifi_ap_config;
+		ble_scan_list_t             ble_scan;
 	}u;
 	/* Wait for timeout duration, if response not received,
 	 * it will send timeout response.

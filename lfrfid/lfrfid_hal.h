@@ -11,12 +11,15 @@ void rfid_read_handler(TIM_HandleTypeDef *htim);
 void rfid_emul_handler(TIM_HandleTypeDef *htim);
 
 void lfrfid_read_hw_init(void);
+void lfrfid_read_hw_init_ex(uint32_t carrier_freq, float carrier_duty);
 void lfrfid_read_hw_deinit(void);
+void lfrfid_carrier_switch(uint32_t carrier_freq, float carrier_duty);
 
 void lfrfid_emul_hw_init(void);
 void lfrfid_emul_hw_deinit(void);
 
 void lfrfid_RFIDOut_Init(uint32_t freq);
+void lfrfid_RFIDOut_Init_Ex(uint32_t freq, float duty);
 void lfrfid_RFIDIn_Init(void);
 
 extern TIM_HandleTypeDef   Timerhdl_RfIdTIM5;

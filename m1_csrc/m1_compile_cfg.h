@@ -73,8 +73,14 @@ extern void assert_failed();
 
 #define M1_APP_CRC_EXT_ENABLE          /* Enable extended CRC boot verification */
 #define M1_APP_DFU_HWSTRAP_ENABLE      /* Enable PE11 DFU hardware strap */
-#define M1_APP_FLIPPER_COMPAT_ENABLE   /* Enable Flipper file format support */
+#define M1_APP_FILE_IMPORT_ENABLE       /* Enable .sub/.nfc/.rfid file import */
 #define M1_APP_CRYPTO_ENABLE           /* Enable WiFi credential encryption */
 #define M1_APP_WIFI_CONNECT_ENABLE     /* Enable WiFi connect/saved networks/status */
+#define M1_APP_BADUSB_ENABLE           /* Enable BadUSB / USB HID keystroke injection */
+#define M1_APP_BADBT_ENABLE            /* Enable Bad-BT / BLE HID keystroke injection */
+#define M1_APP_BT_MANAGE_ENABLE        /* Enable BT device management & connect */
+#define M1_APP_RPC_ENABLE              /* Enable RPC protocol for qMonstatek desktop app */
+#define M1_APP_GAMES_ENABLE            /* Enable built-in Games menu */
+#define M1_APP_APPS_ENABLE             /* Enable Apps menu (ELF loader from SD card) */
 
 #endif /* M1_COMPILE_CFG_H_ */

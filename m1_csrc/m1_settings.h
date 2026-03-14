@@ -21,5 +21,7 @@ void settings_buzzer(void);
 void settings_power(void);
 void settings_system(void);
 void settings_about(void);
+void settings_load_from_sd(void);
+void settings_save_to_sd(void);
 
 #endif /* M1_SETTINGS_H_ */

@@ -442,6 +442,17 @@ esp_loader_error_t esp_loader_flash_verify_known_md5(uint32_t address,
   *     - ESP_LOADER_ERROR_IMAGE_SIZE Flash region specified is beyond the flash end
   */
 esp_loader_error_t esp_loader_flash_verify(void);
+
+/**
+  * @brief Get MD5 diagnostic info from the last verify attempt.
+  *
+  * @param expected_out   Buffer for expected MD5 hex string (33 bytes min)
+  * @param actual_out     Buffer for actual MD5 hex string (33 bytes min)
+  * @param total_hashed   Total bytes fed to local MD5
+  * @param image_size     Image size passed to ROM for MD5
+  */
+void esp_loader_get_md5_diagnostic(uint8_t *expected_out, uint8_t *actual_out,
+                                    uint32_t *total_hashed, uint32_t *image_size);
 #endif /* MD5_ENABLED */
 
 /**

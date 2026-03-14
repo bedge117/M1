@@ -112,6 +112,12 @@ void loader_port_reset_target(void);
   */
 void loader_port_debug_print(const char *str);
 
+/**
+  * @brief Flushes any pending receive data from the port's RX buffer.
+  *        Used before retry to discard partial/stale response bytes.
+  */
+void loader_port_flush_rx(void);
+
 #ifdef SERIAL_FLASHER_INTERFACE_SPI
 /**
   * @brief Sets the chip select to a defined level

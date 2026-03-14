@@ -136,6 +136,23 @@ typedef enum {
 
 #define LFRFID_WRITE_ERROR_COUNT	(10)
 
+/* Carrier mode for ASK/PSK auto-switching (follows Flipper Zero approach) */
+#define LFRFID_CARRIER_SWITCH_MS    2000   /* switch every 2 seconds */
+#define LFRFID_CARRIER_ASK_FREQ     125000
+#define LFRFID_CARRIER_ASK_DUTY     0.5f
+#define LFRFID_CARRIER_ASK_134_FREQ 134200  /* ISO 11784/11785 pet chips */
+#define LFRFID_CARRIER_ASK_134_DUTY 0.5f
+#define LFRFID_CARRIER_PSK_FREQ     62500
+#define LFRFID_CARRIER_PSK_DUTY     0.25f
+
+typedef enum {
+    LFRFID_CARRIER_ASK,
+    LFRFID_CARRIER_ASK_134,  /* 134.2 kHz for FDX-B pet/animal chips */
+    LFRFID_CARRIER_PSK,
+} lfrfid_carrier_t;
+
+extern volatile lfrfid_carrier_t lfrfid_current_carrier;
+
 extern lfrfid_state_t lfrfid_state;
 
 extern LFRFID_TAG_INFO lfrfid_tag_info;
@@ -155,5 +172,29 @@ void bytes_to_u32_array(BitOrder order, const uint8_t in_data[], uint32_t out_da
 //#include "lfrfid_protocol_detect.h"
 #include "lfrfid_protocol_em4100.h"
 #include "lfrfid_protocol_h10301.h"
+#include "lfrfid_protocol_hid_generic.h"
+#include "lfrfid_protocol_indala26.h"
+/* FSK protocols */
+#include "lfrfid_protocol_awid.h"
+#include "lfrfid_protocol_pyramid.h"
+#include "lfrfid_protocol_paradox.h"
+#include "lfrfid_protocol_ioprox.h"
+#include "lfrfid_protocol_fdx_a.h"
+#include "lfrfid_protocol_hid_ex.h"
+/* Manchester protocols */
+#include "lfrfid_protocol_viking.h"
+#include "lfrfid_protocol_fdx_b.h"
+#include "lfrfid_protocol_electra.h"
+#include "lfrfid_protocol_gallagher.h"
+#include "lfrfid_protocol_jablotron.h"
+#include "lfrfid_protocol_securakey.h"
+#include "lfrfid_protocol_gproxii.h"
+#include "lfrfid_protocol_noralsy.h"
+/* Direct modulation protocols */
+#include "lfrfid_protocol_pac_stanley.h"
+/* PSK protocols */
+#include "lfrfid_protocol_keri.h"
+#include "lfrfid_protocol_nexwatch.h"
+#include "lfrfid_protocol_idteck.h"
 
 #endif /* LFRFID_H_ */

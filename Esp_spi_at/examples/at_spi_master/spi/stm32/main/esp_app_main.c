@@ -23,6 +23,7 @@
 #include "m1_tasks.h"
 #include "m1_compile_cfg.h"
 #include "m1_esp32_hal.h"
+#include "m1_io_defs.h"
 #include "esp_at_list.h"
 #include "esp_queue.h"
 #include "m1_at_response_parser.h"
@@ -233,24 +234,26 @@ static void spi_trans_control_task(void* arg)
                 M1_LOG_E(TAG, "SPI send seq error, %x, %x\r\n", recv_opt.seq_num, current_send_seq);
                 if (recv_opt.seq_num == 1) {
                     M1_LOG_E(TAG, "Maybe SLAVE restart, ignore\r\n");
-                    current_send_seq = recv_opt.seq_num;
-                } else {
-                    break;
                 }
+                current_send_seq = recv_opt.seq_num;
             }
 
             //initiative_send_flag = 0;
             send_len = xStreamBufferReceive(spi_master_tx_ring_buf, (void*) trans_data, plan_send_len, 0);
 
             if (send_len != plan_send_len) {
-                M1_LOG_E(TAG, "Read len expect %lu, but actual read %lur\n", plan_send_len, send_len);
-                break;
+                M1_LOG_E(TAG, "Read len expect %lu, but actual read %lu\r\n", plan_send_len, send_len);
+                initiative_send_flag = 0;
+                spi_mutex_unlock();
+                continue;
             }
 
             ret = spi_write_data(trans_data, plan_send_len);
             if (ret < 0) {
                 M1_LOG_E(TAG, "Load data error\r\n");
-                return;
+                initiative_send_flag = 0;
+                spi_mutex_unlock();
+                continue;
             }
 
             // maybe streambuffer filled some data when SPI transmit, just consider it after send done, because send flag has already in SLAVE queue
@@ -269,14 +272,15 @@ static void spi_trans_control_task(void* arg)
                 M1_LOG_E(TAG, "SPI recv seq error, %x, %x\r\n", recv_opt.seq_num, (current_recv_seq + 1));
                 if (recv_opt.seq_num == 1) {
                     M1_LOG_E(TAG, "Maybe SLAVE restart, ignore\r\n");
-                } else {
-                    break;
                 }
+                current_recv_seq = recv_opt.seq_num;
             }
 
             if (recv_opt.transmit_len > STREAM_BUFFER_SIZE || recv_opt.transmit_len == 0) {
                 M1_LOG_E(TAG, "SPI read len error, %x\r\n", recv_opt.transmit_len);
-                break;
+                at_spi_rddma_done();
+                spi_mutex_unlock();
+                continue;
             }
 
             current_recv_seq = recv_opt.seq_num;
@@ -293,7 +297,8 @@ static void spi_trans_control_task(void* arg)
     		if (!app_resp)
     		{
     			M1_LOG_E(TAG, "Failed to allocate app_resp %d\r\n", recv_opt.transmit_len + 1);
-    			return;
+    			spi_mutex_unlock();
+    			continue;
     		}
     		strcpy(app_resp, trans_data);
 
@@ -303,7 +308,9 @@ static void spi_trans_control_task(void* arg)
 			if (!elem)
 			{
 				M1_LOG_E(TAG, "%s %u: Malloc failed\n",__func__,__LINE__);
-				return;
+				free(app_resp);
+				spi_mutex_unlock();
+				continue;
 			}
 			elem->buf = app_resp;
 			elem->buf_len = recv_opt.transmit_len;
@@ -311,9 +318,10 @@ static void spi_trans_control_task(void* arg)
 			if ( esp_queue_put(ctrl_msg_Q, (void*)elem) )
 			{
 				M1_LOG_E(TAG, "%s %u: ctrl Q put fail\r\n",__func__,__LINE__);
-				if (elem)
-					free(elem);
-				return;
+				free(app_resp);
+				free(elem);
+				spi_mutex_unlock();
+				continue;
 			} // if ( esp_queue_put(ctrl_msg_Q, (void*)elem) )
 
 			xSemaphoreGive(esp_resp_read_sem);
@@ -417,6 +425,63 @@ static uint8_t *spi_AT_app_get_response(int *read_len, uint32_t *uid, int timeou
 } // static uint8_t *spi_AT_app_get_response(int *read_len, uint32_t *uid, int timeout_sec)
 
 
+uint8_t spi_AT_send_recv(const char *at_cmd, char *out_buf, int out_buf_size, int timeout_sec)
+{
+	ctrl_cmd_t req = CTRL_CMD_DEFAULT_REQ();
+	uint8_t ret;
+	int rx_len = 0;
+	uint32_t rx_uid = 0;
+	uint8_t *rx_buf = NULL;
+	int total_len = 0;
+
+	if (!at_cmd || !out_buf || out_buf_size < 2)
+		return CTRL_ERR_INCORRECT_ARG;
+
+	out_buf[0] = '\0';
+
+	req.at_cmd = (char *)at_cmd;
+	req.cmd_len = strlen(at_cmd);
+	if (!timeout_sec)
+		timeout_sec = DEFAULT_CTRL_RESP_TIMEOUT;
+	req.cmd_timeout_sec = timeout_sec;
+
+	ret = spi_AT_app_send_command(&req);
+	if (ret != SUCCESS)
+	{
+		snprintf(out_buf, out_buf_size, "SEND_ERR=%d", ret);
+		return ret;
+	}
+
+	/* Collect responses until OK/ERROR/timeout (up to buffer) */
+	while (total_len < out_buf_size - 1)
+	{
+		rx_buf = spi_AT_app_get_response(&rx_len, &rx_uid, timeout_sec);
+		if (!rx_buf)
+		{
+			if (total_len == 0)
+				snprintf(out_buf, out_buf_size, "TIMEOUT(%ds)", timeout_sec);
+			break;
+		}
+
+		int copy_len = rx_len;
+		if (total_len + copy_len >= out_buf_size - 1)
+			copy_len = out_buf_size - 1 - total_len;
+
+		memcpy(out_buf + total_len, rx_buf, copy_len);
+		total_len += copy_len;
+		out_buf[total_len] = '\0';
+		free(rx_buf);
+
+		/* Stop if we got a final response */
+		if (strstr(out_buf, "\r\nOK\r\n") || strstr(out_buf, "\r\nERROR\r\n")
+				|| strstr(out_buf, "OK\r\n") || strstr(out_buf, "ERROR\r\n"))
+			break;
+	}
+
+	return SUCCESS;
+} // uint8_t spi_AT_send_recv(...)
+
+
 static void init_master_hd(spi_device_handle_t* spi)
 {
 	spi_device_handle_t spi_dev;
@@ -450,23 +515,39 @@ static void init_master_hd(spi_device_handle_t* spi)
 	/* Get read semaphore for first time */
 	//xSemaphoreTake(esp_resp_read_sem, portMAX_DELAY);
 	/* Give req semaphore for first time */
-	//xSemaphoreGive(esp_ctrl_req_sem);
+	xSemaphoreGive(esp_ctrl_req_sem);
 
-    spi_dev = pvPortMalloc(sizeof(spi_device_handle_t));
+    spi_dev = pvPortMalloc(sizeof(struct spi_device_t));
     assert(spi_dev!=NULL);
+    memset(spi_dev, 0, sizeof(struct spi_device_t));
     spi_dev->id = ESP_SPI_ID;
     spi_dev->cfg.flags = 0;
-    spi_dev->host = pvPortMalloc(sizeof(spi_host_t ));
+    spi_dev->host = pvPortMalloc(sizeof(spi_host_t));
     assert(spi_dev->host!=NULL);
+    memset(spi_dev->host, 0, sizeof(spi_host_t));
     *spi = spi_dev;
-    esp32_main_init_done = true;
 
     spi_mutex_lock();
 
-    spi_recv_opt_t recv_opt = query_slave_data_trans_info();
-    M1_LOG_I(TAG, "now direct:%u\r\n", recv_opt.direct);
+    /* Poll slave status with retries — ESP32 may still be booting */
+    spi_recv_opt_t recv_opt = {};
+    int retry;
+    for (retry = 0; retry < 20; retry++) {
+        recv_opt = query_slave_data_trans_info();
+        M1_LOG_I(TAG, "init query[%d]: direct=%u seq=%u len=%u\r\n",
+                 retry, recv_opt.direct, recv_opt.seq_num, recv_opt.transmit_len);
+        if (recv_opt.direct == SPI_READ || recv_opt.direct == SPI_WRITE) {
+            break;  /* Got a valid response from slave */
+        }
+        spi_mutex_unlock();
+        HAL_Delay(500);  /* Wait 500ms between retries */
+        spi_mutex_lock();
+    }
+    if (retry >= 20) {
+        M1_LOG_E(TAG, "ESP32 slave not responding after %d retries\r\n", retry);
+    }
 
-    if (recv_opt.direct == SPI_READ) { // if slave in waiting response status, master need to give a read done single.
+    if (recv_opt.direct == SPI_READ) {
         if (recv_opt.seq_num != ((current_recv_seq + 1) & 0xFF)) {
             M1_LOG_E(TAG, "SPI recv seq error, %x, %x\r\n", recv_opt.seq_num, (current_recv_seq + 1));
             if (recv_opt.seq_num == 1) {
@@ -474,6 +555,18 @@ static void init_master_hd(spi_device_handle_t* spi)
             }
         }
         current_recv_seq = recv_opt.seq_num;
+        /* Must actually read the pending data via RDDMA before sending INT0.
+         * Without this, the slave's DMA TX transaction never completes and
+         * its SPI task hangs forever waiting on spi_slave_hd_get_trans_res(). */
+        if (recv_opt.transmit_len > 0 && recv_opt.transmit_len <= SPI_TRANS_MAX_LEN) {
+            uint8_t *drain_buf = pvPortMalloc(recv_opt.transmit_len);
+            if (drain_buf) {
+                at_spi_master_recv_data(drain_buf, recv_opt.transmit_len);
+                M1_LOG_I(TAG, "Drained %u bytes of boot data from slave\r\n",
+                         recv_opt.transmit_len);
+                vPortFree(drain_buf);
+            }
+        }
         at_spi_rddma_done();
     }
 
@@ -513,8 +606,10 @@ static void reset_slave(void)
 	esp32_disable();
 	hard_delay(1); // 50
 	esp32_enable();
-	/* stop spi transactions short time to avoid slave sync issues */
-	hard_delay(200); // 50000
+	/* Brief delay for ESP32-C6 SPI slave to initialize after reset.
+	 * Stock firmware used hard_delay(200) here (~200ms busy-loop).
+	 * The handshake pin check in esp32_main_init() catches missed events. */
+	HAL_Delay(200);
 }
 
 
@@ -534,6 +629,14 @@ void esp32_main_init(void)
 	assert(ret==pdPASS);
 	free_heap = xPortGetFreeHeapSize(); // xPortGetMinimumEverFreeHeapSize()
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
+
+	/* If handshake pin is already HIGH, we missed the rising edge interrupt.
+	 * Manually enqueue a message so spi_trans_control_task processes it. */
+	if (HAL_GPIO_ReadPin(ESP32_HANDSHAKE_GPIO_Port, ESP32_HANDSHAKE_Pin) == GPIO_PIN_SET) {
+		M1_LOG_I(TAG, "Handshake already HIGH — injecting missed event\r\n");
+		spi_master_msg_t spi_msg = { .slave_notify_flag = true };
+		xQueueSend(esp_spi_msg_queue, (void*)&spi_msg, 0);
+	}
 
 	esp32_main_init_done = true;
 } // void app_main(void)
@@ -760,6 +863,437 @@ uint8_t ble_scan_list(ctrl_cmd_t *app_req)
 
 
 
+#ifdef M1_APP_BT_MANAGE_ENABLE
+
+uint8_t ble_scan_list_ex(ctrl_cmd_t *app_req)
+{
+	char *rx_buf = NULL;
+	char *ok_buf = NULL;
+	char *resp_buf = NULL;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0, tick_pass;
+
+	tick_t0 = HAL_GetTick();
+	esp_queue_reset(ctrl_msg_Q);
+
+	/* Initialize ble_scan union member */
+	app_req->u.ble_scan.count = 0;
+	app_req->u.ble_scan.out_list = NULL;
+
+	app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_CLI));
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		ret = ERROR;
+		while (true)
+		{
+			tick_pass = HAL_GetTick() - tick_t0;
+			tick_pass /= MILLISEC_TO_SEC;
+			if ( tick_pass )
+			{
+				tick_t0 += MILLISEC_TO_SEC;
+				if ( app_req->cmd_timeout_sec > tick_pass )
+					app_req->cmd_timeout_sec -= tick_pass;
+				else
+					break;
+			}
+			esp_free_mem(&resp_buf);
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+			resp_buf = rx_buf;
+			rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+			if ( !rx_buf )
+				continue;
+			if ( rx_uid != current_uid )
+				continue;
+			if ( strcmp(rx_buf, app_req->cmd_resp) )
+				continue;
+			ret = SUCCESS;
+			break;
+		}
+		if ( ret==SUCCESS )
+		{
+			esp_free_mem(&app_req->at_cmd);
+			esp_free_mem(&app_req->cmd_resp);
+			app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_SCAN, "3"));
+			app_req->cmd_len = strlen(app_req->at_cmd);
+			app_req->cmd_resp = NULL;
+			app_req->msg_id = CTRL_RESP_GET_BLE_SCAN_LIST;
+			ret = spi_AT_app_send_command(app_req);
+			while ( ret==SUCCESS )
+			{
+				esp_free_mem(&resp_buf);
+				rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+				resp_buf = rx_buf;
+				if ( rx_buf && rx_buf_len)
+				{
+					if ( rx_uid != current_uid )
+						continue;
+					m1_parse_ble_scan_resp(rx_buf, ESP32C6_AT_RES_BLE_SCAN_KEY, app_req);
+					ok_buf = strstr(rx_buf, "+BLESCANDONE");
+					if ( ok_buf!=NULL )
+					{
+						break;
+					}
+					tick_pass = HAL_GetTick() - tick_t0;
+					tick_pass /= MILLISEC_TO_SEC;
+					if ( tick_pass )
+					{
+						tick_t0 += MILLISEC_TO_SEC;
+						if ( app_req->cmd_timeout_sec > tick_pass )
+							app_req->cmd_timeout_sec -= tick_pass;
+						else
+							break;
+					}
+				}
+				else
+				{
+					ret = ERROR;
+					break;
+				}
+			}
+		}
+	}
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	if ( ret==SUCCESS )
+	{
+		app_req->msg_type = CTRL_RESP;
+		app_req->resp_event_status = SUCCESS;
+	}
+	else
+	{
+		M1_LOG_E(TAG, "BLE scan response not received\r\n");
+	}
+
+	return ret;
+} // uint8_t ble_scan_list_ex(ctrl_cmd_t *app_req)
+
+
+
+uint8_t esp_get_version(ctrl_cmd_t *app_req)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	char *index;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0, tick_pass;
+
+	tick_t0 = HAL_GetTick();
+	esp_queue_reset(ctrl_msg_Q);
+	app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_GET_VERSION, ""));
+	app_req->cmd_resp = NULL;
+	app_req->cmd_len = strlen(app_req->at_cmd);
+
+	/* Clear version output */
+	memset(app_req->u.wifi_ap_config.status, 0, STATUS_LENGTH);
+
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		ret = ERROR;
+		while (true)
+		{
+			tick_pass = HAL_GetTick() - tick_t0;
+			tick_pass /= MILLISEC_TO_SEC;
+			if ( tick_pass )
+			{
+				tick_t0 += MILLISEC_TO_SEC;
+				if ( app_req->cmd_timeout_sec > tick_pass )
+					app_req->cmd_timeout_sec -= tick_pass;
+				else
+					break;
+			}
+			esp_free_mem(&resp_buf);
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+			resp_buf = rx_buf;
+			if ( !rx_buf || !rx_buf_len )
+				continue;
+			if ( rx_uid != current_uid )
+				continue;
+
+			/* Parse "AT version:x.x.x.x..." */
+			index = strstr(rx_buf, ESP32C6_AT_RES_VERSION_KEY);
+			if ( index )
+			{
+				size_t i;
+				index += strlen(ESP32C6_AT_RES_VERSION_KEY);
+				for (i = 0; i < STATUS_LENGTH - 1 && index[i] != '\0' &&
+					index[i] != '\r' && index[i] != '\n' && index[i] != '('; i++)
+				{
+					app_req->u.wifi_ap_config.status[i] = index[i];
+				}
+				app_req->u.wifi_ap_config.status[i] = '\0';
+			}
+
+			/* Check for final "OK" */
+			if ( strstr(rx_buf, ESP32C6_AT_RES_OK) )
+			{
+				ret = SUCCESS;
+				break;
+			}
+		}
+	}
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	if ( ret==SUCCESS )
+	{
+		app_req->msg_type = CTRL_RESP;
+		app_req->resp_event_status = SUCCESS;
+	}
+	else
+	{
+		M1_LOG_E(TAG, "Version query failed\r\n");
+	}
+
+	return ret;
+} // uint8_t esp_get_version(ctrl_cmd_t *app_req)
+
+
+
+uint8_t ble_connect(ctrl_cmd_t *app_req, const char *addr, uint8_t addr_type)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	char at_cmd_buf[64];
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0, tick_pass;
+
+	tick_t0 = HAL_GetTick();
+	esp_queue_reset(ctrl_msg_Q);
+
+	/* Step 1: Init BLE in client mode */
+	app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_CLI));
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		ret = ERROR;
+		while (true)
+		{
+			tick_pass = HAL_GetTick() - tick_t0;
+			tick_pass /= MILLISEC_TO_SEC;
+			if ( tick_pass )
+			{
+				tick_t0 += MILLISEC_TO_SEC;
+				if ( app_req->cmd_timeout_sec > tick_pass )
+					app_req->cmd_timeout_sec -= tick_pass;
+				else
+					break;
+			}
+			esp_free_mem(&resp_buf);
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+			resp_buf = rx_buf;
+			rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+			if ( !rx_buf ) continue;
+			if ( rx_uid != current_uid ) continue;
+			if ( strcmp(rx_buf, app_req->cmd_resp) ) continue;
+			ret = SUCCESS;
+			break;
+		}
+
+		/* Step 2: Connect to device AT+BLECONN=0,"addr",addr_type */
+		if ( ret==SUCCESS )
+		{
+			esp_free_mem(&app_req->at_cmd);
+			esp_free_mem(&app_req->cmd_resp);
+
+			snprintf(at_cmd_buf, sizeof(at_cmd_buf), "%s0,\"%s\",%u%s",
+					ESP32C6_AT_REQ_BLE_CONNECT, addr, addr_type, ESP32C6_AT_REQ_CRLF);
+			app_req->at_cmd = strdup(at_cmd_buf);
+			app_req->cmd_len = strlen(app_req->at_cmd);
+			app_req->cmd_resp = NULL;
+
+			if ( app_req->cmd_timeout_sec < 15 )
+				app_req->cmd_timeout_sec = 15;
+
+			ret = spi_AT_app_send_command(app_req);
+			app_req->resp_event_status = FAILURE;
+
+			while ( ret==SUCCESS )
+			{
+				esp_free_mem(&resp_buf);
+				rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+				resp_buf = rx_buf;
+				if ( rx_buf && rx_buf_len )
+				{
+					if ( rx_uid != current_uid ) continue;
+
+					/* Check for +BLECONN: success */
+					if ( strstr(rx_buf, ESP32C6_AT_RES_BLE_CONNECT_KEY) )
+						app_req->resp_event_status = SUCCESS;
+
+					/* Check for final OK or ERROR */
+					if ( strstr(rx_buf, ESP32C6_AT_RES_OK) )
+					{
+						if ( app_req->resp_event_status == SUCCESS )
+							break;
+					}
+					if ( strstr(rx_buf, "ERROR") )
+					{
+						ret = ERROR;
+						break;
+					}
+
+					tick_pass = HAL_GetTick() - tick_t0;
+					tick_pass /= MILLISEC_TO_SEC;
+					if ( tick_pass )
+					{
+						tick_t0 += MILLISEC_TO_SEC;
+						if ( app_req->cmd_timeout_sec > tick_pass )
+							app_req->cmd_timeout_sec -= tick_pass;
+						else
+							break;
+					}
+				}
+				else
+				{
+					ret = ERROR;
+				}
+			}
+		}
+	}
+
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	if ( ret==SUCCESS && app_req->resp_event_status==SUCCESS )
+	{
+		app_req->msg_type = CTRL_RESP;
+	}
+	else
+	{
+		ret = ERROR;
+		M1_LOG_E(TAG, "BLE connect failed\r\n");
+	}
+
+	return ret;
+} // uint8_t ble_connect(ctrl_cmd_t *app_req, const char *addr, uint8_t addr_type)
+
+
+
+uint8_t ble_disconnect(ctrl_cmd_t *app_req)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0, tick_pass;
+
+	tick_t0 = HAL_GetTick();
+	esp_queue_reset(ctrl_msg_Q);
+	app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_DISCONNECT, "0"));
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		ret = ERROR;
+		while (true)
+		{
+			tick_pass = HAL_GetTick() - tick_t0;
+			tick_pass /= MILLISEC_TO_SEC;
+			if ( tick_pass )
+			{
+				tick_t0 += MILLISEC_TO_SEC;
+				if ( app_req->cmd_timeout_sec > tick_pass )
+					app_req->cmd_timeout_sec -= tick_pass;
+				else
+					break;
+			}
+			esp_free_mem(&resp_buf);
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, app_req->cmd_timeout_sec);
+			resp_buf = rx_buf;
+			rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+			if ( !rx_buf ) continue;
+			if ( rx_uid != current_uid ) continue;
+			if ( strcmp(rx_buf, app_req->cmd_resp) ) continue;
+			ret = SUCCESS;
+			break;
+		}
+	}
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	if ( ret==SUCCESS )
+	{
+		app_req->msg_type = CTRL_RESP;
+		app_req->resp_event_status = SUCCESS;
+	}
+	else
+	{
+		M1_LOG_E(TAG, "BLE disconnect failed\r\n");
+	}
+
+	return ret;
+} // uint8_t ble_disconnect(ctrl_cmd_t *app_req)
+
+#endif /* M1_APP_BT_MANAGE_ENABLE */
+
+
+// Helper: send an AT command and wait for "OK" response (5-sec timeout)
+// Reuses app_req's SPI transport. Best-effort — caller decides how to handle ERROR.
+static uint8_t esp_at_send_wait_ok(ctrl_cmd_t *app_req, const char *at_cmd_str)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret;
+	uint32_t tick_t0;
+	uint8_t timeout_sec = 5;
+
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	app_req->at_cmd = strdup(at_cmd_str);
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret!=SUCCESS )
+	{
+		esp_free_mem(&app_req->at_cmd);
+		esp_free_mem(&app_req->cmd_resp);
+		return ERROR;
+	}
+
+	ret = ERROR;
+	tick_t0 = HAL_GetTick();
+	while (true)
+	{
+		uint32_t tick_pass = (HAL_GetTick() - tick_t0) / MILLISEC_TO_SEC;
+		if ( tick_pass >= timeout_sec )
+			break;
+		esp_free_mem(&resp_buf);
+		vTaskDelay(100);
+		rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, timeout_sec);
+		resp_buf = rx_buf;
+		rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+		if ( !rx_buf ) continue;
+		if ( rx_uid != current_uid ) continue;
+		if ( strcmp(rx_buf, app_req->cmd_resp) ) continue; // Not "OK"
+		ret = SUCCESS;
+		break;
+	}
+
+	esp_free_mem(&resp_buf);
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	return ret;
+}
+
+
 uint8_t ble_advertise(ctrl_cmd_t *app_req)
 {
 	char *rx_buf = NULL;
@@ -810,6 +1344,11 @@ uint8_t ble_advertise(ctrl_cmd_t *app_req)
 		} // while ( true )
 		if ( ret==SUCCESS )
 		{
+			// Set up GATT service and security before advertising (best-effort)
+			esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_GATTS_CRE, ""));
+			esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_GATTS_START, ""));
+			esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_SEC_PARAM, ""));
+
 			esp_free_mem(&app_req->at_cmd);
 			esp_free_mem(&app_req->cmd_resp);
 			app_req->at_cmd = strdup(CONCAT_CMD_PARAM(ESP32C6_AT_REQ_ADVERTISE, ESP32C6_AT_REQ_ADV_DATA));
@@ -868,6 +1407,212 @@ uint8_t ble_advertise(ctrl_cmd_t *app_req)
 	return ret;
 } // uint8_t ble_advertise(ctrl_cmd_t *app_req)
 
+
+#ifdef M1_APP_BADBT_ENABLE
+
+uint8_t ble_hid_init(ctrl_cmd_t *app_req, const char *device_name)
+{
+	uint8_t ret;
+	uint8_t fail_step = 0;
+
+	esp_queue_reset(ctrl_msg_Q);
+
+	// Step 1: Init BLE in server mode
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_SER));
+	vTaskDelay(200);
+
+	// Step 2: Register HID GATT service/appearance on ESP32
+	ret = esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_HID_INIT, "1"));
+	if (ret != SUCCESS) { fail_step = 2; goto cleanup; }
+
+	// Step 3: Set security parameters for HID pairing
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_SEC_PARAM, ""));
+
+	// Step 4: Set HID advertising data (UUID 1812)
+	{
+		char adv_cmd[128];
+		const char *name = (device_name && device_name[0] != '\0') ? device_name : "M1-BadBT";
+		snprintf(adv_cmd, sizeof(adv_cmd),
+		         "AT+BLEADVDATAEX=\"%s\",\"1812\",\"\",1\r\n", name);
+		ret = esp_at_send_wait_ok(app_req, adv_cmd);
+	}
+	if (ret != SUCCESS) { fail_step = 4; goto cleanup; }
+
+	// Step 5: Start advertising
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_START, ""));
+
+	app_req->msg_type = CTRL_RESP;
+	app_req->resp_event_status = SUCCESS;
+	return SUCCESS;
+
+cleanup:
+	// Deinit BLE so stock BT/WiFi works after failure
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_STOP, ""));
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_NULL));
+	return fail_step;
+}
+
+
+uint8_t ble_hid_deinit(ctrl_cmd_t *app_req)
+{
+	esp_queue_reset(ctrl_msg_Q);
+
+	// Stop advertising
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_STOP, ""));
+
+	// Deinit BLE entirely
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_NULL));
+
+	return SUCCESS;
+}
+
+
+uint8_t ble_hid_send_kb(ctrl_cmd_t *app_req, uint8_t modifier, uint8_t key1)
+{
+	char cmd[48];
+	uint8_t ret;
+
+	// Format: AT+BLEHIDKB=<mod>,<k1>,<k2>,<k3>,<k4>,<k5>,<k6>\r\n
+	snprintf(cmd, sizeof(cmd), "%s%d,%d,0,0,0,0,0\r\n",
+			ESP32C6_AT_REQ_BLE_HID_KB, modifier, key1);
+
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	app_req->at_cmd = strdup(cmd);
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		// Brief wait for OK — don't block long for keystroke throughput
+		char *rx_buf = NULL;
+		char *resp_buf = NULL;
+		int rx_buf_len = 0;
+		uint32_t rx_uid;
+		uint32_t tick_t0 = HAL_GetTick();
+
+		ret = ERROR;
+		while (true)
+		{
+			uint32_t tick_pass = (HAL_GetTick() - tick_t0) / MILLISEC_TO_SEC;
+			if ( tick_pass >= 2 ) // 2-sec timeout
+				break;
+			esp_free_mem(&resp_buf);
+			vTaskDelay(10); // Short delay for keystroke speed
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, 2);
+			resp_buf = rx_buf;
+			rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+			if ( !rx_buf ) continue;
+			if ( rx_uid != current_uid ) continue;
+			if ( strcmp(rx_buf, app_req->cmd_resp) ) continue;
+			ret = SUCCESS;
+			break;
+		}
+		esp_free_mem(&resp_buf);
+	}
+
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	return ret;
+}
+
+
+// Wait for BLE HID connection + security handshake to complete.
+// Handles: +BLECONN: → +BLESECREQ: → AT+BLEENC → +BLEAUTHCMPL:
+// Also handles +BLESECNTFYNUM: (numeric comparison) → AT+BLECONFREPLY
+// Returns SUCCESS when connection + pairing are both done.
+uint8_t ble_hid_wait_connect(ctrl_cmd_t *app_req, uint8_t timeout_sec)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret = ERROR;
+	uint8_t got_conn = 0;
+	uint8_t got_auth = 0;
+	uint32_t tick_t0 = HAL_GetTick();
+
+	while (true)
+	{
+		uint32_t tick_pass = (HAL_GetTick() - tick_t0) / MILLISEC_TO_SEC;
+		if ( tick_pass >= timeout_sec )
+			break;
+
+		esp_free_mem(&resp_buf);
+		vTaskDelay(100);
+		rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, timeout_sec);
+		resp_buf = rx_buf;
+		if ( !rx_buf || !rx_buf_len )
+			continue;
+
+		M1_LOG_I(TAG, "BLE evt: %s\r\n", rx_buf);
+
+		// Check for connection event
+		if ( strstr(rx_buf, "+BLECONN:") || strstr(rx_buf, "+BLEHIDCONN:") )
+		{
+			got_conn = 1;
+			M1_LOG_I(TAG, "BLE HID connected\r\n");
+			// Reset timeout — give security handshake time to complete
+			tick_t0 = HAL_GetTick();
+			if ( timeout_sec < 15 )
+				timeout_sec = 15;
+			continue;
+		}
+
+		// Security request from remote device — initiate encryption
+		if ( strstr(rx_buf, "+BLESECREQ:") )
+		{
+			M1_LOG_I(TAG, "Security request — starting encryption\r\n");
+			// AT+BLEENC=0,3  (conn_index=0, sec_act=3)
+			esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ENC, "0,3"));
+			continue;
+		}
+
+		// Numeric comparison — auto-confirm (Just Works with NoInputNoOutput)
+		if ( strstr(rx_buf, "+BLESECNTFYNUM:") )
+		{
+			M1_LOG_I(TAG, "Numeric comparison — auto-confirming\r\n");
+			// AT+BLECONFREPLY=0,1  (conn_index=0, confirm=1)
+			esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_CONF_REPLY, "0,1"));
+			continue;
+		}
+
+		// Authentication complete — pairing done
+		if ( strstr(rx_buf, "+BLEAUTHCMPL:") )
+		{
+			got_auth = 1;
+			M1_LOG_I(TAG, "BLE auth complete\r\n");
+			break; // Connection + auth done
+		}
+
+		// Disconnection during handshake
+		if ( strstr(rx_buf, "+BLEDISCONN:") )
+		{
+			M1_LOG_W(TAG, "Disconnected during pairing\r\n");
+			got_conn = 0;
+			break;
+		}
+	}
+
+	esp_free_mem(&resp_buf);
+
+	if ( got_conn && got_auth )
+	{
+		ret = SUCCESS;
+	}
+	else if ( got_conn && !got_auth )
+	{
+		// Connected but auth didn't complete — some devices don't trigger BLEAUTHCMPL
+		// Give it a shot anyway, the connection may still be usable
+		M1_LOG_W(TAG, "Connected but no auth event — proceeding anyway\r\n");
+		ret = SUCCESS;
+	}
+
+	return ret;
+}
+
+#endif /* M1_APP_BADBT_ENABLE */
 
 
 uint8_t esp_dev_reset(ctrl_cmd_t *app_req)

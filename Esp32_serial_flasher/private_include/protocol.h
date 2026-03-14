@@ -302,6 +302,12 @@ esp_loader_error_t loader_change_baudrate_cmd(uint32_t new_baudrate, uint32_t ol
 
 #endif /* SERIAL_FLASHER_INTERFACE_SDIO */
 
+/* Sequence number accessors — used by esp_loader_flash_write() to implement
+ * safe retries.  On retry, the sequence number must be reset so the ROM
+ * bootloader sees the same block number and doesn't double-write. */
+uint32_t loader_get_flash_sequence(void);
+void     loader_set_flash_sequence(uint32_t seq);
+
 #ifdef __cplusplus
 }
 #endif

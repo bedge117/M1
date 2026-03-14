@@ -30,6 +30,7 @@
 #include "m1_lcd.h"
 #include "m1_led_indicator.h"
 #include "irsnd.h"
+#include "flipper_ir.h"
 #include "ff.h"
 
 /*************************** D E F I N E S ************************************/
@@ -38,13 +39,15 @@
 #define BROWSE_NAME_MAX_LEN  64
 
 #define DASHBOARD_ITEM_COUNT  4
-#define DASHBOARD_ITEM_HEIGHT 12
-#define DASHBOARD_START_Y     14
+#define DASHBOARD_ITEM_HEIGHT 9
+#define DASHBOARD_START_Y     13
 
 #define LIST_HEADER_HEIGHT    12
-#define LIST_ITEM_HEIGHT      10
+#define LIST_ITEM_HEIGHT      9
 #define LIST_START_Y          (LIST_HEADER_HEIGHT + 2)
-#define LIST_VISIBLE_ITEMS    5
+#define LIST_VISIBLE_ITEMS    4
+
+#define IR_LEARNED_DIR        IR_UNIVERSAL_IRDB_ROOT "/Learned"
 
 #define FAV_FILE_PATH         "0:/System/ir_favorites.txt"
 #define RECENT_FILE_PATH      "0:/System/ir_recent.txt"
@@ -73,10 +76,16 @@ static uint8_t s_recent_count;
 /* Transmit state */
 static IRMP_DATA s_tx_irmp_data;
 
+/* Raw IR TX support */
+#define IR_RAW_OTA_BUFFER_MAX  FLIPPER_IR_RAW_MAX_SAMPLES
+static char s_raw_tx_filepath[IR_UNIVERSAL_PATH_MAX_LEN];
+static uint16_t s_raw_ota_buffer[IR_RAW_OTA_BUFFER_MAX];
+static flipper_ir_signal_t s_raw_tx_signal;
+
 /* Dashboard menu text */
 static const char *s_dashboard_items[DASHBOARD_ITEM_COUNT] = {
 	"Browse IRDB",
-	"Search",
+	"Learned",
 	"Favorites",
 	"Recent"
 };
@@ -87,6 +96,7 @@ static void dashboard_screen(void);
 static void browse_directory(const char *path);
 static void show_commands(const char *ir_file_path);
 static void transmit_command(const ir_universal_cmd_t *cmd);
+static void transmit_raw_command(const ir_universal_cmd_t *cmd);
 static void load_favorites(void);
 static void save_favorites(void);
 static void add_to_recent(const char *path);
@@ -124,6 +134,10 @@ void ir_universal_init(void)
 	s_favorite_count = 0;
 	s_recent_count = 0;
 
+	/* Ensure SD card folders exist */
+	f_mkdir(IR_UNIVERSAL_IRDB_ROOT);
+	f_mkdir(IR_LEARNED_DIR);
+
 	load_favorites();
 	load_recent();
 } // void ir_universal_init(void)
@@ -151,9 +165,7 @@ void ir_universal_deinit(void)
 /*============================================================================*/
 void ir_universal_run(void)
 {
-	ir_universal_init();
 	dashboard_screen();
-	ir_universal_deinit();
 } // void ir_universal_run(void)
 
 
@@ -187,19 +199,18 @@ static void draw_dashboard(uint8_t selection)
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 			u8g2_DrawBox(&m1_u8g2, 0, y, 128, DASHBOARD_ITEM_HEIGHT);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-			u8g2_DrawStr(&m1_u8g2, 4, y + 10, s_dashboard_items[i]);
+			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_dashboard_items[i]);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 		}
 		else
 		{
-			u8g2_DrawStr(&m1_u8g2, 4, y + 10, s_dashboard_items[i]);
+			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_dashboard_items[i]);
 		}
 	}
 
-	/* Bottom bar hint */
-	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
-	u8g2_DrawStr(&m1_u8g2, 2, 63, "OK:Select");
-	u8g2_DrawStr(&m1_u8g2, 80, 63, "Back:Exit");
+	/* Bottom bar */
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Select", arrowright_8x8);
 
 	m1_u8g2_nextpage();
 } // static void draw_dashboard(uint8_t selection)
@@ -259,8 +270,8 @@ static void dashboard_screen(void)
 							s_current_path[IR_UNIVERSAL_PATH_MAX_LEN - 1] = '\0';
 							browse_directory(s_current_path);
 							break;
-						case 1: /* Search - placeholder, browse root for now */
-							strncpy(s_current_path, IR_UNIVERSAL_IRDB_ROOT, IR_UNIVERSAL_PATH_MAX_LEN - 1);
+						case 1: /* Learned — browse user-saved remotes */
+							strncpy(s_current_path, IR_LEARNED_DIR, IR_UNIVERSAL_PATH_MAX_LEN - 1);
 							s_current_path[IR_UNIVERSAL_PATH_MAX_LEN - 1] = '\0';
 							browse_directory(s_current_path);
 							break;
@@ -325,12 +336,12 @@ static void draw_list_screen(const char *title, uint16_t count, uint16_t selecti
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 			u8g2_DrawBox(&m1_u8g2, 0, y, 128, LIST_ITEM_HEIGHT);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-			u8g2_DrawStr(&m1_u8g2, 4, y + 9, s_browse_names[idx]);
+			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_browse_names[idx]);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 		}
 		else
 		{
-			u8g2_DrawStr(&m1_u8g2, 4, y + 9, s_browse_names[idx]);
+			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_browse_names[idx]);
 		}
 	}
 
@@ -346,16 +357,12 @@ static void draw_list_screen(const char *title, uint16_t count, uint16_t selecti
 		u8g2_DrawBox(&m1_u8g2, 126, bar_y, 2, bar_height);
 	}
 
-	/* Page info / bottom bar */
+	/* Bottom bar with position counter */
 	{
-		char page_info[24];
-		u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+		char page_info[16];
 		snprintf(page_info, sizeof(page_info), "%u/%u", (unsigned)(selection + 1), (unsigned)count);
-		u8g2_DrawStr(&m1_u8g2, 2, 63, page_info);
-
-		if (s_browse_page > 0)
-			u8g2_DrawStr(&m1_u8g2, 50, 63, "<");
-		u8g2_DrawStr(&m1_u8g2, 60, 63, "More>");
+		u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+		m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, page_info, "Open", arrowright_8x8);
 	}
 
 	m1_u8g2_nextpage();
@@ -895,6 +902,10 @@ static void show_commands(const char *ir_file_path)
 	const char *p;
 	char title[BROWSE_NAME_MAX_LEN];
 
+	/* Store file path for raw TX re-read */
+	strncpy(s_raw_tx_filepath, ir_file_path, IR_UNIVERSAL_PATH_MAX_LEN - 1);
+	s_raw_tx_filepath[IR_UNIVERSAL_PATH_MAX_LEN - 1] = '\0';
+
 	/* Parse the .ir file */
 	s_cmd_count = parse_ir_file(ir_file_path);
 
@@ -986,7 +997,8 @@ static void show_commands(const char *ir_file_path)
 			} /* if (q_item.q_evt_type == Q_EVENT_KEYPAD) */
 			else if (q_item.q_evt_type == Q_EVENT_IRRED_TX)
 			{
-				/* IR TX completed notification */
+				/* IR TX completed — tear down hardware cleanly */
+				infrared_encode_sys_deinit();
 				m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
 				draw_list_screen(title, s_browse_count, selection);
 			}
@@ -998,9 +1010,9 @@ static void show_commands(const char *ir_file_path)
 
 /*============================================================================*/
 /*
- * Transmit a parsed IR command using the existing IRSND infrastructure.
- * For parsed signals: sets up IRMP_DATA and uses irsnd_generate_tx_data.
- * Raw signals are not yet supported (placeholder for future implementation).
+ * Transmit an IR command.
+ * Parsed signals: uses IRSND to encode and transmit via TIM16.
+ * Raw signals: re-reads .ir file, converts timing data to OTA format, transmits.
  */
 /*============================================================================*/
 static void transmit_command(const ir_universal_cmd_t *cmd)
@@ -1012,16 +1024,7 @@ static void transmit_command(const ir_universal_cmd_t *cmd)
 
 	if (cmd->is_raw)
 	{
-		/* Raw signal transmission - show unsupported message for now */
-		u8g2_FirstPage(&m1_u8g2);
-		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-		u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
-		u8g2_DrawStr(&m1_u8g2, 10, 25, "Raw TX");
-		u8g2_DrawStr(&m1_u8g2, 10, 38, "Not supported yet");
-		snprintf(tx_info, sizeof(tx_info), "Freq: %luHz", (unsigned long)cmd->raw_freq);
-		u8g2_DrawStr(&m1_u8g2, 10, 51, tx_info);
-		m1_u8g2_nextpage();
-		vTaskDelay(pdMS_TO_TICKS(1500));
+		transmit_raw_command(cmd);
 		return;
 	}
 
@@ -1052,14 +1055,143 @@ static void transmit_command(const ir_universal_cmd_t *cmd)
 	irsnd_generate_tx_data(s_tx_irmp_data);
 
 	/* Start the transmit process */
-	infrared_transmit(1); /* 1 = initialize */
+	infrared_transmit(1); /* 1 = initialize state machine */
+	infrared_transmit(0); /* 0 = run state machine (kicks off TX) */
+
+	m1_buzzer_notification();
+} // static void transmit_command(...)
+
+
+
+/*============================================================================*/
+/*
+ * Transmit a raw IR signal.
+ * Re-reads the .ir file to get timing data, converts to OTA buffer format,
+ * sets the carrier frequency, and drives the TX via TIM16 interrupt.
+ *
+ * Flipper raw format: space-separated positive integers alternating mark/space.
+ * OTA buffer format: uint16_t with LSB=1 for mark, LSB=0 for space.
+ */
+/*============================================================================*/
+static void transmit_raw_command(const ir_universal_cmd_t *cmd)
+{
+	flipper_file_t ff;
+	uint16_t i;
+	uint16_t ota_len;
+	uint32_t duration;
+	char tx_info[32];
+	bool found = false;
+
+	if (cmd == NULL || !cmd->valid || !cmd->is_raw)
+		return;
+
+	/* Re-open the .ir file to read raw timing data */
+	if (!flipper_ir_open(&ff, s_raw_tx_filepath))
+	{
+		u8g2_FirstPage(&m1_u8g2);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+		u8g2_DrawStr(&m1_u8g2, 10, 30, "File read error");
+		m1_u8g2_nextpage();
+		vTaskDelay(pdMS_TO_TICKS(1000));
+		return;
+	}
+
+	/* Find the signal by name */
+	while (flipper_ir_read_signal(&ff, &s_raw_tx_signal))
+	{
+		if (strcmp(s_raw_tx_signal.name, cmd->name) == 0 &&
+		    s_raw_tx_signal.type == FLIPPER_IR_SIGNAL_RAW)
+		{
+			found = true;
+			break;
+		}
+	}
+	ff_close(&ff);
+
+	if (!found || s_raw_tx_signal.raw.sample_count == 0)
+	{
+		u8g2_FirstPage(&m1_u8g2);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+		u8g2_DrawStr(&m1_u8g2, 10, 30, "Signal not found");
+		m1_u8g2_nextpage();
+		vTaskDelay(pdMS_TO_TICKS(1000));
+		return;
+	}
+
+	/* Show transmitting screen */
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 10, 15, "Transmitting...");
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 10, 30, cmd->name);
+	snprintf(tx_info, sizeof(tx_info), "Raw %luHz %u smp",
+	         (unsigned long)s_raw_tx_signal.raw.frequency,
+	         (unsigned)s_raw_tx_signal.raw.sample_count);
+	u8g2_DrawStr(&m1_u8g2, 4, 45, tx_info);
+	m1_u8g2_nextpage();
+
+	/* Convert Flipper raw data to OTA buffer format.
+	 * Flipper raw: all positive values, alternating mark/space starting with mark.
+	 * OTA: uint16_t, LSB=1 for mark (carrier ON), LSB=0 for space (carrier OFF). */
+	ota_len = s_raw_tx_signal.raw.sample_count;
+	if (ota_len > IR_RAW_OTA_BUFFER_MAX)
+		ota_len = IR_RAW_OTA_BUFFER_MAX;
+
+	for (i = 0; i < ota_len; i++)
+	{
+		duration = (uint32_t)abs(s_raw_tx_signal.raw.samples[i]);
+		if (duration > 65534)
+			duration = 65534;
+		if (duration < 2)
+			duration = 2;
+
+		if (i % 2 == 0) /* Even index = mark (carrier ON) */
+			s_raw_ota_buffer[i] = (uint16_t)duration | IR_OTA_PULSE_BIT_MASK;
+		else /* Odd index = space (carrier OFF) */
+			s_raw_ota_buffer[i] = (uint16_t)duration & IR_OTA_SPACE_BIT_MASK;
+	}
+
+	/* Initialize the IR encoder hardware (TIM1 carrier + TIM16 baseband) */
+	infrared_encode_sys_init();
+
+	/* Set carrier frequency for this raw signal */
+	irsnd_set_carrier_freq(s_raw_tx_signal.raw.frequency);
+
+	/* Set up TX variables directly (bypassing IRSND OTA frame generation) */
+	ir_ota_data_tx_active = TRUE;
+	ir_ota_data_tx_counter = 0;
+	ir_ota_data_tx_len = ota_len;
+	pir_ota_data_tx_buffer = s_raw_ota_buffer;
+
+	/* Configure TIM16 with first entry and start transmission */
+	__HAL_TIM_URS_ENABLE(&Timerhdl_IrTx);
+	Timerhdl_IrTx.Instance->ARR = s_raw_ota_buffer[0];
+	HAL_TIM_GenerateEvent(&Timerhdl_IrTx, TIM_EVENTSOURCE_UPDATE);
+	__HAL_TIM_URS_DISABLE(&Timerhdl_IrTx);
+
+	if (HAL_IS_BIT_SET(Timerhdl_IrTx.Instance->SR, TIM_FLAG_UPDATE))
+		CLEAR_BIT(Timerhdl_IrTx.Instance->SR, TIM_FLAG_UPDATE);
+
+	if (s_raw_ota_buffer[0] & 0x0001) /* First entry is a mark */
+		irsnd_on();
+
+	__HAL_TIM_ENABLE(&Timerhdl_IrTx);
+
+	/* Load next entry for the second period */
+	if (ota_len > 1)
+		Timerhdl_IrTx.Instance->ARR = s_raw_ota_buffer[++ir_ota_data_tx_counter];
 
 	m1_buzzer_notification();
 
-	/* The transmit is asynchronous. The caller's event loop will receive
-	 * Q_EVENT_IRRED_TX when transmission completes, and should then call
-	 * infrared_encode_sys_deinit() or let the next transmit re-init. */
-} // static void transmit_command(...)
+	/* TX is now running asynchronously via TIM16 ISR.
+	 * The ISR steps through s_raw_ota_buffer and sends Q_EVENT_IRRED_TX
+	 * when complete. The caller's event loop handles cleanup. */
+} // static void transmit_raw_command(...)
 
 
 

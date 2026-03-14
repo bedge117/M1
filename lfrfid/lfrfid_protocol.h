@@ -42,6 +42,29 @@ typedef enum {
     LFRFIDProtocolEM4100_32,
     LFRFIDProtocolEM4100_16,
     LFRFIDProtocolH10301,
+    LFRFIDProtocolHIDGeneric,
+    LFRFIDProtocolIndala26,
+    /* FSK protocols */
+    LFRFIDProtocolAWID,
+    LFRFIDProtocolPyramid,
+    LFRFIDProtocolParadox,
+    LFRFIDProtocolIoProxXSF,
+    LFRFIDProtocolFDX_A,
+    LFRFIDProtocolHIDExGeneric,
+    /* Manchester protocols */
+    LFRFIDProtocolViking,
+    LFRFIDProtocolFDX_B,
+    LFRFIDProtocolElectra,
+    LFRFIDProtocolGallagher,
+    LFRFIDProtocolJablotron,
+    LFRFIDProtocolPACStanley,
+    LFRFIDProtocolSecurakey,
+    LFRFIDProtocolGProxII,
+    LFRFIDProtocolNoralsy,
+    LFRFIDProtocolIdteck,
+    /* PSK protocols */
+    LFRFIDProtocolKeri,
+    LFRFIDProtocolNexwatch,
     LFRFIDProtocolMax,
 } LFRFIDProtocol;
 

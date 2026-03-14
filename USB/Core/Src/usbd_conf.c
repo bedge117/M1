@@ -84,8 +84,11 @@ void HAL_PCD_DisconnectCallback(PCD_HandleTypeDef *hpcd)
   */
 void HAL_PCD_SuspendCallback(PCD_HandleTypeDef *hpcd)
 {
-  m1_USB_CDC_ready = -1;
-  m1_USB_MSC_ready = -1;
+  /* Don't override HID-mode sentinel (-2) */
+  if (m1_USB_CDC_ready > -2)
+    m1_USB_CDC_ready = -1;
+  if (m1_USB_MSC_ready > -2)
+    m1_USB_MSC_ready = -1;
 }
 
 /**
@@ -95,10 +98,14 @@ void HAL_PCD_SuspendCallback(PCD_HandleTypeDef *hpcd)
   */
 void HAL_PCD_ResumeCallback(PCD_HandleTypeDef *hpcd)
 {
+  /* Only restore CDC from normal suspend (-1).
+   * HID mode uses sentinel -2 which must NOT be overridden. */
 #if M1_USB_MODE == M1_CFG_USB_CDC_MSC
-  m1_USB_CDC_ready = 0;
+  if (m1_USB_CDC_ready == -1)
+    m1_USB_CDC_ready = 0;
 #elif M1_USB_MODE == M1_CFG_USB_CDC
-  m1_USB_CDC_ready = 0;
+  if (m1_USB_CDC_ready == -1)
+    m1_USB_CDC_ready = 0;
 #endif
 }
 

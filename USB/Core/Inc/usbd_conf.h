@@ -46,6 +46,7 @@ extern "C" {
 #define M1_CFG_USB_CDC_MSC  1
 #define M1_CFG_USB_CDC      2
 #define M1_CFG_USB_MSC      3
+#define M1_CFG_USB_HID      4
 
 #define M1_USB_MODE         M1_CFG_USB_CDC_MSC //M1_CFG_USB_MSC
 
@@ -89,6 +90,9 @@ extern "C" {
 #define CDC_IN_EP                                   0x82U   /* Bulk IN, CDC */
 #define CDC_OUT_EP                                  0x02U   /* Bulk OUT, CDC */
 #define CDC_CMD_EP                                  0x83U   /* Interrupt, CDC commands */
+
+/* HID endpoint (used in BadUSB mode, reuses MSC_IN_EP address) */
+#define HID_IN_EP                                   0x81U   /* Interrupt IN, HID keyboard */
 
 #elif M1_USB_MODE == M1_CFG_USB_MSC
   /*

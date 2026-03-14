@@ -43,6 +43,18 @@
 #define SI446X_GROUP_MODEM_PROPERTY_MODEM_MOD_TYPE  0x00
 #define SI446X_GROUP_MODEM_PROPERTY_MODEM_OOK_PDTC	0x40
 
+/* Frequency control group 0x40 properties */
+#define SI446X_GROUP_FREQ_CONTROL                   0x40
+#define SI446X_FREQ_CONTROL_INTE                    0x00
+#define SI446X_FREQ_CONTROL_FRAC_2                  0x01
+#define SI446X_FREQ_CONTROL_FRAC_1                  0x02
+#define SI446X_FREQ_CONTROL_FRAC_0                  0x03
+#define SI446X_FREQ_CONTROL_CHANNEL_STEP_SIZE_1     0x04
+#define SI446X_FREQ_CONTROL_CHANNEL_STEP_SIZE_0     0x05
+
+/* Crystal frequency — 30 MHz for M1 board */
+#define SI4463_XTAL_FREQ    30000000UL
+
 #define RADIO_COMM_BUFFER_MAX          30
 
 
@@ -970,6 +982,9 @@ void SI446x_Select_Frontend(S_M1_SubGHz_Band network)
 {
 	switch (network)
 	{
+		case SUB_GHZ_BAND_150:
+		case SUB_GHZ_BAND_200:
+		case SUB_GHZ_BAND_250:
 		case SUB_GHZ_BAND_300:
 		case SUB_GHZ_BAND_310:
 		case SUB_GHZ_BAND_315:
@@ -1107,3 +1122,67 @@ void radio_set_antenna_mode(tRadioAntennaMode mode)
 			break;
 	} // switch ( mode )
 } // void radio_set_antenna_mode(tRadioAntennaMode mode)
+
+
+/******************************************************************************/
+/*
+ * Set the Si4463 synthesizer frequency at runtime.
+ * freq_hz: desired frequency in Hz (e.g., 433920000 for 433.92 MHz)
+ *
+ * Si4463 frequency formula:
+ *   f = (f_xtal / outdiv) * (INTE + FRAC / 2^19)
+ *
+ * outdiv depends on the frequency band:
+ *   142-284 MHz: outdiv=24, band=5
+ *   284-525 MHz: outdiv=12, band=3  (covers 300-525 MHz)
+ *   525-1050 MHz: outdiv=4, band=2  (covers 850-1050 MHz — but Si4463 spec max is ~960 MHz)
+ *   (350-525 MHz: outdiv=8 is also valid, band=2)
+ *
+ * For best performance, match the band to the WDS-generated config's outdiv.
+ * This function auto-selects the outdiv based on frequency.
+ */
+/******************************************************************************/
+void SI446x_Set_Frequency(uint32_t freq_hz)
+{
+    uint8_t outdiv, band;
+    uint32_t inte;
+    uint32_t frac;
+    double f_pfd;
+
+    /* Select output divider based on frequency */
+    if (freq_hz < 284000000UL) {
+        outdiv = 24; band = 5;  /* 142-284 MHz */
+    } else if (freq_hz < 525000000UL) {
+        outdiv = 12; band = 3;  /* 284-525 MHz */
+    } else {
+        outdiv = 4;  band = 2;  /* 525-960 MHz */
+    }
+
+    /* f_pfd = 2 * f_xtal / outdiv */
+    f_pfd = (2.0 * SI4463_XTAL_FREQ) / outdiv;
+
+    /* INTE = floor(f / f_pfd) - 1 */
+    inte = (uint32_t)((double)freq_hz / f_pfd) - 1;
+
+    /* FRAC = ((f / f_pfd) - INTE - 1) * 2^19 */
+    frac = (uint32_t)(((double)freq_hz / f_pfd - (double)(inte + 1)) * 524288.0 + 0.5);
+
+    /* Set FREQ_CONTROL group: INTE, FRAC[2:0] (4 properties starting at 0x00) */
+    si446x_cmd_buffer[0] = SI446X_CMD_ID_SET_PROPERTY;
+    si446x_cmd_buffer[1] = SI446X_GROUP_FREQ_CONTROL;
+    si446x_cmd_buffer[2] = 4;   /* num properties */
+    si446x_cmd_buffer[3] = SI446X_FREQ_CONTROL_INTE;
+    si446x_cmd_buffer[4] = (uint8_t)inte;
+    si446x_cmd_buffer[5] = (uint8_t)((frac >> 16) & 0xFF);
+    si446x_cmd_buffer[6] = (uint8_t)((frac >> 8) & 0xFF);
+    si446x_cmd_buffer[7] = (uint8_t)(frac & 0xFF);
+    SI446x_Send_Cmd(8, si446x_cmd_buffer);
+
+    /* Also need to set MODEM_CLKGEN_BAND (group 0x20, property 0x51) to match outdiv */
+    si446x_cmd_buffer[0] = SI446X_CMD_ID_SET_PROPERTY;
+    si446x_cmd_buffer[1] = SI446X_GROUP_MODEM;
+    si446x_cmd_buffer[2] = 1;
+    si446x_cmd_buffer[3] = 0x51; /* MODEM_CLKGEN_BAND */
+    si446x_cmd_buffer[4] = 0x08 | band; /* SY_SEL=1 (high-perf), BAND=band */
+    SI446x_Send_Cmd(5, si446x_cmd_buffer);
+}

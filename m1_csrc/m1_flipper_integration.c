@@ -25,7 +25,7 @@
 #include "main.h"
 #include "m1_compile_cfg.h"
 
-#ifdef M1_APP_FLIPPER_COMPAT_ENABLE
+#ifdef M1_APP_FILE_IMPORT_ENABLE
 
 #include "m1_flipper_integration.h"
 #include "flipper_subghz.h"
@@ -172,7 +172,7 @@ void sub_ghz_replay_flipper(void)
     uint16_t i;
     (void)ret;  /* Used only in error path */
 
-    flipper_show_status("Flipper Sub-GHz", "Loading...");
+    flipper_show_status("Import Sub-GHz", "Loading...");
 
     /* Ensure directory exists */
     flipper_ensure_dir(FLIPPER_SUBGHZ_DIR);
@@ -272,7 +272,7 @@ void nfc_import_flipper(void)
 {
     flipper_nfc_card_t card;
 
-    flipper_show_status("Flipper NFC Import", "Loading...");
+    flipper_show_status("Import NFC", "Loading...");
 
     flipper_ensure_dir(FLIPPER_NFC_DIR);
 
@@ -352,7 +352,7 @@ void rfid_import_flipper(void)
 {
     flipper_rfid_tag_t tag;
 
-    flipper_show_status("Flipper RFID Import", "Loading...");
+    flipper_show_status("Import RFID", "Loading...");
 
     flipper_ensure_dir(FLIPPER_RFID_DIR);
 
@@ -421,11 +421,11 @@ void rfid_import_flipper(void)
     flipper_wait_for_back();
 }
 
-#else /* M1_APP_FLIPPER_COMPAT_ENABLE not defined */
+#else /* M1_APP_FILE_IMPORT_ENABLE not defined */
 
-/* Stub implementations when Flipper support is disabled */
+/* Stub implementations when file import is disabled */
 void sub_ghz_replay_flipper(void) { }
 void nfc_import_flipper(void) { }
 void rfid_import_flipper(void) { }
 
-#endif /* M1_APP_FLIPPER_COMPAT_ENABLE */
+#endif /* M1_APP_FILE_IMPORT_ENABLE */

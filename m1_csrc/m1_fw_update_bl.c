@@ -47,11 +47,15 @@ FW_CFG_SECTION S_M1_FW_CONFIG_t m1_fw_config = {
 // 000FFC10: magic_number_2 CRC32
 // 000FFC20:
 
+/* ECC-safe flash read protection state (used by NMI_Handler) */
+volatile bool g_flash_read_protected = false;
+volatile bool g_flash_read_faulted  = false;
+
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 
 uint8_t bl_crc_check(uint32_t image_size);
 uint32_t bl_get_crc_chunk(uint32_t *data_scr, uint32_t len, bool crc_init, bool last_chunk);
-void bl_swap_banks(void);
+bool bl_swap_banks(void);
 static uint8_t bl_get_protection_status(void);
 static uint8_t bl_set_protection_status(uint32_t protection);
 static uint16_t bl_flash_if_init(void);
@@ -411,49 +415,253 @@ static uint8_t bl_set_protection_status(uint32_t protection)
 
 /*============================================================================*/
 /**
+  * @brief  Safely read a 32-bit word from flash, catching double-ECC errors.
+  *         Uses an explicit 4-byte ldr.w instruction so the NMI_Handler can
+  *         skip it on ECCD fault.
+  * @param  addr   Flash address to read (must be 4-byte aligned)
+  * @param  value  Output: the read value, or 0xFFFFFFFF on ECC error
+  * @retval true if read succeeded, false if double-ECC error occurred
+  */
+/*============================================================================*/
+bool bl_safe_flash_read_u32(uint32_t addr, uint32_t *value)
+{
+    g_flash_read_faulted = false;
+    g_flash_read_protected = true;
+    __DSB();
+    __ISB();
+
+    uint32_t result;
+    __ASM volatile (
+        "ldr.w %0, [%1]"
+        : "=r" (result)
+        : "r" (addr)
+        : "memory"
+    );
+
+    g_flash_read_protected = false;
+    __DSB();
+
+    if (g_flash_read_faulted) {
+        *value = 0xFFFFFFFF;
+        return false;
+    }
+    *value = result;
+    return true;
+}
+
+
+/*============================================================================*/
+/**
+  * @brief  Check if the inactive bank has valid firmware.
+  *         Reads the vector table of the inactive bank and validates
+  *         that the initial SP is in RAM and the reset vector is in flash.
+  *         Uses ECC-safe reads to avoid NMI crash on corrupted flash.
+  * @param  None
+  * @retval true if inactive bank looks valid, false if empty/invalid/ECC error
+  */
+/*============================================================================*/
+bool bl_is_inactive_bank_valid(void)
+{
+    /* The inactive bank is ALWAYS at the upper address (0x08100000) in the
+     * mapped address space, regardless of the SWAP_BANK setting. */
+    uint32_t inactive_base = FW_START_ADDRESS + M1_FLASH_BANK_SIZE;
+
+    uint32_t sp, reset;
+
+    /* Use ECC-safe reads — the inactive bank may have corrupted flash
+     * from an interrupted write. */
+    if (!bl_safe_flash_read_u32(inactive_base, &sp) ||
+        !bl_safe_flash_read_u32(inactive_base + 4, &reset))
+    {
+        return false;  /* ECC error — bank is corrupted */
+    }
+
+    /* Empty bank: all 0xFF */
+    if (sp == 0xFFFFFFFFU && reset == 0xFFFFFFFFU) {
+        return false;
+    }
+
+    /* Validate SP points to RAM */
+    if (sp < STM32H5_RAM_START || sp > STM32H5_RAM_END) {
+        return false;
+    }
+
+    /* Validate reset vector points to flash */
+    if (reset < STM32H5_FLASH_START || reset > STM32H5_FLASH_END) {
+        return false;
+    }
+
+    return true;
+} // bool bl_is_inactive_bank_valid(void)
+
+
+
+/*============================================================================*/
+/**
+  * @brief  Verify the CRC of firmware at the given bank base address.
+  *         Reads the CRC extension block from the bank, computes CRC over
+  *         the firmware region, and compares with the stored CRC.
+  * @param  bank_base: Base address of the bank (0x08000000 or 0x08100000)
+  * @retval true if CRC matches, false otherwise
+  */
+/*============================================================================*/
+bool bl_verify_bank_crc(uint32_t bank_base)
+{
+    /* Compute offset of CRC extension within a bank */
+    uint32_t crc_ext_offset = FW_CRC_EXT_BASE - FW_START_ADDRESS;  /* 0xFFC14 */
+    uint32_t crc_ext_addr   = bank_base + crc_ext_offset;
+
+    /* Read CRC extension fields using ECC-safe reads.
+     * The bank may have corrupted flash from an interrupted write. */
+    uint32_t magic, fw_image_size, stored_crc;
+    if (!bl_safe_flash_read_u32(crc_ext_addr + 0, &magic) ||
+        !bl_safe_flash_read_u32(crc_ext_addr + 4, &fw_image_size) ||
+        !bl_safe_flash_read_u32(crc_ext_addr + 8, &stored_crc))
+    {
+        return false;  /* ECC error reading CRC extension */
+    }
+
+    /* Check if CRC extension is present */
+    if (magic != FW_CRC_EXT_MAGIC_VALUE)
+        return false;
+
+    /* Sanity check image size */
+    if (fw_image_size == 0 || fw_image_size > M1_FLASH_BANK_SIZE ||
+        (fw_image_size & 0x3U) != 0U)
+        return false;
+
+    /* Compute CRC using hardware CRC peripheral with ECC-safe flash reads.
+     * Uses explicit ldr.w instructions so the NMI handler can skip on fault. */
+    __HAL_RCC_CRC_CLK_ENABLE();
+    RCC->AHB1ENR;  /* Readback delay */
+
+    CRC->CR = CRC_CR_RESET;
+    __NOP(); __NOP(); __NOP(); __NOP();
+
+    uint32_t num_words = fw_image_size / 4;
+
+    /* Enable ECC fault protection for the entire CRC computation.
+     * On any ECCD fault, the NMI handler skips the ldr.w and sets the flag.
+     * The garbage value gets fed to CRC (making it wrong), but we detect
+     * the fault at the end and return false. */
+    g_flash_read_faulted = false;
+    g_flash_read_protected = true;
+    __DSB();
+    __ISB();
+
+    for (uint32_t i = 0; i < num_words; i++)
+    {
+        uint32_t word;
+        __ASM volatile (
+            "ldr.w %0, [%1]"
+            : "=r" (word)
+            : "r" (bank_base + i * 4)
+            : "memory"
+        );
+        CRC->DR = word;
+    }
+
+    g_flash_read_protected = false;
+    __DSB();
+
+    uint32_t computed_crc = CRC->DR;
+
+    /* Disable CRC clock */
+    __HAL_RCC_CRC_FORCE_RESET();
+    __HAL_RCC_CRC_RELEASE_RESET();
+
+    if (g_flash_read_faulted)
+    {
+        M1_LOG_E(M1_LOGDB_TAG, "ECC error during CRC at 0x%08lX\r\n", bank_base);
+        return false;
+    }
+
+    if (computed_crc != stored_crc)
+    {
+        M1_LOG_E(M1_LOGDB_TAG, "CRC mismatch at 0x%08lX: stored=0x%08lX computed=0x%08lX\r\n",
+                 bank_base, stored_crc, computed_crc);
+        return false;
+    }
+
+    return true;
+} // bool bl_verify_bank_crc(uint32_t bank_base)
+
+
+
+/*============================================================================*/
+/**
   * @brief  Swap the banks
   * @param  None
   * @retval None
   */
 /*============================================================================*/
-void bl_swap_banks(void)
+bool bl_swap_banks(void)
 {
 	FLASH_OBProgramInitTypeDef OBInit;
+	HAL_StatusTypeDef status;
+
+	m1_wdt_reset();
 
 	/* Unlock the User Flash area */
-	HAL_FLASH_Unlock();
+	status = HAL_FLASH_Unlock();
+	if (status != HAL_OK)
+	{
+		M1_LOG_E(M1_LOGDB_TAG, "Bank swap: flash unlock failed (%d)\r\n", status);
+		return false;
+	}
 
-	HAL_FLASH_OB_Unlock();
-    /* Get the boot configuration status */
-    HAL_FLASHEx_OBGetConfig(&OBInit);
+	status = HAL_FLASH_OB_Unlock();
+	if (status != HAL_OK)
+	{
+		M1_LOG_E(M1_LOGDB_TAG, "Bank swap: OB unlock failed (%d)\r\n", status);
+		HAL_FLASH_Lock();
+		return false;
+	}
 
-    /* Check Swap Flash banks status */
-    if ( (OBInit.USERConfig & OB_SWAP_BANK_ENABLE)==OB_SWAP_BANK_DISABLE )
-    {
-    	/*Swap to bank2 */
-    	M1_LOG_I(M1_LOGDB_TAG, "Swap to bank2\n\r");
-    	/*Set OB SWAP_BANK_OPT to swap Bank2*/
-    	OBInit.USERConfig = OB_SWAP_BANK_ENABLE;
-     } // if ( (OBInit.USERConfig & OB_SWAP_BANK_ENABLE)==OB_SWAP_BANK_DISABLE )
-     else
-     {
-    	 /* Swap to bank1 */
-    	 M1_LOG_I(M1_LOGDB_TAG, "Swap to bank1\n\r");
-    	 /*Set OB SWAP_BANK_OPT to swap Bank1*/
-    	 OBInit.USERConfig = OB_SWAP_BANK_DISABLE;
-     } // else
+	/* Get the boot configuration status */
+	HAL_FLASHEx_OBGetConfig(&OBInit);
 
-	 OBInit.OptionType = OPTIONBYTE_USER;
-	 OBInit.USERType = OB_USER_SWAP_BANK;
-	 HAL_FLASHEx_OBProgram(&OBInit);
+	/* Check Swap Flash banks status */
+	if ( (OBInit.USERConfig & OB_SWAP_BANK_ENABLE)==OB_SWAP_BANK_DISABLE )
+	{
+		/*Swap to bank2 */
+		M1_LOG_I(M1_LOGDB_TAG, "Swap to bank2\r\n");
+		/*Set OB SWAP_BANK_OPT to swap Bank2*/
+		OBInit.USERConfig = OB_SWAP_BANK_ENABLE;
+	} // if ( (OBInit.USERConfig & OB_SWAP_BANK_ENABLE)==OB_SWAP_BANK_DISABLE )
+	else
+	{
+		/* Swap to bank1 */
+		M1_LOG_I(M1_LOGDB_TAG, "Swap to bank1\r\n");
+		/*Set OB SWAP_BANK_OPT to swap Bank1*/
+		OBInit.USERConfig = OB_SWAP_BANK_DISABLE;
+	} // else
 
-	 /* Launch Option bytes loading */
-	 HAL_FLASH_OB_Launch();
+	OBInit.OptionType = OPTIONBYTE_USER;
+	OBInit.USERType = OB_USER_SWAP_BANK;
 
-	 vTaskDelay(pdMS_TO_TICKS(200));
-	 /* Reset the MCU */
-	 HAL_NVIC_SystemReset();
-} // void bl_swap_banks(void)
+	status = HAL_FLASHEx_OBProgram(&OBInit);
+	if (status != HAL_OK)
+	{
+		M1_LOG_E(M1_LOGDB_TAG, "Bank swap: OB program failed (%d)\r\n", status);
+		HAL_FLASH_OB_Lock();
+		HAL_FLASH_Lock();
+		return false;
+	}
+
+	m1_wdt_reset();
+
+	/* Launch Option bytes loading — this triggers an OBL system reset
+	 * when the SWAP_BANK bit changes.  We should not return from here. */
+	status = HAL_FLASH_OB_Launch();
+
+	/* If we reach here, the OBL reset did not occur. */
+	M1_LOG_E(M1_LOGDB_TAG, "Bank swap: OB launch returned (%d) — forcing reset\r\n", status);
+	HAL_NVIC_SystemReset();
+
+	/* Never reached */
+	return true;
+} // bool bl_swap_banks(void)
 
 
 
@@ -764,12 +972,61 @@ void boot_recovery_check(void)
     volatile uint32_t stored_crc;
     volatile uint32_t calc_crc;
 
+    /* === LED diagnostic setup ===
+     * PD12 = Boot check started (stays on during CRC computation)
+     * PD13 = CRC check passed (both LEDs on = boot OK)
+     * No LEDs = function returned early or crashed */
+    RCC->AHB2ENR |= (1U << 3);  /* Enable GPIOD clock */
+    volatile uint32_t tmpreg_d = RCC->AHB2ENR;
+    (void)tmpreg_d;
+    GPIOD->MODER &= ~((0x3U << (12 * 2)) | (0x3U << (13 * 2)));
+    GPIOD->MODER |=  ((0x1U << (12 * 2)) | (0x1U << (13 * 2)));  /* Output */
+    GPIOD->BSRR = (1U << 12);  /* PD12 ON = boot check running */
+
+    /* First: check if the current bank has ANY valid code.
+     * NOTE: This check is a best-effort fallback only. If the bank is truly
+     * empty (SP=0xFFFFFFFF, Reset=0xFFFFFFFF), the CPU will have already
+     * hard-faulted before reaching this code. This check is here for cases
+     * where the vector table has partial data (not all-FF). */
+    volatile uint32_t initial_sp    = *(volatile uint32_t *)(FW_START_ADDRESS);
+    volatile uint32_t reset_vector  = *(volatile uint32_t *)(FW_START_ADDRESS + 4);
+
+    if (initial_sp == 0xFFFFFFFFU && reset_vector == 0xFFFFFFFFU) {
+        /* Bank is empty (erased flash). Attempt to swap to the other bank. */
+        PWR->DBPCR |= PWR_DBPCR_DBP;  /* Enable backup domain access */
+
+        if (TAMP->BKP1R == BOOT_FAIL_SIGNATURE) {
+            /* Already tried — both banks are empty. Jump to DFU. */
+            bl_jump_to_dfu();
+        }
+
+        TAMP->BKP1R = BOOT_FAIL_SIGNATURE;
+
+        /* Toggle SWAP_BANK and reset */
+        FLASH->NSKEYR = 0x45670123U;
+        FLASH->NSKEYR = 0xCDEF89ABU;
+        FLASH->OPTKEYR = 0x08192A3BU;
+        FLASH->OPTKEYR = 0x4C5D6E7FU;
+
+        uint32_t optsr = FLASH->OPTSR_CUR;
+        if (optsr & FLASH_OPTSR_SWAP_BANK) {
+            FLASH->OPTSR_PRG = optsr & ~FLASH_OPTSR_SWAP_BANK;
+        } else {
+            FLASH->OPTSR_PRG = optsr | FLASH_OPTSR_SWAP_BANK;
+        }
+        FLASH->OPTCR |= FLASH_OPTCR_OPTSTART;
+        while (FLASH->NSSR & FLASH_SR_BSY) {}
+        NVIC_SystemReset();
+        /* Never returns */
+    }
+
     /* Read CRC extension sentinel from fixed absolute address */
     crc_magic = *(volatile uint32_t *)(FW_CRC_EXT_MAGIC_ADDR);
 
     /* Case 1: No CRC present (erased flash or stock Monstatek FW) */
     if (crc_magic == FW_CRC_EXT_ERASED) {
-        return;  /* Boot normally */
+        /* Vector table is valid (checked above), so firmware exists but has no CRC. Boot normally. */
+        return;
     }
 
     /* Case 2: Unknown sentinel value - don't brick, just boot */
@@ -815,10 +1072,12 @@ void boot_recovery_check(void)
         if (TAMP->BKP1R == BOOT_FAIL_SIGNATURE) {
             TAMP->BKP1R = 0;
         }
+        GPIOD->BSRR = (1U << 13);  /* PD13 ON = CRC passed, boot OK */
         return;  /* Boot normally */
     }
 
     /* CRC mismatch - attempt recovery */
+    GPIOD->BSRR = (1U << (12 + 16));  /* PD12 OFF = CRC failed */
 
     /* Enable backup domain access */
     PWR->DBPCR |= PWR_DBPCR_DBP;

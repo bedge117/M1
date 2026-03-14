@@ -393,3 +393,26 @@ void m1_wdt_reset(void)
 	// Reset WDT counter
 	__HAL_IWDG_RELOAD_COUNTER(&hiwdg);
 } // void m1_wdt_reset(void)
+
+
+void m1_wdt_suspend_task(S_M1_WDT_Report_ID rpt_id)
+{
+	if (rpt_id < M1_REPORT_ID_END_OF_LIST)
+	{
+		taskENTER_CRITICAL();
+		wdt_report[rpt_id].inactive = true;
+		wdt_report[rpt_id].run_time = 0;
+		taskEXIT_CRITICAL();
+	}
+}
+
+void m1_wdt_resume_task(S_M1_WDT_Report_ID rpt_id)
+{
+	if (rpt_id < M1_REPORT_ID_END_OF_LIST)
+	{
+		taskENTER_CRITICAL();
+		wdt_report[rpt_id].inactive = false;
+		wdt_report[rpt_id].run_time = 0;
+		taskEXIT_CRITICAL();
+	}
+}

@@ -307,7 +307,7 @@ void LFRFID_Timebase_Init(uint32_t freq_hz, uint32_t period_us)
   * @retval None
  */
 /*============================================================================*/
-void lfrfid_RFIDOut_Init(uint32_t freq)
+void lfrfid_RFIDOut_Init_Ex(uint32_t freq, float duty)
 {
 	GPIO_InitTypeDef gpio_init_struct = {0};
 	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
@@ -329,11 +329,12 @@ void lfrfid_RFIDOut_Init(uint32_t freq)
 	HAL_GPIO_Init(RFID_OUT_GPIO_Port, &gpio_init_struct);
 
 	uint32_t pclk1 = HAL_RCC_GetPCLK1Freq();
-	//TIM3 - CH3 PB0 PWM, 125KHz (8us)
+	uint32_t period = (pclk1 / freq) - 1;
+	//TIM3 - CH3 PB0 PWM
 	Timerhdl_RfIdTIM3.Instance = TIM3;
 	Timerhdl_RfIdTIM3.Init.Prescaler = 0;
 	Timerhdl_RfIdTIM3.Init.CounterMode = TIM_COUNTERMODE_UP;
-	Timerhdl_RfIdTIM3.Init.Period = (pclk1 /(freq))-1 ; //600-1;
+	Timerhdl_RfIdTIM3.Init.Period = period;
 	Timerhdl_RfIdTIM3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	Timerhdl_RfIdTIM3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
 	if (HAL_TIM_Base_Init(&Timerhdl_RfIdTIM3) != HAL_OK)
@@ -356,13 +357,18 @@ void lfrfid_RFIDOut_Init(uint32_t freq)
 	  Error_Handler();
 	}
 	sConfigOC.OCMode = TIM_OCMODE_PWM1;
-	sConfigOC.Pulse = ((pclk1 /(freq))-1)/2;
+	sConfigOC.Pulse = (uint32_t)((float)(period + 1) * duty);
 	sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
 	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
 	if (HAL_TIM_PWM_ConfigChannel(&Timerhdl_RfIdTIM3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
 	{
 	  Error_Handler();
 	}
+}
+
+void lfrfid_RFIDOut_Init(uint32_t freq)
+{
+	lfrfid_RFIDOut_Init_Ex(freq, 0.5f);
 }
 
 
@@ -440,7 +446,7 @@ void lfrfid_RFIDIn_Init(void)
   * @retval
   */
 /*============================================================================*/
-void lfrfid_read_hw_init(void)
+void lfrfid_read_hw_init_ex(uint32_t carrier_freq, float carrier_duty)
 {
   if(rfid_rxtx_is_taking_this_irq)
 	return;
@@ -448,7 +454,7 @@ void lfrfid_read_hw_init(void)
   // Enable EXT_5V
   HAL_GPIO_WritePin(EN_EXT_5V_GPIO_Port, EN_EXT_5V_Pin, GPIO_PIN_SET);
 
-  lfrfid_RFIDOut_Init(125000);
+  lfrfid_RFIDOut_Init_Ex(carrier_freq, carrier_duty);
 
   // TIM5-CH4 capture RFID_RF_IN
   lfrfid_RFIDIn_Init();
@@ -457,13 +463,27 @@ void lfrfid_read_hw_init(void)
   HAL_NVIC_SetPriority(TIM5_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY - 1, 0);   // Default int priority: configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY
   HAL_NVIC_EnableIRQ(TIM5_IRQn);
 
-#if 1
   HAL_TIM_PWM_Start(&Timerhdl_RfIdTIM3, TIM_CHANNEL_3);
   HAL_TIM_IC_Start_IT(&Timerhdl_RfIdTIM5, TIM_CHANNEL_4);
-#endif
-  //lfrfid_stream_init();
+
   rfid_rxtx_is_taking_this_irq = 1;
-} // void rfid_read_init(void)
+}
+
+void lfrfid_read_hw_init(void)
+{
+  lfrfid_read_hw_init_ex(125000, 0.5f);
+}
+
+void lfrfid_carrier_switch(uint32_t carrier_freq, float carrier_duty)
+{
+  /* Stop PWM output, reconfigure, restart — input capture stays running */
+  HAL_TIM_PWM_Stop(&Timerhdl_RfIdTIM3, TIM_CHANNEL_3);
+  __HAL_TIM_DISABLE(&Timerhdl_RfIdTIM3);
+  __HAL_RCC_TIM3_CLK_DISABLE();
+
+  lfrfid_RFIDOut_Init_Ex(carrier_freq, carrier_duty);
+  HAL_TIM_PWM_Start(&Timerhdl_RfIdTIM3, TIM_CHANNEL_3);
+}
 
 
 /*============================================================================*/

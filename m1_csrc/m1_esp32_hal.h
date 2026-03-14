@@ -18,10 +18,10 @@
 #include "m1_ring_buffer.h"
 
 #define ESP32_UART_BAUDRATE					115200
-#define ESP32_UART_HIGH_BAUDRATE			460800
+#define ESP32_UART_HIGH_BAUDRATE			921600
 
 #define ESP32_UART_DISABLE
-#define ESP32_DATAREADY_DISABLE
+//#define ESP32_DATAREADY_DISABLE
 
 extern UART_HandleTypeDef huart_esp;
 extern SPI_HandleTypeDef hspi_esp;

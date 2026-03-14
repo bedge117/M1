@@ -1,0 +1,58 @@
+Filetype: IR signals file
+Version: 1
+
+#
+name: Power
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 4C 00 00 00
+
+#
+name: Vol_Up
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 01 00 00 00
+
+#
+name: Vol_Down
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 02 00 00 00
+
+#
+name: Mute
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 03 00 00 00
+
+#
+name: Source
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 0B 00 00 00
+
+#
+name: Play_Pause
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 06 00 00 00
+
+#
+name: Next
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 08 00 00 00
+
+#
+name: Prev
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 09 00 00 00

@@ -21,7 +21,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME MonstaTek_M1_v0800)
+set(CMAKE_PROJECT_NAME M1_v0800_C3.1)
+
+# C3 fork revision — must match M1_C3_REVISION in m1_fw_update_bl.h
+set(M1_C3_REVISION 1)
 
 # Include toolchain file
 include("cmake/gcc-arm-none-eabi.cmake")
@@ -31,6 +34,20 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # Core project settings
 project(${CMAKE_PROJECT_NAME})
+
+# Resolve toolchain utilities to full paths so post-build steps work
+# regardless of PATH at build time (bare names from toolchain file fail
+# inside nested cmd.exe / ninja subprocesses)
+get_filename_component(_TC_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
+find_program(TOOL_SIZE    ${TOOLCHAIN_PREFIX}size    HINTS "${_TC_BIN}" REQUIRED)
+find_program(TOOL_OBJCOPY ${TOOLCHAIN_PREFIX}objcopy HINTS "${_TC_BIN}" REQUIRED)
+find_program(TOOL_OBJDUMP ${TOOLCHAIN_PREFIX}objdump HINTS "${_TC_BIN}" REQUIRED)
+set(CMAKE_SIZE    "${TOOL_SIZE}")
+set(CMAKE_OBJCOPY "${TOOL_OBJCOPY}")
+set(CMAKE_OBJDUMP "${TOOL_OBJDUMP}")
+
+# Python is needed for the CRC injection post-build step
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
@@ -113,12 +130,15 @@ add_custom_command(
     #COMMENT "Generating .hex file"
 )
 
-# Command to generate .bin file with CRC
+# Command to inject CRC32 + C3 metadata into the .bin file
 add_custom_command(
-    COMMAND ${CMAKE_COMMAND} -E echo "Generating bin file with CRC ${CMAKE_PROJECT_NAME}_wCRC.bin"
     TARGET ${CMAKE_PROJECT_NAME}
     POST_BUILD
-    COMMAND srec_cat
-${TARGET_BIN} -binary -crop 0x0 0x000FFC14 -STM32_Little_Endian 0x000FFC14 -o ${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}_wCRC.bin -binary
-    #COMMENT "Generating .bin file with CRC"
+    COMMAND ${CMAKE_COMMAND} -E echo "Injecting CRC + C3 metadata into ${CMAKE_PROJECT_NAME}_wCRC.bin"
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/tools/append_crc32.py
+        ${TARGET_BIN}
+        --output ${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}_wCRC.bin
+        --c3-revision ${M1_C3_REVISION}
+        --verbose
 )

@@ -55,3 +55,26 @@ compile_commands.json
 build/
 /.cache
 /artifacts
+
+# CMake generated files
+CMakeFiles/
+
+# Build helper scripts (contain machine-specific paths)
+do_build.ps1
+build.bat
+build_out.txt
+build_lfrfid.txt
+build_lfrfid2.txt
+appsplan.md
+
+# Claude / AI assistant
+.claude/
+CLAUDE.md
+
+# Local project directories (not part of firmware)
+qMonstatek/
+m1-sdk/
+m1-firmware/
+m1-stock/
+esp32-at-hid/
+Archive-Do-Not-Reference/

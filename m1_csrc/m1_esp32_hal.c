@@ -32,7 +32,7 @@
 #define ESP32_HANDSHAKE_EXTI_IRQn   EXTI7_IRQn
 
 #define ESP32_DMA_RX_BUFFER_LEN 	128
-#define ESP32_RX_BUFFER_LEN			192
+#define ESP32_RX_BUFFER_LEN			4096
 
 #define M1_LOGDB_TAG				"ESP32"
 
@@ -258,7 +258,12 @@ void esp32_UART_init(void)
 	{
 		Error_Handler();
 	}
-	if (HAL_UARTEx_DisableFifoMode(&huart_esp) != HAL_OK)
+	/* Enable FIFO mode: the 8-byte hardware RX FIFO prevents overrun when
+	 * USB or other ISRs delay the UART4 interrupt.  At 230400 baud with
+	 * FIFO, overrun tolerance is ~347µs — well above USB ISR latency.
+	 * RX threshold at 1/8 fires RXFNE after 1+ bytes, so the ISR
+	 * behavior is functionally unchanged from non-FIFO mode. */
+	if (HAL_UARTEx_EnableFifoMode(&huart_esp) != HAL_OK)
 	{
 		Error_Handler();
 	}
@@ -585,6 +590,8 @@ void esp32_UART_deinit(void)
 		free(pesp32_rx);
 		pesp32_rx = NULL;
 	} // if ( pesp32_rx )
+
+	esp32_uart_init_done = FALSE;
 
 	// Temporarily comment out esp32_disable() to not to disable the ESP module after the task is done.
 	// If the module needs to be disabled here and enabled later,

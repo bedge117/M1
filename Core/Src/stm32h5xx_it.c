@@ -73,14 +73,43 @@ extern TIM_HandleTypeDef htim6;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-    uint32_t eccdr_value = FLASH->ECCDR; // Read ECCDR to clear the NMI
-    // if (/* ECCDR indicates uninitialized memory access */)
-    if (1) {
-        // Clear the specific ECCD flag
-        // Exit
-    } else {
-        // Handle a real data corruption error
+
+    /* Check for flash double-ECC error (ECCD) */
+    if (FLASH->ECCDETR & FLASH_ECCR_ECCD)
+    {
+        /* Clear the ECCD flag (write-1-to-clear) */
+        SET_BIT(FLASH->ECCDETR, FLASH_ECCR_ECCD);
+
+        /* If a protected flash read is in progress, skip the faulting
+         * ldr.w instruction (4 bytes) and set the fault flag so the
+         * caller knows the read failed. */
+        extern volatile bool g_flash_read_protected;
+        extern volatile bool g_flash_read_faulted;
+
+        if (g_flash_read_protected)
+        {
+            g_flash_read_faulted = true;
+
+            /* Determine which stack the faulting code was using (PSP or MSP)
+             * and advance the stacked PC by 4 to skip the ldr.w instruction.
+             * EXC_RETURN bit 2: 0 = MSP, 1 = PSP.
+             * Stacked PC is at offset 24 (frame[6]) in the exception frame. */
+            __ASM volatile (
+                "TST   LR, #4       \n"   /* Test bit 2 of EXC_RETURN  */
+                "ITE   NE           \n"
+                "MRSNE R0, PSP      \n"   /* FreeRTOS task: frame on PSP */
+                "MRSEQ R0, MSP      \n"   /* Handler/init: frame on MSP */
+                "LDR   R1, [R0, #24]\n"   /* R1 = stacked PC            */
+                "ADDS  R1, R1, #4   \n"   /* Skip 4-byte ldr.w          */
+                "STR   R1, [R0, #24]\n"   /* Write back                 */
+                ::: "r0", "r1", "memory"
+            );
+            return;
+        }
+
+        /* Unprotected flash read — fall through to default handler */
     }
+
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
    while (1)

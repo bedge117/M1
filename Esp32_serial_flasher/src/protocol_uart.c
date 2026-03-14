@@ -101,9 +101,11 @@ esp_loader_error_t send_cmd(const send_cmd_config *config)
 
     RETURN_ON_ERROR(SLIP_send_delimiter());
 
-    // Giving some time for the ISR to receive data from the ESP32
-    // Without this delay, most of response data will be lost due to unexpected huge ISR latency!!!
-    HAL_Delay(100);
+    // Short delay for ESP32 to begin transmitting its response.
+    // With ring-buffer ISR reception, response data is captured automatically;
+    // 5ms is sufficient for the ESP32 ROM to start responding.
+    // (Legacy code used 100ms which added ~7 minutes to a 4MB flash.)
+    loader_port_delay_ms(5);
 
     command_t command = ((const command_common_t *)config->cmd)->command;
     const uint8_t response_cnt = command == SYNC ? 8 : 1;

@@ -15,20 +15,32 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 #include "stm32h5xx_hal.h"
 #include "main.h"
 #include "m1_infrared.h"
 #include "m1_compile_cfg.h"
+#include "m1_display.h"
+#include "m1_lcd.h"
+#include "m1_buzzer.h"
 #include "irmp.h"
 #include "irsnd.h"
+#include "ff.h"
 
-#ifdef M1_APP_FLIPPER_COMPAT_ENABLE
+#ifdef M1_APP_FILE_IMPORT_ENABLE
 #include "m1_ir_universal.h"
+#include "flipper_ir.h"
+#include "flipper_file.h"
 #endif
 
 
 /*************************** D E F I N E S ************************************/
 
+#ifdef M1_APP_FILE_IMPORT_ENABLE
+#define IR_LEARNED_FOLDER     "0:/IR/Learned"
+#define IR_LEARNED_PREFIX     "remote_"
+#define IR_LEARNED_MAX_NUM    999
+#endif
 
 //************************** S T R U C T U R E S *******************************
 
@@ -42,8 +54,8 @@ IRMP_DATA 			irmp_data;
 volatile S_M1_IR_Det IrRx_Edge_Det; // Flag for first falling edge detected
 
 volatile uint8_t ir_ota_data_tx_active;
-uint8_t ir_ota_data_tx_len;
-volatile uint8_t ir_ota_data_tx_counter;
+uint16_t ir_ota_data_tx_len;
+volatile uint16_t ir_ota_data_tx_counter;
 uint16_t *pir_ota_data_tx_buffer;
 static TimerHandle_t ir_tx_timer_hdl = NULL;
 
@@ -65,6 +77,11 @@ static void infrared_decode_sys_deinit(void);
 void infrared_encode_sys_init(void);
 void infrared_encode_sys_deinit(void);
 static void infrared_encode_timer_cb(TimerHandle_t xTimer);
+
+#ifdef M1_APP_FILE_IMPORT_ENABLE
+static bool ir_find_next_filename(char *path, size_t path_size);
+static bool ir_save_learned_signal(const IRMP_DATA *data);
+#endif
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
 
@@ -213,7 +230,7 @@ S_M1_IR_Tx_States infrared_transmit(uint8_t init)
 /*============================================================================*/
 void infrared_universal_remotes(void)
 {
-#ifdef M1_APP_FLIPPER_COMPAT_ENABLE
+#ifdef M1_APP_FILE_IMPORT_ENABLE
 	/* Use the full IRDB browser and Flipper .ir file support */
 	ir_universal_init();
 	ir_universal_run();
@@ -259,82 +276,115 @@ void infrared_learn_new_remote(void)
 	S_M1_Buttons_Status this_button_status;
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
-	uint8_t ir_data[20];
+	char ir_data[24];
 
 	infrared_decode_sys_init();
 	irmp_init();
 
 	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
 
-	/* Graphic work starts here */
-	u8g2_FirstPage(&m1_u8g2);
+	/* Draw initial "Reading..." screen */
+	m1_u8g2_firstpage();
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 	u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
 	u8g2_DrawXBMP(&m1_u8g2, 2, 2, 48, 25, remote_48x25);
 	u8g2_DrawStr(&m1_u8g2, 60, 20, "Reading...");
-	m1_u8g2_nextpage(); // Update display RAM
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", NULL, arrowleft_8x8);
+	m1_u8g2_nextpage();
 
-	while (1) // Main loop of this task
+	while (1)
 	{
-		;
-		; // Do other parts of this task here
-		;
-
-		// Wait for the notification from button_event_handler_task to subfunc_handler_task.
-		// This task is the sub-task of subfunc_handler_task.
-		// The notification is given in the form of an item in the main queue.
-		// So let read the main queue.
 		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
-		if (ret==pdTRUE)
+		if (ret != pdTRUE)
+			continue;
+
+		if (q_item.q_evt_type == Q_EVENT_IRRED_RX)
 		{
-			if ( q_item.q_evt_type==Q_EVENT_IRRED_RX )
+			irmp_data_sampler(q_item.q_data.ir_rx_data.ir_edge_te, q_item.q_data.ir_rx_data.ir_edge_dir);
+
+			if (irmp_get_data(&irmp_data))
 			{
-				irmp_data_sampler(q_item.q_data.ir_rx_data.ir_edge_te, q_item.q_data.ir_rx_data.ir_edge_dir);
-				/* Decode the Rx frame */
-				if (irmp_get_data(&irmp_data))
-				{
-					m1_buzzer_notification();
-					u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-					u8g2_DrawBox(&m1_u8g2, 0, 30, 128, 34); // Clear old content
-					u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-					u8g2_DrawStr(&m1_u8g2, 15, 40, irmp_protocol_names[irmp_data.protocol]);
-					sprintf(ir_data, "Address: 0x%04X", irmp_data.address);
-					u8g2_DrawStr(&m1_u8g2, 15, 50, ir_data);
-					sprintf(ir_data, "Command: 0x%04X", irmp_data.command);
-					u8g2_DrawStr(&m1_u8g2, 15, 60, ir_data);
-					u8g2_NextPage(&m1_u8g2); // Update display RAM
+				m1_buzzer_notification();
 
-					memcpy(&irmp_loopback_data, &irmp_data, sizeof(IRMP_DATA));
-					new_remote_learned = 1;
+				memcpy(&irmp_loopback_data, &irmp_data, sizeof(IRMP_DATA));
+				new_remote_learned = 1;
 
-				} // if (irmp_get_data (&irmp_data))
-			} // if ( q_item.q_evt_type==Q_EVENT_IRRED_RX )
-			else if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
-			{
-				// Notification is only sent to this task when there's any button activity,
-				// so it doesn't need to wait when reading the event from the queue
-				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK ) // user wants to exit?
-				{
-					m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF); // Turn off
-
-					; // Do extra tasks here if needed
-					infrared_decode_sys_deinit();
-
-					xQueueReset(main_q_hdl); // Reset main q before return
-					break; // Exit and return to the calling task (subfunc_handler_task)
-				} // if ( m1_buttons_status[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
-				else
-				{
-					; // Do other things for this task, if needed
-				}
-			} // else if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
-			else
-			{
-				; // Do other things for this task
+				/* Show decoded signal with save hint */
+				m1_u8g2_firstpage();
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+				u8g2_DrawStr(&m1_u8g2, 4, 10, "Signal Captured:");
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
+				u8g2_DrawStr(&m1_u8g2, 4, 22, irmp_protocol_names[irmp_data.protocol]);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+				snprintf(ir_data, sizeof(ir_data), "Addr: 0x%04X", irmp_data.address);
+				u8g2_DrawStr(&m1_u8g2, 4, 32, ir_data);
+				snprintf(ir_data, sizeof(ir_data), "Cmd:  0x%04X", irmp_data.command);
+				u8g2_DrawStr(&m1_u8g2, 4, 42, ir_data);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+#ifdef M1_APP_FILE_IMPORT_ENABLE
+				m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Save", arrowright_8x8);
+#else
+				m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", NULL, arrowleft_8x8);
+#endif
+				m1_u8g2_nextpage();
 			}
-		} // if (ret==pdTRUE)
-	} // while (1 ) // Main loop of this task
+		}
+		else if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+				infrared_decode_sys_deinit();
+				xQueueReset(main_q_hdl);
+				break;
+			}
+#ifdef M1_APP_FILE_IMPORT_ENABLE
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK ||
+			         this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				if (new_remote_learned)
+				{
+					/* Save the learned signal as a .ir file */
+					bool saved = ir_save_learned_signal(&irmp_loopback_data);
+
+					/* Show save result */
+					m1_u8g2_firstpage();
+					u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+					u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+					if (saved)
+					{
+						u8g2_DrawStr(&m1_u8g2, 20, 30, "Saved!");
+						u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+						u8g2_DrawStr(&m1_u8g2, 10, 42, "File in IR/Learned/");
+					}
+					else
+					{
+						u8g2_DrawStr(&m1_u8g2, 14, 30, "Save failed");
+						u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+						u8g2_DrawStr(&m1_u8g2, 14, 42, "Check SD card");
+					}
+					m1_u8g2_nextpage();
+					m1_buzzer_notification();
+					vTaskDelay(pdMS_TO_TICKS(1500));
+
+					/* Return to "Reading..." */
+					m1_u8g2_firstpage();
+					u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+					u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+					u8g2_DrawXBMP(&m1_u8g2, 2, 2, 48, 25, remote_48x25);
+					u8g2_DrawStr(&m1_u8g2, 60, 20, "Reading...");
+					u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+					m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", NULL, arrowleft_8x8);
+					m1_u8g2_nextpage();
+				}
+			}
+#endif /* M1_APP_FILE_IMPORT_ENABLE */
+		}
+	}
 } // void infrared_learn_new_remote(void)
 
 
@@ -454,6 +504,111 @@ void infrared_saved_remotes(void)
 	} // while (1 ) // Main loop of this task
 
 } // void infrared_saved_remotes(void)
+
+
+
+#ifdef M1_APP_FILE_IMPORT_ENABLE
+/*============================================================================*/
+/*
+ * Find the next available filename in 0:/IR/Learned/remote_NNN.ir
+ * Returns true and fills path, or false if all 999 slots are used.
+ */
+/*============================================================================*/
+static bool ir_find_next_filename(char *path, size_t path_size)
+{
+	DIR dir;
+	FILINFO fno;
+	FRESULT res;
+	uint16_t max_num = 0;
+	uint16_t num;
+
+	/* Ensure the directory exists */
+	f_mkdir("0:/IR");
+	f_mkdir(IR_LEARNED_FOLDER);
+
+	res = f_opendir(&dir, IR_LEARNED_FOLDER);
+	if (res != FR_OK)
+		return false;
+
+	/* Scan existing files to find the highest number */
+	while (1)
+	{
+		res = f_readdir(&dir, &fno);
+		if (res != FR_OK || fno.fname[0] == '\0')
+			break;
+
+		/* Match pattern: remote_NNN.ir */
+		if (strncmp(fno.fname, IR_LEARNED_PREFIX, 7) == 0)
+		{
+			num = (uint16_t)strtoul(&fno.fname[7], NULL, 10);
+			if (num > max_num)
+				max_num = num;
+		}
+	}
+	f_closedir(&dir);
+
+	max_num++;
+	if (max_num > IR_LEARNED_MAX_NUM)
+		return false;
+
+	snprintf(path, path_size, "%s/%s%03u.ir", IR_LEARNED_FOLDER, IR_LEARNED_PREFIX, (unsigned)max_num);
+	return true;
+}
+
+
+
+/*============================================================================*/
+/*
+ * Save a learned IRMP_DATA signal to an .ir file in Flipper format.
+ * Returns true on success.
+ */
+/*============================================================================*/
+static bool ir_save_learned_signal(const IRMP_DATA *data)
+{
+	flipper_file_t ff;
+	flipper_ir_signal_t sig;
+	char path[64];
+	const char *proto_name;
+
+	if (data == NULL)
+		return false;
+
+	if (!ir_find_next_filename(path, sizeof(path)))
+		return false;
+
+	if (!ff_open_write(&ff, path))
+		return false;
+
+	if (!flipper_ir_write_header(&ff))
+	{
+		ff_close(&ff);
+		return false;
+	}
+
+	/* Populate the signal structure */
+	memset(&sig, 0, sizeof(sig));
+	sig.type = FLIPPER_IR_SIGNAL_PARSED;
+	sig.valid = true;
+
+	/* Build a descriptive name from protocol */
+	proto_name = flipper_ir_irmp_to_proto(data->protocol);
+	snprintf(sig.name, FLIPPER_IR_NAME_MAX_LEN, "%s_%04X", proto_name, data->command);
+
+	sig.parsed.protocol = data->protocol;
+	sig.parsed.address = data->address;
+	sig.parsed.command = data->command;
+	sig.parsed.flags = data->flags;
+
+	if (!flipper_ir_write_signal(&ff, &sig))
+	{
+		ff_close(&ff);
+		return false;
+	}
+
+	ff_close(&ff);
+	return true;
+}
+#endif /* M1_APP_FILE_IMPORT_ENABLE */
 
 
 

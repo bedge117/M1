@@ -1,0 +1,121 @@
+Filetype: IR signals file
+Version: 1
+
+#
+name: Power_1
+type: parsed
+protocol: NEC
+address: 10 00 00 00
+command: 00 00 00 00
+
+#
+name: Power_2
+type: parsed
+protocol: NEC
+address: 10 00 00 00
+command: 02 00 00 00
+
+#
+name: Power_3
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 00 00 00 00
+
+#
+name: Power_4
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 02 00 00 00
+
+#
+name: Power_5
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 00 00 00 00
+
+#
+name: Power_6
+type: parsed
+protocol: NEC
+address: 01 00 00 00
+command: 00 00 00 00
+
+#
+name: Speed_1
+type: parsed
+protocol: NEC
+address: 10 00 00 00
+command: 01 00 00 00
+
+#
+name: Speed_2
+type: parsed
+protocol: NEC
+address: 10 00 00 00
+command: 03 00 00 00
+
+#
+name: Speed_3
+type: parsed
+protocol: NEC
+address: 10 00 00 00
+command: 05 00 00 00
+
+#
+name: Oscillate_1
+type: parsed
+protocol: NEC
+address: 10 00 00 00
+command: 04 00 00 00
+
+#
+name: Oscillate_2
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 04 00 00 00
+
+#
+name: Timer_1
+type: parsed
+protocol: NEC
+address: 10 00 00 00
+command: 06 00 00 00
+
+#
+name: Timer_2
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 06 00 00 00
+
+#
+name: Dyson_Power
+type: parsed
+protocol: NEC
+address: 66 00 00 00
+command: 01 00 00 00
+
+#
+name: Dyson_Speed_Up
+type: parsed
+protocol: NEC
+address: 66 00 00 00
+command: 06 00 00 00
+
+#
+name: Dyson_Speed_Down
+type: parsed
+protocol: NEC
+address: 66 00 00 00
+command: 07 00 00 00
+
+#
+name: Dyson_Oscillate
+type: parsed
+protocol: NEC
+address: 66 00 00 00
+command: 08 00 00 00

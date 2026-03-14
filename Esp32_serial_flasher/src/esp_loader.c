@@ -24,10 +24,10 @@
 #include <assert.h>
 
 #define SHORT_TIMEOUT 100
-#define DEFAULT_TIMEOUT 1000
+#define DEFAULT_TIMEOUT 3000
 #define DEFAULT_FLASH_TIMEOUT 3000
 #define LOAD_RAM_TIMEOUT_PER_MB 2000000
-#define MD5_TIMEOUT_PER_MB 8000
+#define MD5_TIMEOUT_PER_MB 30000  /* Increased from 8000: 4MB factory images need more time */
 
 typedef enum {
     SPI_FLASH_READ_ID = 0x9F
@@ -47,16 +47,25 @@ static uint32_t s_target_flash_size = 0;
 static struct MD5Context s_md5_context;
 static uint32_t s_start_address;
 static uint32_t s_image_size;
+static uint32_t s_md5_total_bytes;  /* diagnostic: total bytes fed to MD5 */
+
+/* Diagnostic: last verify results (populated by esp_loader_flash_verify) */
+static uint8_t s_last_expected_md5[33];  /* hex string + null */
+static uint8_t s_last_actual_md5[33];    /* hex string + null */
+static uint32_t s_last_md5_total;        /* total bytes hashed */
+static uint32_t s_last_md5_image_size;   /* image size passed to ROM */
 
 static inline void init_md5(uint32_t address, uint32_t size)
 {
     s_start_address = address;
     s_image_size = size;
+    s_md5_total_bytes = 0;
     MD5Init(&s_md5_context);
 }
 
 static inline void md5_update(const uint8_t *data, uint32_t size)
 {
+    s_md5_total_bytes += size;
     MD5Update(&s_md5_context, data, size);
 }
 
@@ -360,7 +369,7 @@ esp_loader_error_t esp_loader_flash_start(uint32_t offset, uint32_t image_size, 
     const uint32_t erase_size = calc_erase_size(esp_loader_get_target(), offset, image_size);
     const uint32_t blocks_to_write = (image_size + block_size - 1) / block_size;
 
-    const uint32_t erase_region_timeout_per_mb = 10000;
+    const uint32_t erase_region_timeout_per_mb = 20000;  /* 4MB factory erase can exceed 42s */
     loader_port_start_timer(timeout_per_mb(erase_size, erase_region_timeout_per_mb));
     return loader_flash_begin_cmd(offset, erase_size, block_size, blocks_to_write, encryption_in_cmd);
 }
@@ -385,12 +394,24 @@ esp_loader_error_t esp_loader_flash_write(void *payload, uint32_t size)
     md5_update(payload, (size + 3) & ~3);
 #endif
 
+    /* Save the sequence number so retries re-send the same block index.
+     * Without this, a retry after a lost ACK sends a NEW sequence number,
+     * causing the ROM to write the same data to the NEXT flash address —
+     * shifting all subsequent blocks and guaranteeing an MD5 mismatch. */
+    const uint32_t saved_seq = loader_get_flash_sequence();
     unsigned int attempt = 0;
     esp_loader_error_t result = ESP_LOADER_ERROR_FAIL;
     do {
+        loader_set_flash_sequence(saved_seq);
         loader_port_start_timer(DEFAULT_TIMEOUT);
         result = loader_flash_data_cmd(data, s_flash_write_size);
         attempt++;
+        if (result != ESP_LOADER_SUCCESS && attempt < SERIAL_FLASHER_WRITE_BLOCK_RETRIES) {
+            /* Flush stale/partial response bytes and wait before retry */
+            loader_port_flush_rx();
+            loader_port_delay_ms(5);
+            loader_port_flush_rx();
+        }
     } while (result != ESP_LOADER_SUCCESS && attempt < SERIAL_FLASHER_WRITE_BLOCK_RETRIES);
 
     return result;
@@ -710,7 +731,7 @@ esp_loader_error_t esp_loader_flash_verify_known_md5(uint32_t address,
 
     RETURN_ON_ERROR(init_flash_params());
 
-    if (address + size >= s_target_flash_size) {
+    if (address + size > s_target_flash_size) {
         return ESP_LOADER_ERROR_IMAGE_SIZE;
     }
 
@@ -727,6 +748,10 @@ esp_loader_error_t esp_loader_flash_verify_known_md5(uint32_t address,
         hexify(received_md5, rec_md5_hex);
         memcpy(received_md5, rec_md5_hex, MD5_SIZE_ROM);
     }
+
+    /* Save actual MD5 for diagnostics */
+    memcpy(s_last_actual_md5, received_md5, 32);
+    s_last_actual_md5[32] = '\0';
 
     bool md5_match = memcmp(expected_md5, received_md5, MD5_SIZE_ROM) == 0;
     if (!md5_match) {
@@ -750,7 +775,24 @@ esp_loader_error_t esp_loader_flash_verify(void)
     md5_final(raw_md5);
     hexify(raw_md5, hex_md5);
 
-    return esp_loader_flash_verify_known_md5(s_start_address, s_image_size, hex_md5);
+    /* Save diagnostic info before verify (which may clear context) */
+    s_last_md5_total = s_md5_total_bytes;
+    s_last_md5_image_size = s_image_size;
+    memcpy(s_last_expected_md5, hex_md5, 32);
+    s_last_expected_md5[32] = '\0';
+
+    esp_loader_error_t result = esp_loader_flash_verify_known_md5(s_start_address, s_image_size, hex_md5);
+
+    return result;
+}
+
+void esp_loader_get_md5_diagnostic(uint8_t *expected_out, uint8_t *actual_out,
+                                    uint32_t *total_hashed, uint32_t *image_size)
+{
+    if (expected_out) memcpy(expected_out, s_last_expected_md5, 33);
+    if (actual_out)   memcpy(actual_out, s_last_actual_md5, 33);
+    if (total_hashed) *total_hashed = s_last_md5_total;
+    if (image_size)   *image_size = s_last_md5_image_size;
 }
 #endif /* MD5_ENABLED */
 

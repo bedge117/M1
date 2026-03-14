@@ -20,5 +20,6 @@ void firmware_update_exit(void);
 void firmware_update_get_image_file(void);
 void firmware_update_start(void);
 void firmware_update_gui_update(const S_M1_Menu_t *phmenu, uint8_t sel_item);
+void firmware_swap_banks(void);
 
 #endif /* M1_FW_UPDATE_H_ */

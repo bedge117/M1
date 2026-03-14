@@ -1,0 +1,135 @@
+Filetype: IR signals file
+Version: 1
+
+#
+name: Samsung_Soundbar
+type: parsed
+protocol: Samsung32
+address: 07 00 00 00
+command: 0E 00 00 00
+
+#
+name: Samsung_HT
+type: parsed
+protocol: Samsung32
+address: 0B 00 00 00
+command: 0E 00 00 00
+
+#
+name: LG_Soundbar
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 08 00 00 00
+
+#
+name: Bose
+type: parsed
+protocol: Bose
+address: 00 00 00 00
+command: 4C 00 00 00
+
+#
+name: Sony_Receiver
+type: parsed
+protocol: SIRC
+address: 10 00 00 00
+command: 15 00 00 00
+
+#
+name: Sony_Soundbar
+type: parsed
+protocol: SIRC
+address: 30 00 00 00
+command: 15 00 00 00
+
+#
+name: Denon
+type: parsed
+protocol: Denon
+address: 02 00 00 00
+command: 00 00 00 00
+
+#
+name: Onkyo
+type: parsed
+protocol: NEC
+address: D2 00 00 00
+command: 04 00 00 00
+
+#
+name: Yamaha
+type: parsed
+protocol: NEC
+address: A1 00 00 00
+command: 7E 00 00 00
+
+#
+name: Pioneer
+type: parsed
+protocol: NEC
+address: A5 00 00 00
+command: 1C 00 00 00
+
+#
+name: Marantz
+type: parsed
+protocol: RC5
+address: 10 00 00 00
+command: 0C 00 00 00
+
+#
+name: Harman_Kardon
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 0C 00 00 00
+
+#
+name: JBL
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 08 00 00 00
+
+#
+name: Vizio_Soundbar
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 08 00 00 00
+
+#
+name: Sonos
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 08 00 00 00
+
+#
+name: Polk
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 08 00 00 00
+
+#
+name: RC5_Amp_1
+type: parsed
+protocol: RC5
+address: 10 00 00 00
+command: 0C 00 00 00
+
+#
+name: RC5_Amp_2
+type: parsed
+protocol: RC5
+address: 11 00 00 00
+command: 0C 00 00 00
+
+#
+name: RC5_CD
+type: parsed
+protocol: RC5
+address: 14 00 00 00
+command: 0C 00 00 00

@@ -16,6 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "m1_compile_cfg.h"
+#include "ctrl_api.h"
 
 
 /* Attributes State Machine */
@@ -42,5 +44,20 @@ void menu_bluetooth_init(void);
 void bluetooth_config(void);
 void bluetooth_scan(void);
 void bluetooth_advertise(void);
+
+#ifdef M1_APP_BT_MANAGE_ENABLE
+
+typedef struct {
+    bool connected;
+    char addr[BSSID_STR_SIZE];
+    char name[SSID_LENGTH];
+} bt_connection_state_t;
+
+void bluetooth_saved_devices(void);
+void bluetooth_info(void);
+void bluetooth_set_badbt_name(void);
+bt_connection_state_t *bt_get_connection_state(void);
+
+#endif /* M1_APP_BT_MANAGE_ENABLE */
 
 #endif /* M1_BT_H_ */

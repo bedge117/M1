@@ -31,14 +31,56 @@
 const SubGHz_protocol_t subghz_protocols_list[] =
 {
 	/*{160, 470, PACKET_PULSE_TIME_TOLERANCE20, 0, 24}, // Princeton: bit 0 |^|___, bit 1 |^^^|_*/
-	{370, 1140, PACKET_PULSE_TIME_TOLERANCE20, 0, 24}, // Princeton: bit 0 |^|___, bit 1 |^^^|_
-	{250, 500, PACKET_PULSE_TIME_TOLERANCE20, 16, 46} // Security+ 2.0: bit 0 |^|___, bit 1 |^|_
+	{370, 1140, PACKET_PULSE_TIME_TOLERANCE20, 0, 24},  // Princeton: bit 0 |^|___, bit 1 |^^^|_
+	{250, 500, PACKET_PULSE_TIME_TOLERANCE20, 16, 46},  // Security+ 2.0
+	{320, 640, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},   // CAME 12-bit
+	{700, 1400, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Nice FLO 12-bit
+	{500, 1500, PACKET_PULSE_TIME_TOLERANCE25, 0, 10},  // Linear 10-bit
+	{340, 1020, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Holtek HT12E
+	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 66},   // KeeLoq
+	{488, 976, PACKET_PULSE_TIME_TOLERANCE25, 24, 64},  // Oregon Scientific v2.1 (Manchester)
+	{200, 600, PACKET_PULSE_TIME_TOLERANCE25, 4, 56},   // Acurite
+	{550, 1100, PACKET_PULSE_TIME_TOLERANCE25, 0, 44},  // LaCrosse TX
+	{255, 510, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},   // FAAC SLH (Manchester)
+	{500, 1000, PACKET_PULSE_TIME_TOLERANCE20, 0, 44},  // Hormann BiSecur
+	{800, 1600, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Marantec
+	{640, 1280, PACKET_PULSE_TIME_TOLERANCE25, 4, 56},  // Somfy Telis (Manchester)
+	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},   // Star Line (KeeLoq variant)
+	{350, 700, PACKET_PULSE_TIME_TOLERANCE20, 0, 24},   // Gate TX
+	{300, 900, PACKET_PULSE_TIME_TOLERANCE25, 0, 25},   // SMC5326
+	{225, 675, PACKET_PULSE_TIME_TOLERANCE25, 0, 16},   // Power Smart
+	{450, 1350, PACKET_PULSE_TIME_TOLERANCE20, 0, 48},  // iDo
+	{555, 1110, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Ansonic
+	{500, 1500, PACKET_PULSE_TIME_TOLERANCE25, 4, 40},  // Infactory (weather)
+	{120, 240, PACKET_PULSE_TIME_TOLERANCE25, 8, 40},   // Schrader TPMS (Manchester)
+	{100, 300, PACKET_PULSE_TIME_TOLERANCE30, 0, 64},   // BinRAW (generic fallback)
 };
 
 const char *protocol_text[] =
 {
 	"Princeton",
-	"Security+ 2.0"
+	"Security+ 2.0",
+	"CAME",
+	"Nice FLO",
+	"Linear",
+	"Holtek",
+	"KeeLoq",
+	"Oregon v2",
+	"Acurite",
+	"LaCrosse TX",
+	"FAAC SLH",
+	"Hormann",
+	"Marantec",
+	"Somfy Telis",
+	"Star Line",
+	"Gate TX",
+	"SMC5326",
+	"Power Smart",
+	"iDo",
+	"Ansonic",
+	"Infactory",
+	"Schrader TPMS",
+	"BinRAW"
 };
 
 
@@ -52,6 +94,7 @@ enum {
 /***************************** V A R I A B L E S ******************************/
 
 SubGHz_DecEnc_t subghz_decenc_ctl;
+SubGHz_Weather_Data_t weather_data;
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 
@@ -203,6 +246,11 @@ uint16_t *subghz_get_rawdata()
   * @retval None
   */
 /*============================================================================*/
+const SubGHz_Weather_Data_t* subghz_get_weather_data(void)
+{
+    return &weather_data;
+}
+
 bool subghz_decode_protocol(uint16_t p, uint16_t pulsecount)
 {
     uint8_t ret = false;
@@ -215,6 +263,90 @@ bool subghz_decode_protocol(uint16_t p, uint16_t pulsecount)
 
     	case SECURITY_PLUS_20:
     		ret = subghz_decode_security_plus_20(p, pulsecount);
+    		break;
+
+    	case CAME_12BIT:
+    		ret = subghz_decode_came(p, pulsecount);
+    		break;
+
+    	case NICE_FLO:
+    		ret = subghz_decode_nice_flo(p, pulsecount);
+    		break;
+
+    	case LINEAR_10BIT:
+    		ret = subghz_decode_linear(p, pulsecount);
+    		break;
+
+    	case HOLTEK_HT12E:
+    		ret = subghz_decode_holtek(p, pulsecount);
+    		break;
+
+    	case KEELOQ:
+    		ret = subghz_decode_keeloq(p, pulsecount);
+    		break;
+
+    	case OREGON_V2:
+    		ret = subghz_decode_oregon_v2(p, pulsecount);
+    		break;
+
+    	case ACURITE:
+    		ret = subghz_decode_acurite(p, pulsecount);
+    		break;
+
+    	case LACROSSE_TX:
+    		ret = subghz_decode_lacrosse_tx(p, pulsecount);
+    		break;
+
+    	case FAAC_SLH:
+    		ret = subghz_decode_faac_slh(p, pulsecount);
+    		break;
+
+    	case HORMANN:
+    		ret = subghz_decode_hormann(p, pulsecount);
+    		break;
+
+    	case MARANTEC:
+    		ret = subghz_decode_marantec(p, pulsecount);
+    		break;
+
+    	case SOMFY_TELIS:
+    		ret = subghz_decode_somfy_telis(p, pulsecount);
+    		break;
+
+    	case STAR_LINE:
+    		ret = subghz_decode_starline(p, pulsecount);
+    		break;
+
+    	case GATE_TX:
+    		ret = subghz_decode_gate_tx(p, pulsecount);
+    		break;
+
+    	case SMC5326:
+    		ret = subghz_decode_smc5326(p, pulsecount);
+    		break;
+
+    	case POWER_SMART:
+    		ret = subghz_decode_power_smart(p, pulsecount);
+    		break;
+
+    	case IDO:
+    		ret = subghz_decode_ido(p, pulsecount);
+    		break;
+
+    	case ANSONIC:
+    		ret = subghz_decode_ansonic(p, pulsecount);
+    		break;
+
+    	case INFACTORY:
+    		ret = subghz_decode_infactory(p, pulsecount);
+    		break;
+
+    	case SCHRADER_TPMS:
+    		ret = subghz_decode_schrader(p, pulsecount);
+    		break;
+
+    	case BIN_RAW:
+    		ret = subghz_decode_bin_raw(p, pulsecount);
     		break;
 
     	default:

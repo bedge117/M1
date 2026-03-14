@@ -455,6 +455,16 @@ esp_loader_error_t loader_get_security_info_cmd(get_security_info_response_data_
 }
 
 
+uint32_t loader_get_flash_sequence(void)
+{
+    return s_sequence_number;
+}
+
+void loader_set_flash_sequence(uint32_t seq)
+{
+    s_sequence_number = seq;
+}
+
 __attribute__ ((weak)) void loader_port_debug_print(const char *str)
 {
     (void) str;

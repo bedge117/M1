@@ -27,6 +27,10 @@
 #include "cli_app.h"
 #include "m1_ring_buffer.h"
 #include "m1_usb_cdc_msc.h"
+#include "m1_compile_cfg.h"
+#ifdef M1_APP_RPC_ENABLE
+#include "m1_rpc.h"
+#endif
 
 /*************************** D E F I N E S ************************************/
 
@@ -84,6 +88,11 @@ static volatile uint16_t logdb_dma_tx_len; // This variable may be modified by a
 
 static SemaphoreHandle_t mutex_log_write_trans;
 TaskHandle_t log_db_task_hdl;
+
+/* RPC CLI output capture state */
+static char    *s_capture_buf  = NULL;
+static uint16_t s_capture_size = 0;
+static uint16_t s_capture_len  = 0;
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 /*
@@ -496,18 +505,41 @@ int _write(int file, char *data, int len)
 
 	xSemaphoreTake(mutex_log_write_trans, portMAX_DELAY);
 
+    /* If RPC CLI capture is active, also copy to capture buffer */
+    if (s_capture_buf != NULL && s_capture_len < s_capture_size)
+    {
+        uint16_t avail = s_capture_size - s_capture_len - 1; /* reserve null */
+        uint16_t copy  = (len < (int)avail) ? (uint16_t)len : avail;
+        memcpy(&s_capture_buf[s_capture_len], data, copy);
+        s_capture_len += copy;
+        s_capture_buf[s_capture_len] = '\0';
+    }
+
     len = m1_ringbuffer_write(plogdb_tx_rb, data, len);
     xQueueSend(log_q_hdl, &q_item, 0);
-    //uint32_t pri_mask;
-    //pri_mask = __get_PRIMASK();
-    //__disable_irq();
-    //m1_logdb_start_dma_tx();
-    //__set_PRIMASK(primask);
 
     xSemaphoreGive(mutex_log_write_trans);
 
     return len;
 } // int _write(int file, char *data, int len)
+
+
+void m1_logdb_capture_start(char *buf, uint16_t buf_size)
+{
+    s_capture_buf  = buf;
+    s_capture_size = buf_size;
+    s_capture_len  = 0;
+    if (buf != NULL) buf[0] = '\0';
+}
+
+uint16_t m1_logdb_capture_stop(void)
+{
+    uint16_t len   = s_capture_len;
+    s_capture_buf  = NULL;
+    s_capture_size = 0;
+    s_capture_len  = 0;
+    return len;
+}
 
 
 
@@ -527,6 +559,10 @@ void log_db_handler_task(void *param)
 	    ret = xQueueReceive(log_q_hdl, &q_item, portMAX_DELAY);
 	    if ( ret==pdPASS )
 	    {
+#ifdef M1_APP_RPC_ENABLE
+	    	/* RPC enabled — USB CDC reserved for RPC, debug always via UART */
+	    	m1_logdb_start_dma_tx();
+#else
 	    	if ( (hUsbDeviceFS.pClassData != NULL) &&
 	    			(m1_USB_CDC_ready == 0) )
 	    	{
@@ -536,6 +572,7 @@ void log_db_handler_task(void *param)
 	    	{
 	    		m1_logdb_start_dma_tx();
 	    	}
+#endif
 	    	//vTaskDelay(0);
 	    } // if ( ret==pdPASS )
 	} // while (1)

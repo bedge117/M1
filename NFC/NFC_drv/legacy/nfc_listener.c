@@ -67,6 +67,7 @@
 #include "common/nfc_ctx.h"
 #include "lfrfid.h"
 #include "rfal_nfc.h"
+#include "mfc_crypto1.h"
 
 #define NOTINIT             0     
 #define IDLE                1     
@@ -118,6 +119,302 @@ static bool          s_firstRxPending = false;
 static uint16_t s_lastRxBits;
 static uint8_t  s_lastRxBuf[32]; /* As needed length */
 
+
+/*
+ ******************************************************************************
+ * MIFARE Classic Card Emulation State
+ ******************************************************************************
+ */
+typedef enum {
+    MFC_CE_IDLE = 0,
+    MFC_CE_SENT_NT,   /* Sent nT, waiting for reader's {nR, aR} */
+    MFC_CE_AUTHED,    /* Authenticated — subsequent commands are encrypted */
+} MfcCePhase_t;
+
+static struct {
+    crypto1_state_t cs;
+    MfcCePhase_t    phase;
+    uint32_t        nT;
+    uint32_t        uid32;
+} s_mfcCe;
+
+/* Determine sector number from block number */
+static uint16_t ceMfc_SectorOfBlock(uint16_t blockNo)
+{
+    if (blockNo < 128) return blockNo / 4;
+    return (uint16_t)(32 + (blockNo - 128) / 16);
+}
+
+/* Get sector trailer block number */
+static uint16_t ceMfc_TrailerOfSector(uint16_t sector)
+{
+    if (sector < 32) return (uint16_t)(sector * 4 + 3);
+    return (uint16_t)(128 + (sector - 32) * 16 + 15);
+}
+
+/* Extract key from dump sector trailer for a given block */
+static bool ceMfc_GetKeyForBlock(uint8_t blockNo, uint8_t keyType, uint8_t key[6])
+{
+    nfc_run_ctx_t *c = nfc_ctx_get();
+    if (!c || !c->dump.has_dump || !c->dump.data) return false;
+    if (c->dump.unit_size != MFC_BLOCK_SIZE) return false;
+
+    uint16_t sector  = ceMfc_SectorOfBlock(blockNo);
+    uint16_t trailer = ceMfc_TrailerOfSector(sector);
+
+    if (trailer >= c->dump.unit_count) return false;
+
+    uint8_t *td = &c->dump.data[trailer * MFC_BLOCK_SIZE];
+    if (keyType == MFC_CMD_AUTH_A)
+        memcpy(key, &td[0], MFC_KEY_LEN);   /* Key A at offset 0 */
+    else
+        memcpy(key, &td[10], MFC_KEY_LEN);  /* Key B at offset 10 */
+    return true;
+}
+
+/* Get block data from dump */
+static bool ceMfc_GetBlockData(uint8_t blockNo, uint8_t out[MFC_BLOCK_SIZE])
+{
+    nfc_run_ctx_t *c = nfc_ctx_get();
+    if (!c || !c->dump.has_dump || !c->dump.data) return false;
+    if (blockNo >= c->dump.unit_count) return false;
+
+    memcpy(out, &c->dump.data[(uint32_t)blockNo * MFC_BLOCK_SIZE], MFC_BLOCK_SIZE);
+    return true;
+}
+
+/* Compute ISO14443A CRC over buf[0..len-1] */
+static uint16_t ceMfc_CrcA(const uint8_t *buf, uint16_t len)
+{
+    uint16_t crc = 0x6363;
+    for (uint16_t i = 0; i < len; i++) {
+        uint8_t bt = buf[i];
+        bt ^= (uint8_t)(crc & 0xFF);
+        bt ^= (bt << 4);
+        crc = (crc >> 8) ^ ((uint16_t)bt << 8) ^ ((uint16_t)bt << 3) ^ ((uint16_t)bt >> 4);
+    }
+    return crc;
+}
+
+/*============================================================================*/
+/* CeHandleMfcCmdRx — Handle MIFARE Classic command in CE mode               */
+/*                                                                            */
+/* State machine:                                                             */
+/* MFC_CE_IDLE    → Receive AUTH cmd → send nT → MFC_CE_SENT_NT              */
+/* MFC_CE_SENT_NT → Receive {nR,aR}  → verify  → send aT → MFC_CE_AUTHED   */
+/* MFC_CE_AUTHED  → Receive encrypted cmd → process → send encrypted response*/
+/*============================================================================*/
+static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
+{
+    if (!rx || rxBits < 8) return false;
+    uint16_t rxBytes = rfalConvBitsToBytes(rxBits);
+    ReturnCode err;
+
+    switch (s_mfcCe.phase) {
+
+    case MFC_CE_IDLE:
+    {
+        /* Expecting AUTH command: 0x60 or 0x61 + blockNo (CRC stripped by RFAL) */
+        if (rxBytes < 2) return false;
+        uint8_t cmd     = rx[0];
+        uint8_t blockNo = rx[1];
+
+        if (cmd != MFC_CMD_AUTH_A && cmd != MFC_CMD_AUTH_B) {
+            /* Not an AUTH — might be HALT or unexpected */
+            return false;
+        }
+
+        uint8_t key[MFC_KEY_LEN];
+        if (!ceMfc_GetKeyForBlock(blockNo, cmd, key)) {
+            platformLog("[CE-MFC] no key for block %u\r\n", blockNo);
+            return false;
+        }
+
+        /* Generate nT from HAL tick */
+        extern uint32_t HAL_GetTick(void);
+        s_mfcCe.nT = HAL_GetTick() * 0x19660D + 0x3C6EF35F;
+
+        /* Initialize Crypto-1 cipher */
+        uint64_t key64 = 0;
+        for (int i = 0; i < MFC_KEY_LEN; i++)
+            key64 = (key64 << 8) | key[i];
+        crypto1_init(&s_mfcCe.cs, key64);
+
+        /* Feed uid XOR nT into cipher to set up state */
+        crypto1_word(&s_mfcCe.cs, s_mfcCe.uid32 ^ s_mfcCe.nT, 0);
+
+        /* Send nT (4 bytes, no CRC, standard parity — correct for this frame) */
+        uint8_t nTbuf[4];
+        nTbuf[0] = (uint8_t)(s_mfcCe.nT >> 24);
+        nTbuf[1] = (uint8_t)(s_mfcCe.nT >> 16);
+        nTbuf[2] = (uint8_t)(s_mfcCe.nT >> 8);
+        nTbuf[3] = (uint8_t)(s_mfcCe.nT);
+
+        err = rfalTransceiveBlockingTx(
+            nTbuf, sizeof(nTbuf), NULL, 0, NULL,
+            (uint32_t)RFAL_TXRX_FLAGS_CRC_TX_MANUAL,
+            rfalConvUsTo1fc(500U));
+
+        if (err != RFAL_ERR_NONE) {
+            platformLog("[CE-MFC] nT TX err=%d\r\n", err);
+            s_mfcCe.phase = MFC_CE_IDLE;
+            return false;
+        }
+
+        s_mfcCe.phase = MFC_CE_SENT_NT;
+
+        /* Re-arm RX */
+        err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
+        if (err == RFAL_ERR_NONE) {
+            s_cePhase = CE_PHASE_WAIT_RX;
+        }
+        platformLog("[CE-MFC] AUTH block %u: sent nT\r\n", blockNo);
+        return true;
+    }
+
+    case MFC_CE_SENT_NT:
+    {
+        /* Expecting encrypted {nR, aR} — 8 bytes from reader */
+        if (rxBytes < 8) {
+            platformLog("[CE-MFC] {nR,aR} too short: %u bytes\r\n", rxBytes);
+            s_mfcCe.phase = MFC_CE_IDLE;
+            return false;
+        }
+
+        /* Decrypt nR: keystream = crypto1_word(enR, is_encrypted=1) */
+        uint32_t enR = ((uint32_t)rx[0] << 24) | ((uint32_t)rx[1] << 16) |
+                       ((uint32_t)rx[2] << 8)  | (uint32_t)rx[3];
+        uint32_t ks1 = crypto1_word(&s_mfcCe.cs, enR, 1);
+        (void)ks1; /* nR = enR ^ ks1, but we don't need nR itself */
+
+        /* Decrypt aR */
+        uint32_t eaR = ((uint32_t)rx[4] << 24) | ((uint32_t)rx[5] << 16) |
+                       ((uint32_t)rx[6] << 8)  | (uint32_t)rx[7];
+        uint32_t ks2 = crypto1_word(&s_mfcCe.cs, 0, 0);
+        uint32_t aR  = eaR ^ ks2;
+
+        /* Verify aR == suc64(nT) */
+        uint32_t expected_aR = mfc_prng_successor(s_mfcCe.nT, 64);
+        if (aR != expected_aR) {
+            platformLog("[CE-MFC] auth verify FAILED\r\n");
+            s_mfcCe.phase = MFC_CE_IDLE;
+            return false;
+        }
+
+        /* Compute and send encrypted aT = suc96(nT) */
+        uint32_t aT  = mfc_prng_successor(s_mfcCe.nT, 96);
+        uint32_t ks3 = crypto1_word(&s_mfcCe.cs, 0, 0);
+        uint32_t eaT = aT ^ ks3;
+
+        uint8_t aTbuf[4];
+        aTbuf[0] = (uint8_t)(eaT >> 24);
+        aTbuf[1] = (uint8_t)(eaT >> 16);
+        aTbuf[2] = (uint8_t)(eaT >> 8);
+        aTbuf[3] = (uint8_t)(eaT);
+
+        err = rfalTransceiveBlockingTx(
+            aTbuf, sizeof(aTbuf), NULL, 0, NULL,
+            (uint32_t)RFAL_TXRX_FLAGS_CRC_TX_MANUAL,
+            rfalConvUsTo1fc(500U));
+
+        if (err != RFAL_ERR_NONE) {
+            platformLog("[CE-MFC] aT TX err=%d\r\n", err);
+            s_mfcCe.phase = MFC_CE_IDLE;
+            return false;
+        }
+
+        s_mfcCe.phase = MFC_CE_AUTHED;
+
+        /* Re-arm RX */
+        err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
+        if (err == RFAL_ERR_NONE) {
+            s_cePhase = CE_PHASE_WAIT_RX;
+        }
+        platformLog("[CE-MFC] auth OK → AUTHED\r\n");
+        return true;
+    }
+
+    case MFC_CE_AUTHED:
+    {
+        /* All commands are encrypted. Decrypt first. */
+        if (rxBytes < 4) {
+            s_mfcCe.phase = MFC_CE_IDLE;
+            return false;
+        }
+
+        /* Decrypt received command (4 bytes: cmd + arg + CRC) */
+        uint8_t plain[4];
+        for (int i = 0; i < 4 && i < (int)rxBytes; i++) {
+            uint8_t ks = crypto1_byte(&s_mfcCe.cs, rx[i], 1);
+            plain[i] = rx[i] ^ ks;
+        }
+
+        uint8_t cmd = plain[0];
+
+        if (cmd == MFC_CMD_READ) {
+            /* READ command: send encrypted block data + CRC */
+            uint8_t blockNo = plain[1];
+            uint8_t blockData[MFC_BLOCK_SIZE];
+
+            if (!ceMfc_GetBlockData(blockNo, blockData)) {
+                memset(blockData, 0x00, MFC_BLOCK_SIZE);
+            }
+
+            /* Append CRC to block data */
+            uint8_t resp[18]; /* 16 data + 2 CRC */
+            memcpy(resp, blockData, MFC_BLOCK_SIZE);
+            uint16_t crc = ceMfc_CrcA(resp, MFC_BLOCK_SIZE);
+            resp[16] = (uint8_t)(crc & 0xFF);
+            resp[17] = (uint8_t)(crc >> 8);
+
+            /* Encrypt the response */
+            uint8_t enc[18];
+            for (int i = 0; i < 18; i++) {
+                uint8_t ks = crypto1_byte(&s_mfcCe.cs, 0, 0);
+                enc[i] = resp[i] ^ ks;
+            }
+
+            err = rfalTransceiveBlockingTx(
+                enc, sizeof(enc), NULL, 0, NULL,
+                (uint32_t)RFAL_TXRX_FLAGS_CRC_TX_MANUAL,
+                rfalConvUsTo1fc(500U));
+
+            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
+                platformLog("[CE-MFC] READ TX err=%d\r\n", err);
+                s_mfcCe.phase = MFC_CE_IDLE;
+                return false;
+            }
+
+            /* Re-arm RX */
+            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
+            if (err == RFAL_ERR_NONE) {
+                s_cePhase = CE_PHASE_WAIT_RX;
+            }
+            return true;
+        }
+        else if (cmd == MFC_CMD_AUTH_A || cmd == MFC_CMD_AUTH_B) {
+            /* Re-authentication for a different sector */
+            s_mfcCe.phase = MFC_CE_IDLE;
+            /* Re-process this command as a new AUTH */
+            return CeHandleMfcCmdRx(plain, rfalConvBytesToBits(4));
+        }
+        else if (cmd == MFC_CMD_HALT) {
+            s_mfcCe.phase = MFC_CE_IDLE;
+            return false;
+        }
+        else {
+            /* Unknown encrypted command — send NACK */
+            platformLog("[CE-MFC] unknown encrypted cmd 0x%02X\r\n", cmd);
+            s_mfcCe.phase = MFC_CE_IDLE;
+            return false;
+        }
+    }
+
+    default:
+        s_mfcCe.phase = MFC_CE_IDLE;
+        return false;
+    }
+}
 
 __attribute__((weak)) void Listener_OnActivated(const rfalNfcDevice* dev) { (void)dev; }
 __attribute__((weak)) void Listener_OnDeactivated(void) {}
@@ -243,8 +540,8 @@ static uint16_t __attribute__((unused)) CeBuildEmulationResponse( const uint8_t 
 
     switch (c->head.family) {
     case M1NFC_FAM_CLASSIC:
-        /* TODO: Replace with ceMfc_FromDump when implemented */
-        platformLog("[CE][DBG] Classic not implemented\r\n");
+        /* Classic emulation handled by CeHandleMfcCmdRx via persona dispatch */
+        platformLog("[CE][DBG] Classic: use persona-based dispatch\r\n");
         return 0;
 
     case M1NFC_FAM_ULTRALIGHT:
@@ -638,6 +935,23 @@ bool ListenIni(void)
                 g_persona = EMU_PERSONA_T4T;
                 platformLog("[CE] Persona=T4T ATQA=%02X%02X SAK=%02X\r\n", emuA.atqa[0], emuA.atqa[1], emuA.sak);
                 discParam.lmConfigPA.SEL_RES     = 0x00; // Force SAK 0x00 for T4T compatibility with common NFC readers (temporary)
+            } else if (emuA.sak == 0x08 || emuA.sak == 0x18 || emuA.sak == 0x09 ||
+                       emuA.sak == 0x01 || emuA.sak == 0x10 || emuA.sak == 0x11 ||
+                       emuA.sak == 0x19 || emuA.sak == 0x28 || emuA.sak == 0x38) {
+                /* MIFARE Classic / Plus / EV1 variants */
+                g_persona = EMU_PERSONA_MFC;
+                /* Initialize MFC CE state */
+                memset(&s_mfcCe, 0, sizeof(s_mfcCe));
+                s_mfcCe.phase = MFC_CE_IDLE;
+                /* Store UID for crypto */
+                if (emuA.uid_len >= 7)
+                    s_mfcCe.uid32 = ((uint32_t)emuA.uid[3] << 24) | ((uint32_t)emuA.uid[4] << 16) |
+                                    ((uint32_t)emuA.uid[5] << 8)  | (uint32_t)emuA.uid[6];
+                else
+                    s_mfcCe.uid32 = ((uint32_t)emuA.uid[0] << 24) | ((uint32_t)emuA.uid[1] << 16) |
+                                    ((uint32_t)emuA.uid[2] << 8)  | (uint32_t)emuA.uid[3];
+                platformLog("[CE] Persona=MFC ATQA=%02X%02X SAK=%02X uid32=%08lX\r\n",
+                            emuA.atqa[0], emuA.atqa[1], emuA.sak, (unsigned long)s_mfcCe.uid32);
             } else if (emuA.atqa[0] == 0x44 && emuA.atqa[1] == 0x00 && emuA.sak == 0x00) {
                 /* NTAG/Ultralight (Type 2) */
                 g_persona = EMU_PERSONA_T2T;
@@ -938,16 +1252,23 @@ void ListenerCycle(void)
                     break;
                 }
 
-                /* 5) Handle T2T command: CeHandleT2TCmdRx() prepares response and starts TX internally */
+                /* 5) Dispatch based on persona */
                 g_ceTxLenBytes = 0U;
                 g_ceTxPending  = false;
 
-                if (CeHandleT2TCmdRx(s_ceRxData, rxBits) == true) {
-                    /* TX started inside CeHandleT2TCmdRx() and s_cePhase set to CE_PHASE_DATAEX */
-                    break;
+                if (g_persona == EMU_PERSONA_MFC) {
+                    /* MIFARE Classic emulation */
+                    if (CeHandleMfcCmdRx(s_ceRxData, rxBits) == true) {
+                        break;
+                    }
+                } else {
+                    /* T2T / RAW emulation */
+                    if (CeHandleT2TCmdRx(s_ceRxData, rxBits) == true) {
+                        break;
+                    }
                 }
 
-                /* 6) If non-T2T data received: (if T2T-only, just re-arm RX or return to discovery) */
+                /* 6) If command was not handled, re-arm RX or return to discovery */
                 platformLog("[CE] Non-T2T cmd=0x%02X (%uB) -> re-arm RX\r\n",
                             s_ceRxData[0], (unsigned)rxBytes);
 

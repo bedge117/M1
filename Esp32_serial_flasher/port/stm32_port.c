@@ -19,6 +19,7 @@
 #include <sys/param.h>
 #include <stdio.h>
 #include "stm32_port.h"
+#include "m1_watchdog.h"
 
 static UART_HandleTypeDef *uart;
 static GPIO_TypeDef *gpio_port_io0, *gpio_port_rst;
@@ -44,6 +45,7 @@ static uint32_t s_time_end;
 
 esp_loader_error_t loader_port_write(const uint8_t *data, uint16_t size, uint32_t timeout)
 {
+    m1_wdt_reset();
     HAL_StatusTypeDef err = HAL_UART_Transmit(uart, (uint8_t *)data, size, timeout);
 
     if (err == HAL_OK) {
@@ -75,16 +77,21 @@ esp_loader_error_t loader_port_read(uint8_t *data, uint16_t size, uint32_t timeo
         return ESP_LOADER_ERROR_FAIL;
     }
 #else
-	size_t to = HAL_GetTick();
-	uint16_t read_n = 0;
-	while ( !read_n )
+	uint32_t to = HAL_GetTick();
+	uint16_t total_read = 0;
+	while ( total_read < size )
 	{
-		read_n = m1_ringbuffer_read(& esp32_rb_hdl, data, size);
+		uint16_t read_n = m1_ringbuffer_read(&esp32_rb_hdl, data + total_read, size - total_read);
+		total_read += read_n;
 		if ( (HAL_GetTick() - to) > timeout )
 			break;
-		HAL_Delay(10); // Give time for other tasks
-	} // while ( !read_n )
-	if ( read_n )
+		if ( !read_n )
+		{
+			m1_wdt_reset();
+			HAL_Delay(1); // Short sleep only when no data available
+		}
+	} // while ( total_read < size )
+	if ( total_read >= size )
 	{
 #if SERIAL_FLASHER_DEBUG_TRACE
         transfer_debug_print(data, size, false);
@@ -129,6 +136,7 @@ void loader_port_reset_target(void)
 
 void loader_port_delay_ms(uint32_t ms)
 {
+    m1_wdt_reset();
     HAL_Delay(ms);
 }
 
@@ -149,6 +157,11 @@ uint32_t loader_port_remaining_time(void)
 void loader_port_debug_print(const char *str)
 {
     printf("DEBUG: %s\n", str);
+}
+
+void loader_port_flush_rx(void)
+{
+    m1_ringbuffer_reset(&esp32_rb_hdl);
 }
 
 esp_loader_error_t loader_port_change_transmission_rate(uint32_t baudrate)

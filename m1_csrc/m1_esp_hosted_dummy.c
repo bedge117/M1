@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "esp_app_main.h"
 
 /*************************** D E F I N E S ************************************/
 
@@ -37,8 +38,7 @@ void esp32_app_init(void);
 /*============================================================================*/
 bool get_esp32_ready_status(void)
 {
-	;
-	return 0;
+	return get_esp32_main_init_status();
 }
 
 

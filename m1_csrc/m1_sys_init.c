@@ -24,6 +24,7 @@
 #include "m1_rf_spi.h"
 #include "m1_sdcard.h"
 #include "m1_esp32_hal.h"
+#include "esp_app_main.h"
 #include "battery.h"
 #include "m1_gpio.h"
 #include "m1_log_debug.h"
@@ -174,7 +175,6 @@ void m1_system_init_task(void *param)
 			lp5814_init();
 			m1_lcd_init(&hspi1);
 			m1_sdcard_init(&hsd1);
-			//m1_esp32_init();
 
 			/* USART1 default config */
 			huart_logdb.Init.BaudRate = LOG_DEBUG_UART_BAUD;
