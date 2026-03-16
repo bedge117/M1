@@ -211,6 +211,7 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f);
 static void rpc_handle_fw_update_data(const S_RPC_Frame *f);
 static void rpc_handle_fw_update_finish(const S_RPC_Frame *f);
 static void rpc_handle_fw_bank_swap(const S_RPC_Frame *f);
+static void rpc_handle_fw_bank_erase(const S_RPC_Frame *f);
 static void rpc_handle_fw_dfu_enter(const S_RPC_Frame *f);
 static void rpc_handle_esp_info(const S_RPC_Frame *f);
 static void rpc_handle_esp_update_start(const S_RPC_Frame *f);
@@ -573,6 +574,7 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
     case RPC_CMD_FW_UPDATE_DATA:   rpc_handle_fw_update_data(frame);   break;
     case RPC_CMD_FW_UPDATE_FINISH: rpc_handle_fw_update_finish(frame); break;
     case RPC_CMD_FW_BANK_SWAP:     rpc_handle_fw_bank_swap(frame);     break;
+    case RPC_CMD_FW_BANK_ERASE:    rpc_handle_fw_bank_erase(frame);   break;
     case RPC_CMD_FW_DFU_ENTER:     rpc_handle_fw_dfu_enter(frame);     break;
 
     /* ESP32 */
@@ -1734,6 +1736,58 @@ static void rpc_handle_fw_bank_swap(const S_RPC_Frame *f)
     /* bl_swap_banks triggers a system reset — we won't return here.
      * If bl_swap_banks() returns false (flash error), the device stays
      * connected and qMonstatek will notice it didn't disconnect. */
+}
+
+
+/**
+ * @brief  Handle FW_BANK_ERASE — erase the entire inactive flash bank.
+ *
+ * No payload required.  Erases all sectors in the inactive bank,
+ * making it appear empty to the bootloader validation checks.
+ * Takes ~3-6 seconds (128 sectors at 8 KB each).
+ */
+static void rpc_handle_fw_bank_erase(const S_RPC_Frame *f)
+{
+    uint32_t inactive_bank;
+    uint32_t sector_error;
+    uint16_t n_sectors;
+    FLASH_EraseInitTypeDef erase_init;
+
+    if (bl_get_active_bank() == BANK1_ACTIVE)
+    {
+        M1_LOG_I(M1_LOGDB_TAG, "Bank erase: erasing Bank 2\r\n");
+        inactive_bank = FLASH_BANK_2;
+    }
+    else
+    {
+        M1_LOG_I(M1_LOGDB_TAG, "Bank erase: erasing Bank 1\r\n");
+        inactive_bank = FLASH_BANK_1;
+    }
+
+    n_sectors = M1_FLASH_BANK_SIZE / FLASH_SECTOR_SIZE;  /* 128 sectors */
+
+    HAL_FLASH_Unlock();
+
+    erase_init.TypeErase  = FLASH_TYPEERASE_SECTORS;
+    erase_init.Banks      = inactive_bank;
+    erase_init.NbSectors  = 1;
+
+    for (uint16_t i = 0; i < n_sectors; i++)
+    {
+        m1_wdt_reset();
+        erase_init.Sector = i;
+        if (HAL_FLASHEx_Erase(&erase_init, &sector_error) != HAL_OK)
+        {
+            HAL_FLASH_Lock();
+            M1_LOG_E(M1_LOGDB_TAG, "Bank erase: failed at sector %u\r\n", i);
+            m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
+            return;
+        }
+    }
+
+    HAL_FLASH_Lock();
+    M1_LOG_I(M1_LOGDB_TAG, "Bank erase: complete (%u sectors)\r\n", n_sectors);
+    m1_rpc_send_ack(f->seq);
 }
 
 

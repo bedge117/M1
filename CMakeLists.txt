@@ -21,10 +21,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME M1_v0800_C3.1)
+set(CMAKE_PROJECT_NAME M1_v0800_C3.2)
 
 # C3 fork revision — must match M1_C3_REVISION in m1_fw_update_bl.h
-set(M1_C3_REVISION 1)
+set(M1_C3_REVISION 2)
 
 # Include toolchain file
 include("cmake/gcc-arm-none-eabi.cmake")
@@ -131,6 +131,7 @@ add_custom_command(
 )
 
 # Command to inject CRC32 + C3 metadata into the .bin file
+# Also generates a stock-compatible SD card binary (_sdcard.bin)
 add_custom_command(
     TARGET ${CMAKE_PROJECT_NAME}
     POST_BUILD
