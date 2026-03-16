@@ -398,9 +398,6 @@ void settings_save_to_sd(void)
     snprintf(buf, sizeof(buf), "esp32_auto_init=%d\n", m1_esp32_auto_init);
     f_write(&fp, buf, strlen(buf), &bw);
 
-    snprintf(buf, sizeof(buf), "badbt_name=%s\n", m1_badbt_name);
-    f_write(&fp, buf, strlen(buf), &bw);
-
     f_close(&fp);
 }
 
@@ -455,18 +452,4 @@ void settings_load_from_sd(void)
         }
     }
 
-    /* Parse "badbt_name=<name>" */
-    p = strstr(buf, "badbt_name=");
-    if (p != NULL)
-    {
-        p += 11;  /* skip "badbt_name=" */
-        char *end = strchr(p, '\n');
-        size_t len = end ? (size_t)(end - p) : strlen(p);
-        if (len > BADBT_NAME_MAX_LEN) len = BADBT_NAME_MAX_LEN;
-        if (len > 0)
-        {
-            memcpy(m1_badbt_name, p, len);
-            m1_badbt_name[len] = '\0';
-        }
-    }
 }
