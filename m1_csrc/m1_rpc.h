@@ -73,6 +73,7 @@
 #define RPC_CMD_FW_UPDATE_FINISH 0x44
 #define RPC_CMD_FW_BANK_SWAP    0x45
 #define RPC_CMD_FW_DFU_ENTER    0x46
+#define RPC_CMD_FW_BANK_ERASE   0x47
 
 /* ── ESP32 Commands (0x50–0x5F) ── */
 #define RPC_CMD_ESP_INFO        0x50

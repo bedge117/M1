@@ -95,6 +95,7 @@ def main():
     parser.add_argument('--output', '-o', help='Output file (default: modify in place)')
     parser.add_argument('--c3-revision', type=int, default=0,
                         help='C3 fork revision number (0 = stock Monstatek)')
+    parser.add_argument('--sdcard', help='(deprecated, ignored)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Print detailed info')
     args = parser.parse_args()
 
@@ -167,6 +168,17 @@ def main():
             print(f"C3 revision:  {args.c3_revision}")
             print(f"Build date:   {build_ts}")
 
+    # Pad to word alignment if needed
+    pad = len(data) % 4
+    if pad:
+        data.extend(b'\xFF' * (4 - pad))
+
+    # Compute stock-compatible CRC over the entire image and append it
+    # This makes the binary compatible with every SD card updater while
+    # preserving the C3 metadata embedded at 0xFFC00.
+    sd_crc = stm32_crc32(bytes(data))
+    data.extend(struct.pack('<I', sd_crc))
+
     # Write the output
     output_path = args.output if args.output else args.input
     with open(output_path, 'wb') as f:
@@ -175,7 +187,8 @@ def main():
     if args.verbose:
         print(f"Output file:  {output_path}")
 
-    print(f"CRC32 injected: 0x{crc_value:08X} (image: {fw_image_size} bytes) -> {output_path}")
+    print(f"CRC32 injected: embedded=0x{crc_value:08X} trailing=0x{sd_crc:08X} ({len(data)} bytes) -> {output_path}")
+
     return 0
 
 
