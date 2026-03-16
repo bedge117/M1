@@ -161,6 +161,10 @@ extern S_M1_Buttons_Status 	m1_buttons_status;
 extern S_M1_Device_Status_t	m1_device_stat;
 extern uint8_t              m1_southpaw_mode;  /* 0=right-handed, 1=left-handed */
 extern uint8_t              m1_esp32_auto_init; /* 0=on-demand, 1=init at boot */
+#ifdef M1_APP_BADBT_ENABLE
+#define BADBT_NAME_MAX_LEN 20
+extern char m1_badbt_name[BADBT_NAME_MAX_LEN + 1];
+#endif
 extern TaskHandle_t			system_task_hdl;
 extern TaskHandle_t 		idle_task_hdl;
 extern QueueHandle_t 		button_events_q_hdl;

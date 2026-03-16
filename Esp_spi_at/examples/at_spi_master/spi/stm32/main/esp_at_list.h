@@ -76,6 +76,12 @@
 // BLE device name
 #define ESP32C6_AT_REQ_BLE_NAME		"AT+BLENAME="
 
+// BLE HID (keyboard emulation)
+// AT+HIDKBINIT=<enable>  1=configure HID appearance/security
+#define ESP32C6_AT_REQ_BLE_HID_INIT	"AT+HIDKBINIT="
+// AT+HIDKBSEND=<modifier>,<key1>,<key2>,<key3>,<key4>,<key5>,<key6>
+#define ESP32C6_AT_REQ_BLE_HID_KB		"AT+HIDKBSEND="
+
 // BLE Connect/Disconnect
 // AT+BLECONN=<conn_index>,<remote_BLE_address>[,<addr_type>][,<timeout>]
 #define ESP32C6_AT_REQ_BLE_CONNECT		"AT+BLECONN="

@@ -841,6 +841,24 @@ bt_connection_state_t *bt_get_connection_state(void)
 
 
 
+#ifdef M1_APP_BADBT_ENABLE
+void bluetooth_set_badbt_name(void)
+{
+	char new_name[BADBT_NAME_MAX_LEN + 1] = {0};
+
+	uint8_t len = m1_vkb_get_filename("Bad-BT Name", m1_badbt_name, new_name);
+	if (len > 0)
+	{
+		strncpy(m1_badbt_name, new_name, BADBT_NAME_MAX_LEN);
+		m1_badbt_name[BADBT_NAME_MAX_LEN] = '\0';
+		settings_save_to_sd();
+
+		bt_show_message("Name saved:", m1_badbt_name, 1500);
+	}
+}
+#endif /* M1_APP_BADBT_ENABLE */
+
+
 #else /* !M1_APP_BT_MANAGE_ENABLE — original scan/advertise code */
 
 

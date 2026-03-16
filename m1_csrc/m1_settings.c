@@ -25,6 +25,7 @@
 #include "ff.h"
 #include "m1_log_debug.h"
 #include "m1_fw_update_bl.h"
+#include "m1_system.h"
 
 /*************************** D E F I N E S ************************************/
 
@@ -398,6 +399,11 @@ void settings_save_to_sd(void)
     snprintf(buf, sizeof(buf), "esp32_auto_init=%d\n", m1_esp32_auto_init);
     f_write(&fp, buf, strlen(buf), &bw);
 
+#ifdef M1_APP_BADBT_ENABLE
+    snprintf(buf, sizeof(buf), "badbt_name=%s\n", m1_badbt_name);
+    f_write(&fp, buf, strlen(buf), &bw);
+#endif
+
     f_close(&fp);
 }
 
@@ -451,5 +457,23 @@ void settings_load_from_sd(void)
             m1_esp32_auto_init = val;
         }
     }
+
+#ifdef M1_APP_BADBT_ENABLE
+    /* Parse "badbt_name=XYZ" */
+    p = strstr(buf, "badbt_name=");
+    if (p != NULL)
+    {
+        p += 11;  /* skip "badbt_name=" */
+        char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        uint8_t len = end - p;
+        if (len > BADBT_NAME_MAX_LEN) len = BADBT_NAME_MAX_LEN;
+        if (len > 0)
+        {
+            memcpy(m1_badbt_name, p, len);
+            m1_badbt_name[len] = '\0';
+        }
+    }
+#endif
 
 }
