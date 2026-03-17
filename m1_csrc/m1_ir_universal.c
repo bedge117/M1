@@ -792,11 +792,17 @@ static bool parse_ir_signal_block(flipper_file_t *ff, ir_universal_cmd_t *cmd)
 		}
 		else if (strcmp(ff_get_key(ff), "address") == 0 && is_parsed)
 		{
-			cmd->address = (uint16_t)strtoul(ff_get_value(ff), NULL, 16);
+			uint8_t hex_buf[4];
+			uint8_t n = ff_parse_hex_bytes(ff_get_value(ff), hex_buf, 4);
+			cmd->address = (n >= 2) ? (uint16_t)(hex_buf[0] | ((uint16_t)hex_buf[1] << 8))
+			                        : (uint16_t)hex_buf[0];
 		}
 		else if (strcmp(ff_get_key(ff), "command") == 0 && is_parsed)
 		{
-			cmd->command = (uint16_t)strtoul(ff_get_value(ff), NULL, 16);
+			uint8_t hex_buf[4];
+			uint8_t n = ff_parse_hex_bytes(ff_get_value(ff), hex_buf, 4);
+			cmd->command = (n >= 2) ? (uint16_t)(hex_buf[0] | ((uint16_t)hex_buf[1] << 8))
+			                        : (uint16_t)hex_buf[0];
 		}
 		else if (strcmp(ff_get_key(ff), "frequency") == 0 && is_raw_type)
 		{
@@ -828,7 +834,7 @@ static bool parse_ir_signal_block(flipper_file_t *ff, ir_universal_cmd_t *cmd)
 		if (is_parsed && cmd->protocol != 0)
 		{
 			cmd->is_raw = false;
-			cmd->flags = 1; /* No repeat */
+			cmd->flags = 0; /* Full frame (not repeat) */
 			cmd->valid = true;
 			return true;
 		}

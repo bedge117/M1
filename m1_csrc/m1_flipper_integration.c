@@ -39,9 +39,13 @@
 #include "m1_lcd.h"
 #include "m1_display.h"
 #include "m1_file_browser.h"
+#include "m1_file_util.h"
 #include "m1_log_debug.h"
 #include "ff.h"
 #include "lfrfid.h"
+#include "lfrfid_file.h"
+#include "nfc_ctx.h"
+#include "nfc_file.h"
 
 /*************************** D E F I N E S ************************************/
 
@@ -51,6 +55,9 @@
 #define FLIPPER_NFC_DIR             "0:/Flipper/NFC"
 #define FLIPPER_RFID_DIR            "0:/Flipper/RFID"
 #define FLIPPER_DIR_ROOT            "0:/Flipper"
+
+#define M1_NFC_SAVE_DIR             "0:/NFC"
+#define M1_RFID_SAVE_DIR            "0:/RFID"
 
 #define FLIPPER_PATH_MAX            256
 #define FLIPPER_STATUS_LINE_Y       56
@@ -166,28 +173,18 @@ static bool flipper_ensure_dir(const char *path)
 
 void sub_ghz_replay_flipper(void)
 {
-    flipper_subghz_signal_t sig;
-    uint8_t band;
-    int ret;
-    uint16_t i;
-    (void)ret;  /* Used only in error path */
+    DIR dir;
+    FILINFO fno;
+    FRESULT fr;
+    bool found = false;
+    uint8_t result;
 
     flipper_show_status("Import Sub-GHz", "Loading...");
 
     /* Ensure directory exists */
     flipper_ensure_dir(FLIPPER_SUBGHZ_DIR);
 
-    /* Use the M1 file browser to pick a .sub file */
-    /* For now, show instructions and wait */
-    flipper_show_status("Place .sub files in:", FLIPPER_SUBGHZ_DIR);
-    M1_LOG_I(M1_LOGDB_TAG, "Sub-GHz Flipper replay - waiting for file selection\r\n");
-
-    /* Simple file browser: look for first .sub file in directory */
-    DIR dir;
-    FILINFO fno;
-    FRESULT fr;
-    bool found = false;
-
+    /* Browse for .sub files */
     fr = f_opendir(&dir, FLIPPER_SUBGHZ_DIR);
     if (fr != FR_OK) {
         flipper_show_result("No Flipper/SubGHz dir", false);
@@ -213,52 +210,23 @@ void sub_ghz_replay_flipper(void)
         return;
     }
 
-    /* Parse the .sub file */
-    flipper_show_status("Parsing:", fno.fname);
-    if (!flipper_subghz_load(flipper_filepath, &sig)) {
-        ret = -1;  /* parse failed */
-        flipper_show_result("Parse failed", false);
-        flipper_wait_for_back();
-        return;
-    }
+    M1_LOG_I(M1_LOGDB_TAG, "Sub-GHz Flipper replay: %s\r\n", flipper_filepath);
+    flipper_show_status("Replaying:", fno.fname);
 
-    /* Map frequency to M1 band */
-    band = flipper_subghz_freq_to_band(sig.frequency);
-
-    M1_LOG_I(M1_LOGDB_TAG, "Sub-GHz replay: freq=%lu Hz, %d samples, type=%s\r\n",
-             sig.frequency, sig.raw_count,
-             (sig.type == FLIPPER_SUBGHZ_TYPE_RAW) ? "RAW" : "KEY");
-
-    if (sig.type == FLIPPER_SUBGHZ_TYPE_RAW && sig.raw_count > 0) {
-        /* Load raw timing data into the Sub-GHz ring buffer for replay */
-        flipper_show_status("Replaying:", fno.fname);
-
-        /* Reset ring buffer and load raw data */
-        m1_ringbuffer_reset(&subghz_rx_rawdata_rb);
-
-        for (i = 0; i < sig.raw_count; i++) {
-            int32_t val = sig.raw_data[i];
-            /* Convert signed Flipper format (positive=high, negative=low)
-             * to M1 unsigned timing with polarity in LSB */
-            uint32_t abs_val;
-            if (val >= 0) {
-                abs_val = (uint32_t)val;
-                abs_val |= 0x0001;  /* Mark: LSB=1 (rising edge) */
-            } else {
-                abs_val = (uint32_t)(-val);
-                abs_val &= 0xFFFFFFFE;  /* Space: LSB=0 (falling edge) */
-            }
-            m1_ringbuffer_insert(&subghz_rx_rawdata_rb, (uint8_t *)&abs_val);
+    /* Convert .sub → temp .sgh and enter native replay GUI.
+     * This call blocks until the user presses BACK in the replay view. */
+    result = sub_ghz_replay_flipper_file(flipper_filepath);
+    if (result)
+    {
+        const char *err;
+        switch (result) {
+        case 2:  err = "Only RAW .sub supported"; break;
+        case 3:  err = "Unsupported frequency";   break;
+        default: err = "Replay init failed";      break;
         }
-
-        M1_LOG_I(M1_LOGDB_TAG, "Loaded %d samples into ring buffer\r\n", sig.raw_count);
-
-        flipper_show_result("Replay data loaded", true);
-    } else {
-        flipper_show_result("Only RAW .sub supported", false);
+        flipper_show_result(err, false);
+        flipper_wait_for_back();
     }
-
-    flipper_wait_for_back();
 }
 
 
@@ -317,8 +285,76 @@ void nfc_import_flipper(void)
     M1_LOG_I(M1_LOGDB_TAG, "NFC import: type=%d, UID len=%d, ATQA=%02X%02X, SAK=%02X\r\n",
              card.type, card.uid_len, card.atqa[0], card.atqa[1], card.sak);
 
-    /* Display imported card info */
+    /* Populate NFC context from Flipper card data and save in M1 native format */
     {
+        nfc_run_ctx_t *c = nfc_ctx_get();
+        char save_path[FLIPPER_PATH_MAX];
+        char base_name[64];
+        bool saved = false;
+
+        if (c)
+        {
+            nfc_run_ctx_init(c);
+
+            /* Map Flipper type → M1 tech/family */
+            c->head.tech = M1NFC_TECH_A;  /* Default */
+            switch (card.type) {
+            case FLIPPER_NFC_TYPE_ISO14443_3A:
+                c->head.tech   = M1NFC_TECH_A;
+                c->head.family = M1NFC_FAM_CLASSIC; /* Best guess for generic 3A */
+                break;
+            case FLIPPER_NFC_TYPE_MIFARE_CLASSIC:
+                c->head.tech   = M1NFC_TECH_A;
+                c->head.family = M1NFC_FAM_CLASSIC;
+                break;
+            case FLIPPER_NFC_TYPE_NTAG:
+                c->head.tech   = M1NFC_TECH_A;
+                c->head.family = M1NFC_FAM_ULTRALIGHT;
+                break;
+            case FLIPPER_NFC_TYPE_MIFARE_DESFIRE:
+                c->head.tech   = M1NFC_TECH_A;
+                c->head.family = M1NFC_FAM_DESFIRE;
+                break;
+            case FLIPPER_NFC_TYPE_ISO14443_3B:
+                c->head.tech   = M1NFC_TECH_B;
+                break;
+            default:
+                c->head.tech   = M1NFC_TECH_A;
+                break;
+            }
+
+            /* Copy UID */
+            c->head.uid_len = card.uid_len;
+            memcpy(c->head.uid, card.uid, card.uid_len);
+
+            /* Copy ATQA and SAK (Tech A) */
+            if (c->head.tech == M1NFC_TECH_A)
+            {
+                memcpy(c->head.a.atqa, card.atqa, 2);
+                c->head.a.has_atqa = true;
+                c->head.a.sak     = card.sak;
+                c->head.a.has_sak = true;
+            }
+
+            /* Ensure 0:/NFC/ directory exists */
+            fs_directory_ensure(M1_NFC_SAVE_DIR);
+
+            /* Derive save filename from source (strip .nfc, re-add .nfc) */
+            strncpy(base_name, fno.fname, sizeof(base_name) - 1);
+            base_name[sizeof(base_name) - 1] = '\0';
+            size_t blen = strlen(base_name);
+            if (blen > 4 && strcmp(&base_name[blen - 4], ".nfc") == 0)
+                base_name[blen - 4] = '\0';
+
+            snprintf(save_path, sizeof(save_path), "%s/%s.nfc",
+                     M1_NFC_SAVE_DIR, base_name);
+
+            saved = nfc_profile_save(save_path, c);
+            M1_LOG_I(M1_LOGDB_TAG, "NFC save to %s: %s\r\n",
+                     save_path, saved ? "OK" : "FAIL");
+        }
+
+        /* Display result */
         char uid_str[32] = {0};
         char info_str[48] = {0};
         uint8_t i;
@@ -331,7 +367,7 @@ void nfc_import_flipper(void)
         u8g2_FirstPage(&m1_u8g2);
         do {
             u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
-            u8g2_DrawStr(&m1_u8g2, 2, 12, "NFC Card Imported");
+            u8g2_DrawStr(&m1_u8g2, 2, 12, saved ? "NFC Saved" : "NFC Save Failed");
             u8g2_DrawStr(&m1_u8g2, 2, 28, info_str);
             u8g2_DrawStr(&m1_u8g2, 2, 44, fno.fname);
             u8g2_DrawStr(&m1_u8g2, 2, FLIPPER_STATUS_LINE_Y, "Press BACK to exit");
@@ -397,8 +433,48 @@ void rfid_import_flipper(void)
     M1_LOG_I(M1_LOGDB_TAG, "RFID import: protocol=%d, data_len=%d\r\n",
              tag.protocol, tag.data_len);
 
-    /* Display imported tag info */
+    /* Convert Flipper tag → M1 LFRFID_TAG_INFO and save */
     {
+        LFRFID_TAG_INFO tag_info;
+        char save_path[FLIPPER_PATH_MAX];
+        char base_name[64];
+        bool saved = false;
+
+        memset(&tag_info, 0, sizeof(tag_info));
+        tag_info.protocol = (uint8_t)tag.protocol;
+
+        /* Copy data → uid (M1 uses uid[5], copy up to available) */
+        uint8_t copy_len = tag.data_len;
+        if (copy_len > sizeof(tag_info.uid))
+            copy_len = sizeof(tag_info.uid);
+        memcpy(tag_info.uid, tag.data, copy_len);
+
+        /* Set bitrate based on protocol (matches lfrfid_profile_load logic) */
+        if (tag_info.protocol == 0)       /* EM4100 */
+            tag_info.bitrate = 64;
+        else if (tag_info.protocol == 1)  /* H10301 */
+            tag_info.bitrate = 32;
+        else if (tag_info.protocol == 2)  /* HID Generic */
+            tag_info.bitrate = 16;
+
+        /* Ensure 0:/RFID/ directory exists */
+        fs_directory_ensure(M1_RFID_SAVE_DIR);
+
+        /* Derive save filename from source (strip .rfid, re-add .rfid) */
+        strncpy(base_name, fno.fname, sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        size_t blen = strlen(base_name);
+        if (blen > 5 && strcmp(&base_name[blen - 5], ".rfid") == 0)
+            base_name[blen - 5] = '\0';
+
+        snprintf(save_path, sizeof(save_path), "%s/%s.rfid",
+                 M1_RFID_SAVE_DIR, base_name);
+
+        saved = lfrfid_profile_save(save_path, &tag_info);
+        M1_LOG_I(M1_LOGDB_TAG, "RFID save to %s: %s\r\n",
+                 save_path, saved ? "OK" : "FAIL");
+
+        /* Display result */
         char data_str[32] = {0};
         char info_str[48] = {0};
         uint8_t i;
@@ -411,7 +487,7 @@ void rfid_import_flipper(void)
         u8g2_FirstPage(&m1_u8g2);
         do {
             u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
-            u8g2_DrawStr(&m1_u8g2, 2, 12, "RFID Tag Imported");
+            u8g2_DrawStr(&m1_u8g2, 2, 12, saved ? "RFID Saved" : "RFID Save Failed");
             u8g2_DrawStr(&m1_u8g2, 2, 28, info_str);
             u8g2_DrawStr(&m1_u8g2, 2, 44, fno.fname);
             u8g2_DrawStr(&m1_u8g2, 2, FLIPPER_STATUS_LINE_Y, "Press BACK to exit");

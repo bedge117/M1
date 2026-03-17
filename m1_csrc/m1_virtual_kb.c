@@ -157,12 +157,38 @@ const uint8_t m1_virtual_kb_icon_enter_inv[] = {
 	0xe7, 0x7f, 0xef, 0x7f
 };
 
-const uint8_t m1_vkb_map[M1_VIRTUAL_KB_ROW_SIZE][M1_VIRTUAL_KB_COLUMN_SIZE] =
+#define M1_VKB_PAGE_COUNT    3
+#define M1_VKB_PAGE_LOWER    0
+#define M1_VKB_PAGE_UPPER    1
+#define M1_VKB_PAGE_SYMBOL   2
+
+/* Page indicator strings shown in top-right corner */
+static const char *vkb_page_labels[M1_VKB_PAGE_COUNT] = { "abc", "ABC", "#$%" };
+
+const uint8_t m1_vkb_pages[M1_VKB_PAGE_COUNT][M1_VIRTUAL_KB_ROW_SIZE][M1_VIRTUAL_KB_COLUMN_SIZE] =
 {
+	/* Page 0: lowercase */
+	{
 		{'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 					'0', 					'1', '2', '3'},
 		{'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', M1_VIRTUAL_KEY_BS, 	M1_VIRTUAL_KEY_BS,		'4', '5', '6'},
 		{'z', 'x', 'c', 'v', 'b', 'n', 'm', '_', '.', M1_VIRTUAL_KEY_ENTER, M1_VIRTUAL_KEY_ENTER, 	'7', '8', '9'}
+	},
+	/* Page 1: UPPERCASE */
+	{
+		{'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 					'0', 					'1', '2', '3'},
+		{'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', M1_VIRTUAL_KEY_BS, 	M1_VIRTUAL_KEY_BS,		'4', '5', '6'},
+		{'Z', 'X', 'C', 'V', 'B', 'N', 'M', '_', '.', M1_VIRTUAL_KEY_ENTER, M1_VIRTUAL_KEY_ENTER, 	'7', '8', '9'}
+	},
+	/* Page 2: symbols */
+	{
+		{'!', '@', '#', '$', '%', '^', '&', '*', '(', ')', 					'0', 					'1', '2', '3'},
+		{'-', '+', '=', '[', ']', '{', '}', ':', ';', M1_VIRTUAL_KEY_BS, 	M1_VIRTUAL_KEY_BS,		'4', '5', '6'},
+		{'~', '\'', '"', '<', '>', ',', '?', '/', '|', M1_VIRTUAL_KEY_ENTER, M1_VIRTUAL_KEY_ENTER, 	'7', '8', '9'}
+	}
 };
+
+/* Alias for backward compat — points to page 0 (lowercase) */
+const uint8_t (*m1_vkb_map)[M1_VIRTUAL_KB_COLUMN_SIZE] = m1_vkb_pages[0];
 
 const uint8_t m1_vkbs_map[M1_VIRTUAL_KBS_ROW_SIZE][M1_VIRTUAL_KBS_COLUMN_SIZE] =
 {
@@ -225,6 +251,90 @@ S_M1_VKB_Func_Key_ID m1_vkb_check_function_key(uint8_t kb_key);
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
 
+/* Page indicator position: top-right corner */
+#define M1_VKB_PAGE_IND_X   108
+#define M1_VKB_PAGE_IND_Y   M1_VKB_DESCRIPTION_POS_Y
+#define M1_VKB_PAGE_IND_W   20
+#define M1_VKB_PAGE_IND_H   12
+
+/*============================================================================*/
+/*
+ * Redraw the keyboard area after a page switch.
+ * Clears the key area, redraws all keys from the given page,
+ * redraws function-key icons and the page indicator, then
+ * highlights the key at (row_id, col_id).
+ */
+/*============================================================================*/
+static void vkb_redraw_page(uint8_t page, uint8_t row_id, uint8_t col_id,
+                            uint8_t *out_x, uint8_t *out_y,
+                            S_M1_VKB_Func_Key_ID *out_xkey)
+{
+	uint8_t r, c, xp, yp;
+	char k[2] = {0, 0};
+
+	/* Clear keyboard area */
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+	u8g2_DrawBox(&m1_u8g2, 0, M1_VKB_FIRST_ROW_TOP_POS_Y,
+	             M1_LCD_DISPLAY_WIDTH, M1_LCD_DISPLAY_HEIGHT - M1_VKB_FIRST_ROW_TOP_POS_Y);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+
+	/* Redraw all keys */
+	u8g2_SetFont(&m1_u8g2, M1_VIRTUAL_KB_FONT_N);
+	yp = M1_VKB_FIRST_ROW_TOP_POS_Y + M1_VKB_GUI_FONT_HEIGHT;
+	for (r = 0; r < M1_VIRTUAL_KB_ROW_SIZE; r++)
+	{
+		xp = M1_VKB_LEFT_POS_X;
+		for (c = 0; c < M1_VIRTUAL_KB_COLUMN_SIZE; c++)
+		{
+			k[0] = m1_vkb_pages[page][r][c];
+			u8g2_DrawStr(&m1_u8g2, xp, yp, k);
+			xp += M1_VKB_GUI_FONT_WIDTH + M1_VKB_FONT_WIDTH_SPACING;
+		}
+		yp += M1_VKB_GUI_FONT_HEIGHT + M1_VKB_FONT_HEIGHT_SPACING;
+	}
+
+	/* Redraw function key icons */
+	u8g2_DrawXBMP(&m1_u8g2, M1_VKB_BACKSPACE_X, M1_VKB_BACKSPACE_Y,
+	              M1_VKB_BACKSPACE_ICON_W, M1_VKB_BACKSPACE_ICON_H, m1_virtual_kb_icon_backspace);
+	u8g2_DrawXBMP(&m1_u8g2, M1_VKB_ENTER_X, M1_VKB_ENTER_Y,
+	              M1_VKB_ENTER_ICON_W, M1_VKB_ENTER_ICON_H, m1_virtual_kb_icon_enter);
+
+	/* Update page indicator */
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+	u8g2_DrawBox(&m1_u8g2, M1_VKB_PAGE_IND_X, M1_VKB_PAGE_IND_Y - M1_VKB_GUI_FONT_HEIGHT,
+	             M1_VKB_PAGE_IND_W, M1_VKB_PAGE_IND_H);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawStr(&m1_u8g2, M1_VKB_PAGE_IND_X, M1_VKB_PAGE_IND_Y, vkb_page_labels[page]);
+
+	/* Recalculate cursor position */
+	*out_y = M1_VKB_FIRST_ROW_TOP_POS_Y + M1_VKB_GUI_FONT_HEIGHT
+	         + row_id * (M1_VKB_GUI_FONT_HEIGHT + M1_VKB_FONT_HEIGHT_SPACING);
+	*out_x = M1_VKB_LEFT_POS_X + col_id * (M1_VKB_GUI_FONT_WIDTH + M1_VKB_FONT_WIDTH_SPACING);
+
+	/* Highlight current key */
+	*out_xkey = m1_vkb_check_function_key(m1_vkb_pages[page][row_id][col_id]);
+	if (*out_xkey != M1_VKB_FUNC_UNDEFINED_KEY_ID)
+	{
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+		u8g2_DrawBox(&m1_u8g2, m1_x_keys[*out_xkey].icon_x[0], m1_x_keys[*out_xkey].icon_y[0],
+		             m1_x_keys[*out_xkey].icon_w, m1_x_keys[*out_xkey].icon_h);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_DrawXBMP(&m1_u8g2, m1_x_keys[*out_xkey].icon_x[0], m1_x_keys[*out_xkey].icon_y[0],
+		              m1_x_keys[*out_xkey].icon_w, m1_x_keys[*out_xkey].icon_h,
+		              m1_x_keys[*out_xkey].icon_inv);
+	}
+	else
+	{
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_DrawBox(&m1_u8g2, *out_x - 1, *out_y - M1_VKB_GUI_FONT_HEIGHT,
+		             M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+		k[0] = m1_vkb_pages[page][row_id][col_id];
+		u8g2_DrawStr(&m1_u8g2, *out_x, *out_y, k);
+	}
+
+	m1_u8g2_nextpage();
+}
 
 /*============================================================================*/
 /*
@@ -241,6 +351,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 	uint8_t row_id, col_id, x, y;
 	uint8_t exit_ok;
 	uint8_t len;
+	uint8_t vkb_page = M1_VKB_PAGE_LOWER;
 	S_M1_VKB_Func_Key_ID x_key_id;
 	char key[2], filename[M1_VIRTUAL_KB_FILENAME_MAX + 1];
 
@@ -285,7 +396,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 			x = M1_VKB_LEFT_POS_X;
 			for (col_id=0; col_id<M1_VIRTUAL_KB_COLUMN_SIZE; col_id++)
 			{
-				key[0] = m1_vkb_map[row_id][col_id];
+				key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 				u8g2_DrawStr(&m1_u8g2, x, y, key);
 				x += M1_VKB_GUI_FONT_WIDTH + M1_VKB_FONT_WIDTH_SPACING;
 			} // for (col_id=0; col_id<M1_VIRTUAL_KB_COLUMN_SIZE; col_id++)
@@ -294,6 +405,9 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 
 		u8g2_DrawXBMP(&m1_u8g2, M1_VKB_BACKSPACE_X, M1_VKB_BACKSPACE_Y, M1_VKB_BACKSPACE_ICON_W, M1_VKB_BACKSPACE_ICON_H, m1_virtual_kb_icon_backspace);
 		u8g2_DrawXBMP(&m1_u8g2, M1_VKB_ENTER_X, M1_VKB_ENTER_Y, M1_VKB_ENTER_ICON_W, M1_VKB_ENTER_ICON_H, m1_virtual_kb_icon_enter_inv);
+
+		/* Page indicator (top-right) */
+		u8g2_DrawStr(&m1_u8g2, M1_VKB_PAGE_IND_X, M1_VKB_PAGE_IND_Y, vkb_page_labels[vkb_page]);
 
     } while (m1_u8g2_nextpage());
 
@@ -313,7 +427,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
 				if ( this_button_status.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK ) // User press OK?
 				{
-					x_key_id = m1_vkb_check_function_key(m1_vkb_map[row_id][col_id]);
+					x_key_id = m1_vkb_check_function_key(m1_vkb_pages[vkb_page][row_id][col_id]);
 
 					if ( x_key_id != M1_VKB_FUNC_UNDEFINED_KEY_ID ) // Is a function key hit?
 					{
@@ -353,7 +467,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 					{
 						if ( len < M1_VIRTUAL_KB_FILENAME_MAX )
 						{
-							key[0] = m1_vkb_map[row_id][col_id];
+							key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 							filename[len] = key[0];
 							len++;
 							filename[len] = 0x00; // Add NULL to the end of the string
@@ -373,7 +487,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 				}
 				else
 				{
-					x_key_id = m1_vkb_check_function_key(m1_vkb_map[row_id][col_id]);
+					x_key_id = m1_vkb_check_function_key(m1_vkb_pages[vkb_page][row_id][col_id]);
 
 					// Find the (x,y) of the current (col_id, row_id)
 					x = M1_VKB_LEFT_POS_X;
@@ -403,12 +517,12 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // set the color to White
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2);
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT); // set the color to Black
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key); // Restore to normal mode
 								x += M1_VKB_GUI_FONT_WIDTH + M1_VKB_FONT_WIDTH_SPACING; // Update x for the next key
 								col_id++; // Move to next key
 							} // else
-							x_key_id = m1_vkb_check_function_key(m1_vkb_map[row_id][col_id]);
+							x_key_id = m1_vkb_check_function_key(m1_vkb_pages[vkb_page][row_id][col_id]);
 							if ( x_key_id != M1_VKB_FUNC_UNDEFINED_KEY_ID ) // Next key is a function key?
 							{
 								// Invert the next function key
@@ -425,7 +539,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2); // Invert background
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key);// Draw text in inverted mode
 							} // else
 							m1_u8g2_nextpage(); // Update graphic to the display RAM
@@ -454,12 +568,12 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // set the color to White
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2);
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT); // set the color to Black
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key); // Restore to normal mode
 								x -= M1_VKB_GUI_FONT_WIDTH + M1_VKB_FONT_WIDTH_SPACING; // Update x for the next key
 								col_id--; // Move to next key
 							} // else
-							x_key_id = m1_vkb_check_function_key(m1_vkb_map[row_id][col_id]);
+							x_key_id = m1_vkb_check_function_key(m1_vkb_pages[vkb_page][row_id][col_id]);
 							if ( x_key_id != M1_VKB_FUNC_UNDEFINED_KEY_ID ) // Next key is a function key?
 							{
 								// Invert the next function key
@@ -481,7 +595,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2); // Invert background
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key);// Draw text in inverted mode
 							} // else
 							m1_u8g2_nextpage(); // Update graphic to the display RAM
@@ -510,12 +624,12 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // set the color to White
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2);
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT); // set the color to Black
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key); // Restore to normal mode
 								y += M1_VKB_GUI_FONT_HEIGHT + M1_VKB_FONT_HEIGHT_SPACING; // Update y for the next key
 								row_id++;
 							} // else
-							x_key_id = m1_vkb_check_function_key(m1_vkb_map[row_id][col_id]);
+							x_key_id = m1_vkb_check_function_key(m1_vkb_pages[vkb_page][row_id][col_id]);
 							if ( x_key_id != M1_VKB_FUNC_UNDEFINED_KEY_ID ) // Next key is a function key?
 							{
 								// Invert the next function key
@@ -533,11 +647,17 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2); // Invert background
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key);// Draw text in inverted mode
 							} // else
 							m1_u8g2_nextpage(); // Update graphic to the display RAM
 						} // if ( row_id < (M1_VIRTUAL_KB_ROW_SIZE - 1) )
+						else
+						{
+							/* At bottom row — cycle to next keyboard page */
+							vkb_page = (vkb_page + 1) % M1_VKB_PAGE_COUNT;
+							vkb_redraw_page(vkb_page, row_id, col_id, &x, &y, &x_key_id);
+						}
 					} // else if ( this_button_status.event[BUTTON_DOWN_KP_ID]==BUTTON_EVENT_CLICK )
 
 					else if ( this_button_status.event[BUTTON_UP_KP_ID]==BUTTON_EVENT_CLICK ) // User moves up?
@@ -562,12 +682,12 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // set the color to White
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2);
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT); // set the color to Black
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key); // Restore to normal mode
 								y -= M1_VKB_GUI_FONT_HEIGHT + M1_VKB_FONT_HEIGHT_SPACING; // Update y for the next key
 								row_id--;
 							} // else
-							x_key_id = m1_vkb_check_function_key(m1_vkb_map[row_id][col_id]);
+							x_key_id = m1_vkb_check_function_key(m1_vkb_pages[vkb_page][row_id][col_id]);
 							if ( x_key_id != M1_VKB_FUNC_UNDEFINED_KEY_ID ) // Next key is a function key?
 							{
 								// Invert the next function key
@@ -585,11 +705,17 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 								u8g2_DrawBox(&m1_u8g2, x - 1, y - M1_VKB_GUI_FONT_HEIGHT, M1_VKB_GUI_FONT_WIDTH + 2, M1_VKB_GUI_FONT_HEIGHT + 2); // Invert background
 								u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-								key[0] = m1_vkb_map[row_id][col_id];
+								key[0] = m1_vkb_pages[vkb_page][row_id][col_id];
 								u8g2_DrawStr(&m1_u8g2, x, y, key);// Draw text in inverted mode
 							} // else
 							m1_u8g2_nextpage(); // Update graphic to the display RAM
 						} // if ( row_id > 0 )
+						else
+						{
+							/* At top row — cycle to previous keyboard page */
+							vkb_page = (vkb_page + M1_VKB_PAGE_COUNT - 1) % M1_VKB_PAGE_COUNT;
+							vkb_redraw_page(vkb_page, row_id, col_id, &x, &y, &x_key_id);
+						}
 					} // else if ( this_button_status.event[BUTTON_UP_KP_ID]==BUTTON_EVENT_CLICK )
 				} // else
 

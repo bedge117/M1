@@ -1665,6 +1665,277 @@ void sub_ghz_replay(void)
 } // void sub_ghz_replay(void)
 
 
+/*============================================================================*/
+/**
+  * @brief  Convert a Flipper .sub file to M1's .sgh format and replay it.
+  *         Handles RAW type .sub files.  Streams via a temp file on SD card
+  *         so there is no sample-count limit.
+  * @param  sub_path  Path to the .sub file on the SD card
+  * @retval 0 = success, non-zero = error
+  */
+/*============================================================================*/
+uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
+{
+#define FLIPPER_SUB_TMP_SGH   "/SUBGHZ/_flipper_tmp.sgh"
+#define FLIPPER_SUB_LINE_MAX  512
+
+	FIL f_sub, f_sgh;
+	FRESULT fr;
+	char *line_buf;
+	char *out_buf;
+	uint32_t frequency = 0;
+	uint8_t modulation = MODULATION_OOK;
+	bool is_raw = false;
+	float freq_mhz, freq_min;
+
+	line_buf = malloc(FLIPPER_SUB_LINE_MAX);
+	if (!line_buf) return 1;
+	out_buf = malloc(FLIPPER_SUB_LINE_MAX);
+	if (!out_buf) { free(line_buf); return 1; }
+
+	/* ── 1. Open .sub source ── */
+	fr = f_open(&f_sub, sub_path, FA_READ);
+	if (fr != FR_OK)
+	{
+		free(line_buf); free(out_buf);
+		return 1;
+	}
+
+	/* ── 2. Create temp .sgh file ── */
+	f_mkdir("/SUBGHZ");
+	fr = f_open(&f_sgh, FLIPPER_SUB_TMP_SGH, FA_WRITE | FA_CREATE_ALWAYS);
+	if (fr != FR_OK)
+	{
+		f_close(&f_sub);
+		free(line_buf); free(out_buf);
+		return 1;
+	}
+
+	/* ── 3. Convert header + data ── */
+	while (f_gets(line_buf, FLIPPER_SUB_LINE_MAX, &f_sub))
+	{
+		/* Strip trailing CR/LF */
+		size_t len = strlen(line_buf);
+		while (len > 0 && (line_buf[len - 1] == '\r' || line_buf[len - 1] == '\n'))
+			line_buf[--len] = '\0';
+
+		if (strncmp(line_buf, "Filetype:", 9) == 0)
+		{
+			if (strstr(line_buf, "RAW"))
+				is_raw = true;
+			f_puts("Filetype: M1 SubGHz NOISE\r\n", &f_sgh);
+		}
+		else if (strncmp(line_buf, "Version:", 8) == 0)
+		{
+			f_puts("Version: 0.8\r\n", &f_sgh);
+		}
+		else if (strncmp(line_buf, "Frequency:", 10) == 0)
+		{
+			frequency = (uint32_t)strtoul(line_buf + 10, NULL, 10);
+			snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "Frequency: %lu\r\n",
+			         (unsigned long)frequency);
+			f_puts(out_buf, &f_sgh);
+		}
+		else if (strncmp(line_buf, "Preset:", 7) == 0)
+		{
+			if (strstr(line_buf, "Ook") || strstr(line_buf, "OOK"))
+				modulation = MODULATION_OOK;
+			else if (strstr(line_buf, "2FSK") || strstr(line_buf, "FSK"))
+				modulation = MODULATION_FSK;
+			snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "Modulation: %s\r\n",
+			         subghz_modulation_text[modulation]);
+			f_puts(out_buf, &f_sgh);
+		}
+		else if (strncmp(line_buf, "RAW_Data:", 9) == 0)
+		{
+			/* Parse signed values, write absolute values as Data: line */
+			const char *p = line_buf + 9;
+			int pos = snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "%s",
+			                   SUB_GHZ_DATAFILE_DATA_KEYWORD);
+			while (*p)
+			{
+				while (*p == ' ') p++;
+				if (*p == '\0') break;
+				char *endp;
+				long val = strtol(p, &endp, 10);
+				if (endp == p) break;   /* no more numbers */
+				p = endp;
+				if (val < 0) val = -val;
+				pos += snprintf(&out_buf[pos],
+				                (size_t)(FLIPPER_SUB_LINE_MAX - pos),
+				                " %lu", (unsigned long)val);
+				if (pos >= FLIPPER_SUB_LINE_MAX - 16) break;
+			}
+			strcat(out_buf, "\r\n");
+			f_puts(out_buf, &f_sgh);
+		}
+		/* Protocol: line from .sub is ignored — .sgh doesn't use it */
+	}
+
+	f_close(&f_sub);
+	f_close(&f_sgh);
+
+	free(line_buf);
+	free(out_buf);
+
+	if (!is_raw || frequency == 0)
+	{
+		f_unlink(FLIPPER_SUB_TMP_SGH);
+		return 2; /* unsupported format or missing data */
+	}
+
+	/* ── 4. Map frequency to band/channel ── */
+	freq_mhz = (float)frequency / 1000000.0f;
+	subghz_replay_freq = freq_mhz;
+	subghz_replay_mod  = modulation;
+
+	for (subghz_replay_band = 0;
+	     subghz_replay_band < SUB_GHZ_BAND_EOL;
+	     subghz_replay_band++)
+	{
+		freq_min = subghz_band_steps[subghz_replay_band][0];
+		float freq_max = freq_min +
+		                 0.25f * subghz_band_steps[subghz_replay_band][1];
+		if (freq_mhz >= freq_min && freq_mhz <= freq_max)
+			break;
+	}
+	if (subghz_replay_band >= SUB_GHZ_BAND_EOL)
+	{
+		f_unlink(FLIPPER_SUB_TMP_SGH);
+		return 3; /* unsupported frequency */
+	}
+
+	subghz_replay_channel = 0;
+	freq_min = subghz_band_steps[subghz_replay_band][0];
+	while (freq_mhz > freq_min)
+	{
+		freq_min += 0.25f;
+		subghz_replay_channel++;
+	}
+
+	/* ── 5. Set up datfile_info → temp .sgh ── */
+	strncpy((char *)datfile_info.dat_filename, FLIPPER_SUB_TMP_SGH,
+	        sizeof(datfile_info.dat_filename) - 1);
+	datfile_info.dat_filename[sizeof(datfile_info.dat_filename) - 1] = '\0';
+
+	/* ── 6. Init buffers and open the file for streaming ── */
+	if (sub_ghz_ring_buffers_init())
+	{
+		f_unlink(FLIPPER_SUB_TMP_SGH);
+		return 4;
+	}
+	if (sub_ghz_raw_samples_init())
+	{
+		sub_ghz_ring_buffers_deinit();
+		f_unlink(FLIPPER_SUB_TMP_SGH);
+		return 5;
+	}
+
+	/* ── 7. Draw replay screen and start first TX ── */
+	menu_sub_ghz_init();
+	subghz_replay_play_gui_update(SUBGHZ_REPLAY_DISPLAY_PARAM_ACTIVE);
+
+	subghz_replay_ret_code = sub_ghz_replay_start(false, subghz_replay_band,
+	                                              subghz_replay_channel, 255);
+	if (subghz_replay_ret_code)
+	{
+		double_buffer_ptr_id = 1;
+		m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M,
+		                  LED_FASTBLINK_ONTIME_M);
+		subghz_replay_play_gui_update(SUBGHZ_REPLAY_DISPLAY_PARAM_PLAY);
+	}
+	else
+	{
+		subghz_replay_play_gui_update(SUBGHZ_REPLAY_DISPLAY_PARAM_SYS_ERROR);
+	}
+
+	/* ── 8. Self-contained event loop (blocks until BACK) ── */
+	{
+		S_M1_Main_Q_t q_item;
+		S_M1_Buttons_Status btn;
+		BaseType_t qret;
+		bool running = true;
+
+		while (running)
+		{
+			qret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+			if (qret != pdTRUE)
+				continue;
+
+			if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+			{
+				qret = xQueueReceive(button_events_q_hdl, &btn, 0);
+				if (qret != pdTRUE)
+					continue;
+
+				if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					/* Stop TX, cleanup, exit */
+					m1_led_fast_blink(LED_BLINK_ON_RGB,
+					                  LED_FASTBLINK_PWM_OFF,
+					                  LED_FASTBLINK_ONTIME_OFF);
+					sub_ghz_raw_samples_deinit(false);
+					sub_ghz_ring_buffers_deinit();
+					sub_ghz_tx_raw_deinit();
+					running = false;
+				}
+				else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					/* Replay again */
+					if (subghz_replay_ret_code == SUB_GHZ_RAW_DATA_PARSER_IDLE)
+					{
+						sub_ghz_set_opmode(SUB_GHZ_OPMODE_TX,
+						                   subghz_replay_band,
+						                   subghz_replay_channel,
+						                   tx_power_values[subghz_tx_power_idx]);
+						subghz_replay_ret_code = sub_ghz_raw_replay_init();
+						if (subghz_replay_ret_code != 1)
+						{
+							double_buffer_ptr_id = 1;
+							subghz_decenc_ctl.ntx_raw_repeat =
+							    SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT;
+							m1_led_fast_blink(LED_BLINK_ON_RGB,
+							                  LED_FASTBLINK_PWM_M,
+							                  LED_FASTBLINK_ONTIME_M);
+						}
+						else
+						{
+							sub_ghz_raw_tx_stop();
+							sub_ghz_raw_samples_deinit(false);
+							sub_ghz_set_opmode(SUB_GHZ_OPMODE_ISOLATED,
+							                   SUB_GHZ_BAND_EOL, 0, 0);
+							subghz_replay_play_gui_update(
+							    SUBGHZ_REPLAY_DISPLAY_PARAM_SYS_ERROR);
+						}
+					}
+				}
+			}
+			else if (q_item.q_evt_type == Q_EVENT_SUBGHZ_TX)
+			{
+				/* Continue double-buffered TX streaming */
+				subghz_replay_ret_code =
+				    sub_ghz_replay_continue(subghz_replay_ret_code);
+				if (subghz_replay_ret_code == SUB_GHZ_RAW_DATA_PARSER_IDLE)
+				{
+					m1_led_fast_blink(LED_BLINK_ON_RGB,
+					                  LED_FASTBLINK_PWM_OFF,
+					                  LED_FASTBLINK_ONTIME_OFF);
+				}
+			}
+		} /* while (running) */
+	}
+
+	xQueueReset(main_q_hdl);
+	menu_sub_ghz_exit();
+
+	/* ── 9. Cleanup temp file ── */
+	f_unlink(FLIPPER_SUB_TMP_SGH);
+	return 0;
+
+#undef FLIPPER_SUB_TMP_SGH
+#undef FLIPPER_SUB_LINE_MAX
+} // uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
+
 
 /*============================================================================*/
 /**

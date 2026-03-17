@@ -150,6 +150,7 @@ void sub_ghz_weather_station(void);
 void sub_ghz_brute_force(void);
 void sub_ghz_rssi_meter(void);
 void sub_ghz_freq_scanner(void);
+uint8_t sub_ghz_replay_flipper_file(const char *sub_path);
 
 extern EXTI_HandleTypeDef 	si4463_exti_hdl;
 extern TIM_HandleTypeDef   	timerhdl_subghz_tx;

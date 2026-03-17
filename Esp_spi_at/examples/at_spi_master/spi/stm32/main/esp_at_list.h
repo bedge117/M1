@@ -58,6 +58,11 @@
 #define ESP32C6_AT_REQ_BLE_SEC_PARAM	"AT+BLESECPARAM=1,3,16,3,3"
 
 // BLE Advertising control
+// Force legacy advertising parameters: min=32(20ms), max=64(40ms), type=0(ADV_IND legacy),
+// addr_type=0(public), channel_map=7(all), filter=0(none)
+// Required because CONFIG_BT_NIMBLE_EXT_ADV=y in ESP32 build causes AT firmware
+// to default to extended advertising which some hosts can't see
+#define ESP32C6_AT_REQ_BLE_ADV_PARAM	"AT+BLEADVPARAM=32,64,0,0,7,0"
 #define ESP32C6_AT_REQ_BLE_ADV_START	"AT+BLEADVSTART"
 #define ESP32C6_AT_REQ_BLE_ADV_STOP		"AT+BLEADVSTOP"
 
