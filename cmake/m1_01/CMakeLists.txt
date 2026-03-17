@@ -22,15 +22,15 @@ target_include_directories(m1_01 INTERFACE
     ../../Drivers/CMSIS/Device/ST/STM32H5xx/Include
     ../../Drivers/CMSIS/Include
     ../../Core/ThreadSafe
-    ../../Middlewares/Third_Party/FreeRTOS/Source/include/
-    ../../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/
-    ../../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/
-    ../../Middlewares/Third_Party/CMSIS/RTOS2/Include/
+    ../../Middlewares/FreeRTOS/Source/include/
+    ../../Middlewares/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/
+    ../../Middlewares/FreeRTOS/Source/CMSIS_RTOS_V2/
+    ../../Middlewares/CMSIS/RTOS2/Include/
     ../../Drivers/u8g2_csrc
     ../../Drivers/u8g2_cppsrc
     ../../m1_csrc
-    ../../Infrared/irmp-irsnd
-    ../../FatFs/R015
+    ../../Infrared
+    ../../FatFs
     ../../Sub_Ghz
     ../../Sub_Ghz/protocols
     ../../Esp32_serial_flasher/include
@@ -56,14 +56,14 @@ target_include_directories(m1_01 INTERFACE
     ../../lfrfid
     ../../USB
     ../../USB/Class/CDC/Inc
-    ../../USB/Class/CDC/Scr
+    ../../USB/Class/CDC/Src
     ../../USB/Class/CompositeBuilder/Inc
     ../../USB/Class/CompositeBuilder/Src
     ../../USB/Class/MSC/Inc
     ../../USB/Class/MSC/Src
     ../../USB/Class/HID/Inc
     ../../USB/Core/Inc
-    ../../USB/Core/Scr
+    ../../USB/Core/Src
 )
 
 target_sources(m1_01 INTERFACE
@@ -261,27 +261,27 @@ target_sources(m1_01 INTERFACE
     ../../Esp_spi_at/examples/at_spi_master/spi/stm32/main/esp_app_main.c
     ../../Esp_spi_at/examples/at_spi_master/spi/stm32/main/esp_queue.c
     ../../Esp_spi_at/examples/at_spi_master/spi/stm32/main/m1_at_response_parser.c
-    ../../FatFs/R015/diskio.c
-    ../../FatFs/R015/ff.c
-    ../../FatFs/R015/ff_gen_drv.c
-    ../../FatFs/R015/ffsystem.c
-    ../../FatFs/R015/ffsystem_baremetal.c
-    ../../FatFs/R015/ffsystem_cmsis_os.c
-    ../../FatFs/R015/ffunicode.c
-    ../../Infrared/irmp-irsnd/irmp.c
-    ../../Infrared/irmp-irsnd/irmpextlog.c
-    ../../Infrared/irmp-irsnd/irsnd.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/croutine.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/event_groups.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/list.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/queue.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/tasks.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/timers.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/port.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/portasm.c
-    ../../Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c
+    ../../FatFs/diskio.c
+    ../../FatFs/ff.c
+    ../../FatFs/ff_gen_drv.c
+    ../../FatFs/ffsystem.c
+    ../../FatFs/ffsystem_baremetal.c
+    ../../FatFs/ffsystem_cmsis_os.c
+    ../../FatFs/ffunicode.c
+    ../../Infrared/irmp.c
+    ../../Infrared/irmpextlog.c
+    ../../Infrared/irsnd.c
+    ../../Middlewares/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c
+    ../../Middlewares/FreeRTOS/Source/croutine.c
+    ../../Middlewares/FreeRTOS/Source/event_groups.c
+    ../../Middlewares/FreeRTOS/Source/list.c
+    ../../Middlewares/FreeRTOS/Source/queue.c
+    ../../Middlewares/FreeRTOS/Source/stream_buffer.c
+    ../../Middlewares/FreeRTOS/Source/tasks.c
+    ../../Middlewares/FreeRTOS/Source/timers.c
+    ../../Middlewares/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/port.c
+    ../../Middlewares/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/portasm.c
+    ../../Middlewares/FreeRTOS/Source/portable/MemMang/heap_4.c
     ../../NFC/Middlewares/ST/rfal/Src/rfal_analogConfig.c
     ../../NFC/Middlewares/ST/rfal/Src/rfal_cd.c
     ../../NFC/Middlewares/ST/rfal/Src/rfal_crc.c
