@@ -292,6 +292,7 @@ static uint16_t subghz_front_buffer_size = 0;
 static uint8_t *subghz_ring_read_buffer = NULL;
 static uint8_t *subghz_sdcard_write_buffer = NULL;
 static uint8_t *sdcard_dat_buffer = NULL;
+static uint8_t *sdcard_dat_buffer_base = NULL; // Original malloc pointer (before offset)
 static uint8_t *sdcard_buffer_run_ptr = NULL;
 static uint8_t double_buffer_ptr_id = 0;
 static uint16_t raw_samples_count;
@@ -955,19 +956,6 @@ static int subghz_record_gui_message(void)
 				vTaskDelay(10); // Give the system some time in case RF noise is flooding the receiver
 			} // if ( rcv_samples >= SUBGHZ_RAW_DATA_SAMPLES_TO_RW )
 
-			/* Poll decoder for protocol match */
-			{
-				SubGHz_Dec_Info_t dec_tmp;
-				if (subghz_decenc_read(&dec_tmp, false))
-				{
-					if (dec_tmp.key != 0)
-					{
-						memcpy(&subghz_record_last_decoded, &dec_tmp, sizeof(dec_tmp));
-						subghz_record_has_decoded = true;
-						m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_ACTIVE);
-					}
-				}
-			}
 		} // if ( q_item.q_evt_type==Q_EVENT_SUBGHZ_RX )
 
 		else if ( q_item.q_evt_type==Q_EVENT_SUBGHZ_TX )
@@ -2506,6 +2494,8 @@ static uint8_t sub_ghz_ring_buffers_init(void)
 		if ( subghz_front_buffer )
 			break;
 		subghz_front_buffer_size /= 2;
+		if ( subghz_front_buffer_size < 256 )
+			break;
 	} // while ( true )
 
 	while ( subghz_front_buffer )
@@ -2753,6 +2743,8 @@ static void sub_ghz_tx_raw_deinit(void)
 /*============================================================================*/
 static void sub_ghz_raw_tx_stop(void)
 {
+	uint32_t timeout;
+
 	// Stop DMA
 	__HAL_DMA_DISABLE(&hdma_subghz_tx);
 
@@ -2760,9 +2752,16 @@ static void sub_ghz_raw_tx_stop(void)
 	//__HAL_TIM_DISABLE(&timerhdl_subghz_tx);
 	timerhdl_subghz_tx.Instance->CR1 &= ~(TIM_CR1_CEN);
 	//hdma_subghz_tx.Instance->CCR &= ~DMA_CCR_EN;
-	/* Check if the DMA channel is effectively disabled */
+	/* Check if the DMA channel is effectively disabled (timeout ~10ms at 250MHz) */
+	timeout = 2500000UL;
 	while ( (hdma_subghz_tx.Instance->CCR & DMA_CCR_EN) != 0U )
-		;
+	{
+		if ( --timeout == 0 )
+		{
+			hdma_subghz_tx.Instance->CCR &= ~DMA_CCR_EN; // Force disable
+			break;
+		}
+	}
 	__HAL_TIM_DISABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
 	// Clear the update interrupt flag
 	__HAL_TIM_CLEAR_FLAG(&timerhdl_subghz_tx, TIM_FLAG_UPDATE);
@@ -2787,13 +2786,13 @@ static uint8_t sub_ghz_raw_samples_init(void)
 		error = m1_sdm_get_logging_error();
 		if ( error )
 			break;
-		sdcard_dat_buffer = m1_malloc(M1_SDM_MIN_BUFFER_SIZE);
-		if (sdcard_dat_buffer==NULL)
+		sdcard_dat_buffer_base = m1_malloc(M1_SDM_MIN_BUFFER_SIZE);
+		if (sdcard_dat_buffer_base==NULL)
 		{
 			error = 1;
 			break;
 		}
-		sdcard_dat_buffer += M1_SDM_MIN_BUFFER_SIZE/2; // Start at the middle of the buffer
+		sdcard_dat_buffer = sdcard_dat_buffer_base + M1_SDM_MIN_BUFFER_SIZE/2; // Start at the middle of the buffer
 		sdcard_dat_read_size = M1_SDM_MIN_BUFFER_SIZE/4; // Limit the reading size from SD card to avoid data error
 		subghz_back_buffer_size = SUBGHZ_RAW_DATA_SAMPLES_MAX;
 		while ( true )
@@ -2802,6 +2801,8 @@ static uint8_t sub_ghz_raw_samples_init(void)
 			if ( subghz_back_buffer )
 				break;
 			subghz_back_buffer_size /= 2;
+			if ( subghz_back_buffer_size < 256 )
+				break;
 		} // while ( true )
 		if ( !subghz_back_buffer )
 		{
@@ -2895,10 +2896,10 @@ static void sub_ghz_raw_samples_deinit(bool discard_samples)
 		free(subghz_back_buffer);
 		subghz_back_buffer = NULL;
 	}
-	if ( sdcard_dat_buffer )
+	if ( sdcard_dat_buffer_base )
 	{
-		sdcard_dat_buffer -= M1_SDM_MIN_BUFFER_SIZE/2; // Restore the original allocated address of the buffer
-		free(sdcard_dat_buffer);
+		free(sdcard_dat_buffer_base);
+		sdcard_dat_buffer_base = NULL;
 		sdcard_dat_buffer = NULL;
 	}
 	m1_fb_close_file(&datfile_info.dat_file_hdl);
@@ -3177,7 +3178,8 @@ static uint8_t sub_ghz_rx_raw_save(bool header_init, bool last_data)
 	uint8_t sign;
 
 	prn_buffer = malloc(64);
-	assert(prn_buffer!=NULL);
+	if (prn_buffer == NULL)
+		return 1;
 	pfillbuffer = subghz_sdcard_write_buffer;
 	if ( header_init )
 	{
@@ -3190,6 +3192,7 @@ static uint8_t sub_ghz_rx_raw_save(bool header_init, bool last_data)
 		sprintf(prn_buffer, "%s %s\r\n", subghz_datfile_keywords[3], subghz_modulation_text[subghz_scan_config.modulation]);
 		strcat(pfillbuffer, prn_buffer);
 		m1_sdm_fill_buffer(pfillbuffer, strlen(pfillbuffer));
+		free(prn_buffer);
 		return 0;
 	} // if ( header_init )
 
