@@ -303,7 +303,7 @@ void firmware_update_get_image_file(void)
     uint32_t crc32ret, image_size, fwver_old;
     S_M1_FW_CONFIG_t fwconfig;
 
-	f_info = storage_browse();
+	f_info = storage_browse(NULL);
 
 	fw_update_status = M1_FW_IMAGE_FILE_TYPE_ERROR; // reset
 	if ( f_info->file_is_selected )

@@ -303,6 +303,7 @@ static uint16_t *subghz_back_buffer = NULL;
 static uint16_t *double_buffer_ptr[2];
 static uint32_t sdcard_dat_file_size, sdcard_dat_buffer_end_pos;
 uint8_t subghz_tx_tc_flag;
+static uint8_t subghz_tx_start_high = 1; // 1 = next buffer starts HIGH (mark), 0 = LOW (space)
 uint8_t subghz_record_mode_flag = 0;
 static uint8_t subghz_uiview_gui_latest_param;
 static uint8_t subghz_replay_ret_code;
@@ -1278,7 +1279,7 @@ static void subghz_replay_browse_gui_update(uint8_t param)
 {
 	while (true)
 	{
-		f_info = storage_browse();
+		f_info = storage_browse("0:/SUBGHZ");
 		if ( !f_info->file_is_selected ) // User exits?
 		{
 			m1_app_send_q_message(main_q_hdl, Q_EVENT_MENU_EXIT);
@@ -2547,8 +2548,8 @@ static void sub_ghz_tx_raw_init(void)
 	/*  Clock Configuration for TIMER */
 	SUBGHZ_TX_TIMER_CLK();
 
-	/* Timer Clock */
-	tim_prescaler_val = (uint32_t) (HAL_RCC_GetPCLK2Freq() / 1000000) - 1; // 1MHz
+	/* Timer Clock: 75MHz / 150 = 500kHz = 2us per tick */
+	tim_prescaler_val = SUBGHZ_TX_TIM_PRESCALER;
 
 	timerhdl_subghz_tx.Instance = SUBGHZ_TX_CARRIER_TIMER;
 	timerhdl_subghz_tx.Init.Prescaler = tim_prescaler_val;
@@ -2556,8 +2557,8 @@ static void sub_ghz_tx_raw_init(void)
 	timerhdl_subghz_tx.Init.Period = 0; // temporary value
 	timerhdl_subghz_tx.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	timerhdl_subghz_tx.Init.RepetitionCounter = 0;
-	timerhdl_subghz_tx.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-	if (HAL_TIM_PWM_Init(&timerhdl_subghz_tx) != HAL_OK)
+	timerhdl_subghz_tx.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	if (HAL_TIM_OC_Init(&timerhdl_subghz_tx) != HAL_OK)
 	{
 		Error_Handler();
 	}
@@ -2576,12 +2577,11 @@ static void sub_ghz_tx_raw_init(void)
 		Error_Handler();
 	}
 
-	sConfigOC.OCMode = TIM_OCMODE_PWM1;
+	sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
 	sConfigOC.OCNPolarity = TIM_OCPOLARITY_HIGH;
 	sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-	sConfigOC.Pulse = 0; // temporary value
 	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	if ( HAL_TIM_PWM_ConfigChannel(&timerhdl_subghz_tx, &sConfigOC, SUBGHZ_TX_TIMER_TX_CHANNEL) != HAL_OK)
+	if ( HAL_TIM_OC_ConfigChannel(&timerhdl_subghz_tx, &sConfigOC, SUBGHZ_TX_TIMER_TX_CHANNEL) != HAL_OK)
 	{
 	    Error_Handler();
 	}
@@ -2620,7 +2620,7 @@ static void sub_ghz_tx_raw_init(void)
     hdma_subghz_tx.Init.DestInc = DMA_DINC_FIXED;
     hdma_subghz_tx.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_HALFWORD;
     hdma_subghz_tx.Init.DestDataWidth = DMA_DEST_DATAWIDTH_HALFWORD;
-    hdma_subghz_tx.Init.Priority = DMA_LOW_PRIORITY_LOW_WEIGHT;
+    hdma_subghz_tx.Init.Priority = DMA_HIGH_PRIORITY;
     hdma_subghz_tx.Init.SrcBurstLength = 1;
     hdma_subghz_tx.Init.DestBurstLength = 1;
     hdma_subghz_tx.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
@@ -2642,15 +2642,13 @@ static void sub_ghz_tx_raw_init(void)
 	/* Clear all interrupt flags */
 	__HAL_DMA_CLEAR_FLAG(&hdma_subghz_tx, DMA_FLAG_TC | DMA_FLAG_HT | DMA_FLAG_DTE
 						| DMA_FLAG_ULE | DMA_FLAG_USE | DMA_FLAG_SUSP | DMA_FLAG_TO);
-	// IRQ priority should be lower than that of the Timer
-    HAL_NVIC_SetPriority(GPDMA1_Channel0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 5);
+    HAL_NVIC_SetPriority(GPDMA1_Channel0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 0);
     HAL_NVIC_EnableIRQ(GPDMA1_Channel0_IRQn);
 
 	__HAL_TIM_ENABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
-	/* Enable TIM Update Event Interrupt Request */
-	__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_FLAG_UPDATE);
+	/* TIM1_UP interrupt is NOT enabled here — only enabled briefly after DMA TC */
 
-	/* Peripheral interrupt init */
+	/* Peripheral interrupt init (TIM1_UP used only for end-of-buffer detection) */
 	HAL_NVIC_SetPriority(SUBGHZ_TX_TIMER_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 0);
 	HAL_NVIC_EnableIRQ(SUBGHZ_TX_TIMER_IRQn);
 } // static void sub_ghz_tx_raw_init(void)
@@ -2717,9 +2715,9 @@ static void sub_ghz_tx_raw_deinit(void)
 
 	if ( timerhdl_subghz_tx.Instance != NULL )
 	{
-		HAL_TIMEx_PWMN_Stop(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
+		HAL_TIMEx_OCN_Stop(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
 		__HAL_TIM_DISABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
-		__HAL_TIM_DISABLE_IT(&timerhdl_subghz_tx, TIM_FLAG_UPDATE);
+		__HAL_TIM_DISABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
 	} // if ( timerhdl_subghz_tx.Instance != NULL )
 
 	SUBGHZ_TX_TIMER_CLK_DIS();
@@ -2962,7 +2960,11 @@ static uint8_t sub_ghz_parse_raw_data(uint8_t buffer_ptr_id)
 						{
 							number = strtol((char *)sdcard_buffer_run_ptr, &endptr, 10);
 							if ( number!=0 ) // Valid number?
+							{
+								number = (number + 1) >> 1; // Convert to 2us ticks
+								if ( number == 0 ) number = 1;
 								double_buffer_ptr[buffer_ptr_id][raw_samples_count++] = number;
+							}
 						} // if ( sdcard_dat_buffer_end_pos )
 					} // if ( sdcard_dat_file_size==0 )
 					else
@@ -3031,6 +3033,8 @@ static uint8_t sub_ghz_parse_raw_data(uint8_t buffer_ptr_id)
 		{
 			rd_samples_count = 0; // reset
 		}
+		number = (number + 1) >> 1; // Convert from 1us to 2us ticks (round up)
+		if ( number == 0 ) number = 1; // Minimum 1 tick (2us)
 		double_buffer_ptr[buffer_ptr_id][raw_samples_count++] = number;
 		if ( raw_samples_count >= raw_samples_buffer_size )
 		{
@@ -3055,47 +3059,52 @@ static uint8_t sub_ghz_parse_raw_data(uint8_t buffer_ptr_id)
 /*============================================================================*/
 static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, uint8_t repeat)
 {
-	if ( source==0 )
+	if ( source==0 || dest==0 || len==0 )
 		return;
 
-	if ( dest==0 )
-		return;
-
-	if ( len==0 )
-		return;
-
-	//len &= ~(uint16_t)1; // Make length an even number. DMA doesn't work with odd length for unknown reason!
 	// Save these data for repeat
-	subghz_decenc_ctl.ntx_raw_len = (len<<1); // Convert length to byte
-	subghz_decenc_ctl.ntx_raw_src = source;
-	subghz_decenc_ctl.ntx_raw_dest = dest;
 	subghz_decenc_ctl.ntx_raw_repeat = repeat;
 	subghz_tx_tc_flag = 0;
+	subghz_tx_start_high = 1; // First buffer always starts with mark (HIGH)
 
-	/* Enable the DMA channel */
-	/**
-	  * @brief  Start the DMA data transfer.
-	  * @param  hdma DMA handle
-	  * @param  src      : The source memory Buffer address.
-	  * @param  dst      : The destination memory Buffer address.
-	  * @param  length   : The size of a source block transfer in byte.
-	  * @retval HAL status
-	  */
-	HAL_StatusTypeDef ret = TIM_DMA_Start_IT(timerhdl_subghz_tx.hdma[TIM_DMA_ID_UPDATE], source, dest, subghz_decenc_ctl.ntx_raw_len);
-	if ( ret != HAL_OK)
-		return;
+	// Load first sample directly into ARR (avoids GenerateEvent which would toggle OC4REF)
+	timerhdl_subghz_tx.Instance->ARR = ((uint16_t *)source)[0];
+	timerhdl_subghz_tx.Instance->CNT = 0;
 
-	timerhdl_subghz_tx.Instance->CCR4 = 0; // initial value
+	// Force OC4REF to correct initial state for first sample (mark = HIGH)
+	{
+		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
+		ccmr2 &= ~(TIM_CCMR2_OC4M);
+		ccmr2 |= (0x5UL << 12); // FORCED_ACTIVE (OC4REF = HIGH)
+		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
+		ccmr2 &= ~(TIM_CCMR2_OC4M);
+		ccmr2 |= (0x3UL << 12); // Switch back to TOGGLE mode
+		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
+	}
 
-	//	__HAL_TIM_URS_ENABLE(&timerhdl_subghz_tx); // Enable URS to temporarily disable the UIF when the UG bit is set
-	// Generate Update Event (set UG bit) to reload the DMA source data[0] to the ARR register
-	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
-	// Do it again to reload the DMA source data[1] to the ARR register, and reload the DMA source data[0] to the ARR shadow register
-	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
-	//	__HAL_TIM_URS_DISABLE(&timerhdl_subghz_tx); // Disable URS to enable the UIF again
+	// Start DMA from second sample onward (first was loaded into ARR manually)
+	if ( len > 1 )
+	{
+		uint32_t dma_src = source + sizeof(uint16_t); // Skip first sample
+		uint32_t dma_len = (len - 1) << 1;            // Remaining samples in bytes
+		subghz_decenc_ctl.ntx_raw_len = dma_len;
+		subghz_decenc_ctl.ntx_raw_src = dma_src;
+		subghz_decenc_ctl.ntx_raw_dest = dest;
 
-    // Start the timer
-	HAL_TIMEx_PWMN_Start(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
+		HAL_StatusTypeDef ret = TIM_DMA_Start_IT(timerhdl_subghz_tx.hdma[TIM_DMA_ID_UPDATE], dma_src, dest, dma_len);
+		if ( ret != HAL_OK)
+			return;
+	}
+	else
+	{
+		// Single sample: no DMA needed, just play one period
+		subghz_decenc_ctl.ntx_raw_len = 0;
+		subghz_tx_tc_flag = 1; // Will stop after this one period
+		__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
+	}
+
+	// Start the timer — TOGGLE mode on complementary output CH4N
+	HAL_TIMEx_OCN_Start(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
 } // static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, uint8_t repeat)
 
 
@@ -3111,50 +3120,57 @@ static void sub_ghz_transmit_raw_restart(uint32_t source, uint32_t len)
 {
 	sub_ghz_raw_tx_stop();
 
-	if ( (source!=0) && (len!=0) ) // New data source and length?
+	if ( source==0 || len==0 )
+		return;
+
+	subghz_tx_tc_flag = 0;
+
+	// Load first sample directly into ARR
+	timerhdl_subghz_tx.Instance->ARR = ((uint16_t *)source)[0];
+	timerhdl_subghz_tx.Instance->CNT = 0;
+
+	// Force OC4REF to correct initial state based on polarity tracking
 	{
-		//len &= ~(uint16_t)1; // Make length an even number. DMA doesn't work with odd length for unknown reason!
-		subghz_decenc_ctl.ntx_raw_len = (len<<1); // Convert length to byte
-		subghz_decenc_ctl.ntx_raw_src = source;
-	} // if ( (source!=0) && (len!=0) )
-	/* Enable the DMA channel */
-	/**
-	  * @brief  Start the DMA data transfer.
-	  * @param  hdma DMA handle
-	  * @param  src      : The source memory Buffer address.
-	  * @param  dst      : The destination memory Buffer address.
-	  * @param  length   : The size of a source block transfer in byte.
-	  * @retval HAL status
-	  */
+		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
+		ccmr2 &= ~(TIM_CCMR2_OC4M);
+		if (subghz_tx_start_high)
+			ccmr2 |= (0x5UL << 12); // FORCED_ACTIVE (HIGH)
+		else
+			ccmr2 |= (0x4UL << 12); // FORCED_INACTIVE (LOW)
+		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
+		ccmr2 &= ~(TIM_CCMR2_OC4M);
+		ccmr2 |= (0x3UL << 12); // Switch back to TOGGLE mode
+		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
+	}
 
-	__HAL_TIM_ENABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
+	// Start DMA from second sample onward
+	if ( len > 1 )
+	{
+		uint32_t dma_src = source + sizeof(uint16_t);
+		uint32_t dma_len = (len - 1) << 1;
+		subghz_decenc_ctl.ntx_raw_len = dma_len;
+		subghz_decenc_ctl.ntx_raw_src = dma_src;
 
-	MODIFY_REG(hdma_subghz_tx.Instance->CBR1, DMA_CBR1_BNDT, (subghz_decenc_ctl.ntx_raw_len & DMA_CBR1_BNDT));
-	/* Clear all interrupt flags */
-	__HAL_DMA_CLEAR_FLAG(&hdma_subghz_tx, DMA_FLAG_TC | DMA_FLAG_HT | DMA_FLAG_DTE
-						| DMA_FLAG_ULE | DMA_FLAG_USE | DMA_FLAG_SUSP | DMA_FLAG_TO);
-	// Configure DMA channel source address
-	hdma_subghz_tx.Instance->CSAR = subghz_decenc_ctl.ntx_raw_src;
-	// Configure DMA channel destination address
-	hdma_subghz_tx.Instance->CDAR = subghz_decenc_ctl.ntx_raw_dest;
+		__HAL_TIM_ENABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
+		__HAL_DMA_CLEAR_FLAG(&hdma_subghz_tx, DMA_FLAG_TC | DMA_FLAG_HT | DMA_FLAG_DTE
+							| DMA_FLAG_ULE | DMA_FLAG_USE | DMA_FLAG_SUSP | DMA_FLAG_TO);
+		hdma_subghz_tx.Instance->CSAR = dma_src;
+		hdma_subghz_tx.Instance->CDAR = (uint32_t)&timerhdl_subghz_tx.Instance->ARR;
+		MODIFY_REG(hdma_subghz_tx.Instance->CBR1, DMA_CBR1_BNDT, (dma_len & DMA_CBR1_BNDT));
+		__HAL_DMA_ENABLE(&hdma_subghz_tx);
+	}
+	else
+	{
+		subghz_decenc_ctl.ntx_raw_len = 0;
+		subghz_tx_tc_flag = 1;
+		__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
+	}
 
-    /* Enable common interrupts: Transfer Complete and Transfer Errors ITs */
-	__HAL_DMA_ENABLE(&hdma_subghz_tx);
+	// Update polarity tracking for next buffer
+	subghz_tx_start_high ^= (len & 1);
 
-	/* Temporarily disable the complementary PWM output  */
-	//__HAL_TIM_MOE_DISABLE(&timerhdl_subghz_tx);
-
-	timerhdl_subghz_tx.Instance->CCR4 = 0; // initial value
-
-	// Generate Update Event (set UG bit) to reload the DMA source data[0] to the ARR register
-	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
-	// Do it again to reload the DMA source data[1] to the ARR register, and reload the DMA source data[0] to the ARR shadow register
-	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
-
-	/* Enable the complementary PWM output  */
-	//__HAL_TIM_MOE_ENABLE(&timerhdl_subghz_tx);
-
-	// Start the timer
+	// Restart the timer
+	__HAL_TIM_MOE_ENABLE(&timerhdl_subghz_tx);
 	__HAL_TIM_ENABLE(&timerhdl_subghz_tx);
 } // static void sub_ghz_transmit_raw_restart(uint32_t source, uint32_t len)
 

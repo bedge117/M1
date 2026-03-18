@@ -3187,7 +3187,7 @@ static void nfc_saved_browse_gui_destroy(uint8_t param)
 /*============================================================================*/
 static void nfc_saved_browse_gui_update(uint8_t param)
 {
-	f_info = storage_browse();
+	f_info = storage_browse("0:/NFC");
 	if ( f_info->file_is_selected )
 	{
 		if(nfc_profile_load(f_info, NFC_FILE_EXTENSION_TMP))

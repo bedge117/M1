@@ -25,6 +25,6 @@ void storage_explore(void);
 void storage_mount(void);
 void storage_unmount(void);
 void storage_format(void);
-S_M1_file_info *storage_browse(void);
+S_M1_file_info *storage_browse(const char *initial_dir);
 
 #endif /* M1_STORAGE_H_ */

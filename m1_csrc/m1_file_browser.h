@@ -51,6 +51,7 @@ typedef struct
 } S_M1_file_browser_hdl;
 
 S_M1_file_browser_hdl *m1_fb_init(u8g2_t *lcd_hdl);
+void m1_fb_set_dir(const char *dir);
 void m1_fb_deinit(void);
 void m1_fb_popup(void);
 S_M1_file_info *m1_fb_display(S_M1_Buttons_Status *button_status);

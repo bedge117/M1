@@ -398,12 +398,16 @@ void GPDMA1_Channel0_IRQHandler(void)
 
 	HAL_DMA_IRQHandler(&hdma_subghz_tx);
 
-    /* Transfer Complete Interrupt */
-    if ( flag )
-    {
-    	subghz_tx_tc_flag = 1;
-    } // if ( flag )
-} // void GPDMA1_Channel1_IRQHandler(void)
+	/* Transfer Complete: all DMA samples written to ARR.
+	 * The timer still needs one more overflow to play the last sample.
+	 * Enable TIM1_UP interrupt to catch that final overflow and stop cleanly. */
+	if ( flag )
+	{
+		subghz_tx_tc_flag = 1;
+		__HAL_TIM_CLEAR_FLAG(&timerhdl_subghz_tx, TIM_FLAG_UPDATE);
+		__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
+	} // if ( flag )
+} // void GPDMA1_Channel0_IRQHandler(void)
 
 
 
@@ -628,43 +632,27 @@ void TIM1_UP_IRQHandler(void)
 {
 	S_M1_Main_Q_t q_item;
 	portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
-	uint16_t toggle;
 
-	// Clear the update interrupt flag
 	__HAL_TIM_CLEAR_FLAG(&timerhdl_subghz_tx, TIM_FLAG_UPDATE);
-	if ( !subghz_tx_tc_flag ) // DMA not completed?
-	{
-		// The fix for the case when an IRS interrupt handler may be missed due to a short pulse (<<100us).
-		// In that case, the following bits' polarity will be inverted.
-		// Solution:
-		// Each time this ISR occurs, the DMA counter (CBR1) is expected to decrease by one data block.
-		// If an ISR is missed, the DMA counter will decrease more than one data block in the next ISR.
-		// If that happens, the CCR4 should be kept unchanged.
-		// Or
-		// SUBGHZ_TX_GPIO_PIN should always be HIGH at the odd data block of a DMA transfer.
-		// That means, an odd data block should be in sync with the HIGH at SUBGHZ_TX_GPIO_PIN.
-		// Otherwise, an ISR may be missed. In that case, keep the CCR4 unchanged.
-		// DMA transfer is always ahead of this ISR.
-		toggle = subghz_decenc_ctl.ntx_raw_len - hdma_subghz_tx.Instance->CBR1; // Data blocks transferred
-		toggle >>= 1; // Convert length from bytes to block
-		toggle &= 0x01; // Make odd or even data block
-		if ( SUBGHZ_TX_GPIO_PORT->IDR & SUBGHZ_TX_GPIO_PIN ) // Pin is high?
-			toggle ^= 1; // Combine the data block and the output data level
 
-		if ( toggle )
-			timerhdl_subghz_tx.Instance->CCR4 ^= 0xFFFF; // toggle to create high pulse (100% PWM) and low pulse (0% PWM)
-	} // if ( !subghz_tx_tc_flag )
-	else // DMA completed
+	/* This ISR is only enabled after DMA TC. The last sample has now been played.
+	 * Stop the timer and signal the task. */
+	__HAL_TIM_DISABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
+	timerhdl_subghz_tx.Instance->CR1 &= ~TIM_CR1_CEN; // Stop timer
+
+	/* Force OC4REF inactive (pin LOW) to silence the transmitter */
 	{
-		if ( subghz_tx_tc_flag++ > 2 ) // DMA is 2-bits ahead of this timer.
-		{
-			q_item.q_evt_type = Q_EVENT_SUBGHZ_TX;
-			xQueueSendFromISR(main_q_hdl, &q_item, &xHigherPriorityTaskWoken);
-			portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-			subghz_tx_tc_flag = 0;
-		}
-		timerhdl_subghz_tx.Instance->CCR4 = 0;
-	} // else
+		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
+		ccmr2 &= ~(TIM_CCMR2_OC4M);
+		ccmr2 |= (0x4UL << 12); // FORCED_INACTIVE
+		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
+	}
+
+	subghz_tx_tc_flag = 0;
+
+	q_item.q_evt_type = Q_EVENT_SUBGHZ_TX;
+	xQueueSendFromISR(main_q_hdl, &q_item, &xHigherPriorityTaskWoken);
+	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 } // void TIM1_UP_IRQHandler(void)
 
 
