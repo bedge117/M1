@@ -1202,7 +1202,7 @@ static void lfrfid_saved_browse_update(uint8_t param)
 
 	do
 	{
-		f_info = storage_browse();
+		f_info = storage_browse("0:/RFID");
 		if ( f_info->file_is_selected )
 		{
 			memcpy(lfrfid_tag_info.filepath, f_info->dir_name, sizeof(lfrfid_tag_info.filepath));

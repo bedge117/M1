@@ -73,7 +73,7 @@ void storage_format(void);
 static void browse_gui_update(uint8_t sel_item, char *file_name);
 static void browse_info_box_update(uint8_t box_y, char *new_info);
 static uint8_t browse_refresh(S_M1_file_info **f_info);
-S_M1_file_info *storage_browse(void);
+S_M1_file_info *storage_browse(const char *initial_dir);
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
 
@@ -355,7 +355,7 @@ void storage_explore(void)
   * @retval
   */
 /*============================================================================*/
-S_M1_file_info *storage_browse(void)
+S_M1_file_info *storage_browse(const char *initial_dir)
 {
 	S_M1_Buttons_Status this_button_status;
 	S_M1_Main_Q_t q_item;
@@ -367,6 +367,8 @@ S_M1_file_info *storage_browse(void)
 	file_info.file_is_selected = false;
 
 	m1_fb_init(&m1_u8g2);
+	if ( initial_dir != NULL )
+		m1_fb_set_dir(initial_dir);
 
 	/* Graphic work starts here */
     m1_u8g2_firstpage(); // This call required for page drawing in mode 1
@@ -814,7 +816,7 @@ static uint8_t browse_refresh(S_M1_file_info **f_info)
 {
 	uint8_t uret, sys_error = 1;
 
-	*f_info = storage_browse();
+	*f_info = storage_browse(NULL);
 	if ( (*f_info)->file_is_selected )
 	{
 		do

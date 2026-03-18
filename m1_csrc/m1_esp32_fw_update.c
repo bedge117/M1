@@ -197,7 +197,7 @@ void setting_esp32_image_file(void)
     uint8_t hex_md5_infile[MAX(MD5_SIZE_ROM, MD5_SIZE_STUB) + 1] = {0};
     size_t count, sum;
 
-	f_info = storage_browse();
+	f_info = storage_browse(NULL);
 
 	esp32_update_status = M1_FW_IMAGE_FILE_TYPE_ERROR; // reset
 	if ( f_info->file_is_selected )

@@ -109,6 +109,27 @@ S_M1_file_browser_hdl *m1_fb_init(u8g2_t *lcd_hdl)
 } // S_M1_file_browser_hdl *m1_fb_init(u8g2_t *lcd_hdl)
 
 
+/******************************************************************************/
+/*
+*	Set the file browser starting directory.
+*	Must be called after m1_fb_init().
+*	dir must include the drive prefix, e.g. "0:/SUBGHZ"
+*/
+/******************************************************************************/
+void m1_fb_set_dir(const char *dir)
+{
+	FILINFO fno;
+	if ( pfb_hdl==NULL || dir==NULL )
+		return;
+	/* Create directory if it doesn't exist */
+	if ( f_stat(dir, &fno) != FR_OK )
+		f_mkdir(dir);
+	free(pfb_hdl->info.dir_name);
+	pfb_hdl->info.dir_name = malloc(strlen(dir) + 1);
+	assert(pfb_hdl->info.dir_name != NULL);
+	strcpy(pfb_hdl->info.dir_name, dir);
+} // void m1_fb_set_dir(const char *dir)
+
 
 /******************************************************************************/
 /*

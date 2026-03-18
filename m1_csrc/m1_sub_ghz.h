@@ -26,7 +26,7 @@
 #define SUBGHZ_RX_TIMER_CH_ACTIV  		HAL_TIM_ACTIVE_CHANNEL_1
 
 #define SUBGHZ_TX_CARRIER_TIMER         TIM1        /*!< Timer used for IR encoding */
-#define SUBGHZ_TX_TIM_PRESCALER         74           /*!< TIM prescaler */
+#define SUBGHZ_TX_TIM_PRESCALER         149          /*!< TIM prescaler: 75MHz/150 = 500kHz = 2us/tick */
 #define SUBGHZ_TX_TIMER_CLK     		__HAL_RCC_TIM1_CLK_ENABLE      /*!< Clock of the used timer */
 #define SUBGHZ_TX_TIMER_CLK_DIS 		__HAL_RCC_TIM1_CLK_DISABLE
 #define SUBGHZ_TX_TIMER_TX_CHANNEL   	TIM_CHANNEL_4 //CH4N
