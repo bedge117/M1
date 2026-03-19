@@ -701,7 +701,8 @@ static void browse_directory(const char *path)
 /*============================================================================*/
 static uint8_t map_flipper_protocol(const char *name)
 {
-	/* Common Flipper protocol names mapped to IRMP IDs */
+	/* Common Flipper protocol names mapped to IRMP IDs.
+	 * Must stay in sync with flipper_ir.c ir_proto_table[]. */
 	if (strcmp(name, "NEC") == 0 || strcmp(name, "NECext") == 0)
 		return IRMP_NEC_PROTOCOL;
 	if (strcmp(name, "Samsung32") == 0 || strcmp(name, "Samsung") == 0)
@@ -717,24 +718,24 @@ static uint8_t map_flipper_protocol(const char *name)
 		return IRMP_KASEIKYO_PROTOCOL;
 	if (strcmp(name, "NEC42") == 0 || strcmp(name, "NEC42ext") == 0)
 		return IRMP_NEC42_PROTOCOL;
-	if (strcmp(name, "RCMM") == 0)
-		return IRMP_RCMM32_PROTOCOL;
-#if IRMP_SUPPORT_DENON_PROTOCOL == 1
-	if (strcmp(name, "Denon") == 0)
+	if (strcmp(name, "Denon") == 0 || strcmp(name, "Sharp") == 0)
 		return IRMP_DENON_PROTOCOL;
-#endif
-#if IRMP_SUPPORT_JVC_PROTOCOL == 1
 	if (strcmp(name, "JVC") == 0)
 		return IRMP_JVC_PROTOCOL;
-#endif
-#if IRMP_SUPPORT_LG_PROTOCOL == 1
 	if (strcmp(name, "LG") == 0)
-		return IRMP_LG_PROTOCOL;
-#endif
-#if IRMP_SUPPORT_SHARP_PROTOCOL == 1
-	if (strcmp(name, "Sharp") == 0)
-		return IRMP_SHARP_PROTOCOL;
-#endif
+		return IRMP_LGAIR_PROTOCOL;
+	if (strcmp(name, "Pioneer") == 0)
+		return IRMP_NEC_PROTOCOL;
+	if (strcmp(name, "Apple") == 0)
+		return IRMP_APPLE_PROTOCOL;
+	if (strcmp(name, "Bose") == 0)
+		return IRMP_BOSE_PROTOCOL;
+	if (strcmp(name, "Nokia") == 0)
+		return IRMP_NOKIA_PROTOCOL;
+	if (strcmp(name, "RCA") == 0)
+		return IRMP_RCCAR_PROTOCOL;
+	if (strcmp(name, "RCMM") == 0)
+		return IRMP_RCMM32_PROTOCOL;
 
 	return 0; /* Unknown protocol */
 } // static uint8_t map_flipper_protocol(...)
@@ -1031,6 +1032,21 @@ static void transmit_command(const ir_universal_cmd_t *cmd)
 	if (cmd->is_raw)
 	{
 		transmit_raw_command(cmd);
+		return;
+	}
+
+	/* Check for unknown/unsupported protocol */
+	if (cmd->protocol == IRMP_UNKNOWN_PROTOCOL)
+	{
+		u8g2_FirstPage(&m1_u8g2);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+		u8g2_DrawStr(&m1_u8g2, 10, 15, "Unsupported");
+		u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+		u8g2_DrawStr(&m1_u8g2, 10, 30, "Protocol not recognized");
+		u8g2_DrawStr(&m1_u8g2, 10, 45, cmd->name);
+		m1_u8g2_nextpage();
+		vTaskDelay(pdMS_TO_TICKS(1500));
 		return;
 	}
 

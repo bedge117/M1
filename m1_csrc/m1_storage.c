@@ -470,8 +470,10 @@ S_M1_file_info *storage_browse(const char *initial_dir)
 						{
 							//m1_fb_dyn_strcat(fullpath, 2, "",  f_info->dir_name, f_info->file_name);
 							file_info.file_is_selected = true;
-							strncpy(file_info.file_name, f_info->file_name, ESP_FILE_NAME_LEN_MAX);
-							strncpy(file_info.dir_name, f_info->dir_name, ESP_FILE_PATH_LEN_MAX);
+							strncpy(file_info.file_name, f_info->file_name, ESP_FILE_NAME_LEN_MAX - 1);
+							file_info.file_name[ESP_FILE_NAME_LEN_MAX - 1] = '\0';
+							strncpy(file_info.dir_name, f_info->dir_name, ESP_FILE_PATH_LEN_MAX - 1);
+							file_info.dir_name[ESP_FILE_PATH_LEN_MAX - 1] = '\0';
 							len = strlen(f_info->file_name);
 							if ( len >= ESP_FILE_NAME_LEN_MAX )
 							{

@@ -59,7 +59,7 @@ static const ir_proto_map_t ir_proto_table[] = {
 	{ "Sharp",      IRMP_DENON_PROTOCOL },         /* 8  (Sharp uses same as Denon) */
 	{ "Panasonic",  IRMP_KASEIKYO_PROTOCOL },      /* 5  (Panasonic uses Kaseikyo) */
 	{ "LG",         IRMP_LGAIR_PROTOCOL },         /* 40 */
-	{ "Samsung",    IRMP_SAMSUNG_PROTOCOL },       /* 3  */
+	{ "Samsung",    IRMP_SAMSUNG32_PROTOCOL },     /* 10 (Flipper has no separate Samsung; all are Samsung32) */
 	{ "Apple",      IRMP_APPLE_PROTOCOL },         /* 11 */
 	{ "Nokia",      IRMP_NOKIA_PROTOCOL },         /* 16 */
 	{ "Bose",       IRMP_BOSE_PROTOCOL },          /* 31 */
