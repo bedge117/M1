@@ -24,6 +24,7 @@
 #include "privateprofilestring.h"
 #include "common/nfc_file.h"
 #include "res_string.h"
+#include "rfal_t2t.h"
 
 /*************************** D E F I N E S ************************************/
 #define M1_LOGDB_TAG					"NFC"
@@ -62,11 +63,13 @@ const char *m1_nfc_more_options_file[] = {
 };
 
 /* Menu for NFC Tools (both top-level nfc_tools() and Utils view) */
-#define NFC_TOOL_OPTIONS_COUNT  3
+#define NFC_TOOL_OPTIONS_COUNT  5
 static const char *m1_nfc_tool_options[] = {
 	"Tag Info",
 	"Clone Emulate",
-	"NFC Fuzzer"
+	"NFC Fuzzer",
+	"Write UID",
+	"Wipe Tag"
 };
 
 //************************** S T R U C T U R E S *******************************
@@ -1129,11 +1132,202 @@ void nfc_emulate_gui_init(void)
 
 /*============================================================================*/
 /**
+ * @brief Write UID to a magic/Gen1a T2T card
+ */
+/*============================================================================*/
+static void nfc_utils_write_uid_run(void)
+{
+	nfc_run_ctx_t *c = nfc_ctx_get();
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+
+	if (!c || c->head.uid_len == 0)
+	{
+		u8g2_FirstPage(&m1_u8g2);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+		u8g2_DrawStr(&m1_u8g2, 4, 25, "No UID data");
+		u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+		u8g2_DrawStr(&m1_u8g2, 4, 40, "Read a card first");
+		m1_u8g2_nextpage();
+		vTaskDelay(pdMS_TO_TICKS(2000));
+		return;
+	}
+
+	char uid_str[32];
+	snprintf(uid_str, sizeof(uid_str), "%s", hex2Str(c->head.uid, c->head.uid_len));
+
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 4, 12, "Write UID");
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 4, 26, uid_str);
+	u8g2_DrawStr(&m1_u8g2, 4, 40, "Hold target to back");
+	u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+	u8g2_DrawStr(&m1_u8g2, 2, 61, "OK=Write  Back=Cancel");
+	m1_u8g2_nextpage();
+
+	uint8_t confirmed = 0;
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+		if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+
+		ret = xQueueReceive(button_events_q_hdl, &btn, 0);
+		if (ret != pdTRUE) continue;
+
+		if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			return;
+
+		if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (!confirmed)
+			{
+				confirmed = 1;
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				u8g2_DrawStr(&m1_u8g2, 4, 25, "Writing UID...");
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+				u8g2_DrawStr(&m1_u8g2, 4, 40, "Hold card steady");
+				m1_u8g2_nextpage();
+
+				ReturnCode err = rfalT2TPollerWrite(0, c->head.uid);
+				if (err == RFAL_ERR_NONE && c->head.uid_len > 4)
+				{
+					err = rfalT2TPollerWrite(1, &c->head.uid[4]);
+				}
+
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				if (err == RFAL_ERR_NONE) {
+					u8g2_DrawStr(&m1_u8g2, 4, 25, "Write Success!");
+					m1_buzzer_notification();
+				} else {
+					u8g2_DrawStr(&m1_u8g2, 4, 25, "Write Failed!");
+					u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+					u8g2_DrawStr(&m1_u8g2, 4, 40, "Use Magic/Gen1a card");
+				}
+				m1_u8g2_nextpage();
+				vTaskDelay(pdMS_TO_TICKS(2000));
+				return;
+			}
+		}
+	}
+}
+
+/*============================================================================*/
+/**
+ * @brief Wipe all user pages on a T2T tag (zeros pages 4 through end)
+ */
+/*============================================================================*/
+static void nfc_utils_wipe_tag_run(void)
+{
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	uint8_t confirmed = 0;
+
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 4, 12, "Wipe Tag");
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 4, 26, "Zeros all user pages");
+	u8g2_DrawStr(&m1_u8g2, 4, 38, "Hold tag to back");
+	u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+	u8g2_DrawStr(&m1_u8g2, 2, 61, "OK=Wipe  Back=Cancel");
+	m1_u8g2_nextpage();
+
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+		if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+
+		ret = xQueueReceive(button_events_q_hdl, &btn, 0);
+		if (ret != pdTRUE) continue;
+
+		if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			return;
+
+		if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (!confirmed)
+			{
+				confirmed = 1;
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				u8g2_DrawStr(&m1_u8g2, 4, 12, "Are you sure?");
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+				u8g2_DrawStr(&m1_u8g2, 4, 28, "This will erase all");
+				u8g2_DrawStr(&m1_u8g2, 4, 40, "user data on the tag");
+				u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+				u8g2_DrawStr(&m1_u8g2, 2, 61, "OK=Confirm Back=Cancel");
+				m1_u8g2_nextpage();
+			}
+			else
+			{
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				u8g2_DrawStr(&m1_u8g2, 4, 25, "Wiping...");
+				m1_u8g2_nextpage();
+
+				uint8_t zeros[4] = {0, 0, 0, 0};
+				uint16_t pages = nfc_ctx_get_t2t_page_count();
+				if (pages == 0) pages = 45;
+				uint16_t end_page = pages - 5;
+				if (end_page > 200) end_page = 40;
+
+				ReturnCode err = RFAL_ERR_NONE;
+				uint16_t wiped = 0;
+				for (uint16_t p = 4; p <= end_page; p++)
+				{
+					err = rfalT2TPollerWrite((uint8_t)p, zeros);
+					if (err != RFAL_ERR_NONE) break;
+					wiped++;
+					m1_wdt_reset();
+				}
+
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				if (err == RFAL_ERR_NONE) {
+					char line[32];
+					snprintf(line, sizeof(line), "Wiped %u pages!", wiped);
+					u8g2_DrawStr(&m1_u8g2, 4, 25, line);
+					m1_buzzer_notification();
+				} else {
+					char line[32];
+					snprintf(line, sizeof(line), "Failed at page %u", wiped + 4);
+					u8g2_DrawStr(&m1_u8g2, 4, 25, "Wipe Failed!");
+					u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+					u8g2_DrawStr(&m1_u8g2, 4, 40, line);
+				}
+				m1_u8g2_nextpage();
+				vTaskDelay(pdMS_TO_TICKS(2000));
+				return;
+			}
+		}
+	}
+}
+
+/*============================================================================*/
+/**
  * @brief nfc_utils_kp_handler - Handle keypad input for NFC utils view
- * 
+ *
  * Processes button events in the NFC utils view:
  * - BACK: Return to submenu with saved cursor index
- * 
+ *
  * @retval 1 Continue processing
  */
 /*============================================================================*/
@@ -1312,6 +1506,16 @@ static int nfc_utils_kp_handler(void)
 
 				case 2: /* NFC Fuzzer */
 					nfc_tool_fuzzer();
+					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
+					break;
+
+				case 3: /* Write UID */
+					nfc_utils_write_uid_run();
+					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
+					break;
+
+				case 4: /* Wipe Tag */
+					nfc_utils_wipe_tag_run();
 					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
 					break;
 

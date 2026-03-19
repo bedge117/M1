@@ -220,9 +220,11 @@ void sub_ghz_replay_flipper(void)
     {
         const char *err;
         switch (result) {
-        case 2:  err = "Only RAW .sub supported"; break;
-        case 3:  err = "Unsupported frequency";   break;
-        default: err = "Replay init failed";      break;
+        case 2:  err = "No signal data found";        break;
+        case 3:  err = "Unsupported frequency";       break;
+        case 6:  err = "Rolling code - use RAW";      break;
+        case 7:  err = "Unsupported protocol";        break;
+        default: err = "Replay init failed";          break;
         }
         flipper_show_result(err, false);
         flipper_wait_for_back();

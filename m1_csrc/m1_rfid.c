@@ -1205,8 +1205,10 @@ static void lfrfid_saved_browse_update(uint8_t param)
 		f_info = storage_browse("0:/RFID");
 		if ( f_info->file_is_selected )
 		{
-			memcpy(lfrfid_tag_info.filepath, f_info->dir_name, sizeof(lfrfid_tag_info.filepath));
-			memcpy(lfrfid_tag_info.filename, f_info->file_name, sizeof(lfrfid_tag_info.filename));
+			strncpy(lfrfid_tag_info.filepath, f_info->dir_name, sizeof(lfrfid_tag_info.filepath) - 1);
+			lfrfid_tag_info.filepath[sizeof(lfrfid_tag_info.filepath) - 1] = '\0';
+			strncpy(lfrfid_tag_info.filename, f_info->file_name, sizeof(lfrfid_tag_info.filename) - 1);
+			lfrfid_tag_info.filename[sizeof(lfrfid_tag_info.filename) - 1] = '\0';
 
 			if(lfrfid_profile_load(f_info, RFID_FILE_EXTENSION_TMP))
 			{
@@ -1766,7 +1768,7 @@ static void lfrfid_saved_edit_destroy(uint8_t param)
 /*============================================================================*/
 static void lfrfid_saved_edit_update(uint8_t param)
 {
-	char data_buffer[64];
+	char data_buffer[192];
 	uint8_t data_size;
 	uint8_t val;
 	const uint8_t *pBitmap;
@@ -1901,8 +1903,8 @@ static void lfrfid_saved_rename_destroy(uint8_t param)
 /*============================================================================*/
 static void lfrfid_saved_rename_update(uint8_t param)
 {
-	char new_file[64];
-	char old_file[64];
+	char new_file[192];
+	char old_file[192];
 	BaseType_t ret;
 	const uint8_t *pBitmap;
 
@@ -2006,7 +2008,7 @@ static int lfrfid_saved_delete_kp_handler(void)
 	else if(this_button_status.event[BUTTON_RIGHT_KP_ID]==BUTTON_EVENT_CLICK )
 	{
 		// Do other things for this task, if needed
-		char file_path[64];
+		char file_path[192];
 		fu_path_combine(file_path, sizeof(file_path), lfrfid_tag_info.filepath, lfrfid_tag_info.filename);
 		m1_fb_delete_file(file_path);
 

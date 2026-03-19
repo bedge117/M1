@@ -33,7 +33,7 @@
 
 #define SUBGHZ_RAW_DATA_SAMPLES_MAX			64000 // data type of sample: uint16_t
 
-#define SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT		0 // 2 plus the first transmit before repeating
+#define SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT		4 // number of additional replays after the first transmit
 
 #define SI4463_nIRQ_EXTI_IRQn         	EXTI12_IRQn
 
@@ -1573,7 +1573,7 @@ static uint8_t sub_ghz_file_load(void)
 			break;
 		if ( strcmp(&f_info->file_name[uret], SUB_GHZ_FILE_EXTENSION) )
 			break;
-		sprintf(datfile_info.dat_filename, "%s/%s", f_info->dir_name, f_info->file_name);
+		snprintf((char *)datfile_info.dat_filename, sizeof(datfile_info.dat_filename), "%s/%s", f_info->dir_name, f_info->file_name);
 
 		sys_error = sub_ghz_ring_buffers_init();
 		if ( sys_error )
@@ -1675,7 +1675,15 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	uint32_t frequency = 0;
 	uint8_t modulation = MODULATION_OOK;
 	bool is_raw = false;
+	bool is_key = false;
+	bool has_data = false;
 	float freq_mhz, freq_min;
+
+	/* KEY file fields */
+	char key_protocol[32] = {0};
+	uint64_t key_value = 0;
+	uint32_t key_bit_count = 0;
+	uint32_t key_te = 0;
 
 	line_buf = malloc(FLIPPER_SUB_LINE_MAX);
 	if (!line_buf) return 1;
@@ -1700,7 +1708,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 		return 1;
 	}
 
-	/* ── 3. Convert header + data ── */
+	/* ── 3. Parse .sub file — collect header + data ── */
 	while (f_gets(line_buf, FLIPPER_SUB_LINE_MAX, &f_sub))
 	{
 		/* Strip trailing CR/LF */
@@ -1712,6 +1720,8 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 		{
 			if (strstr(line_buf, "RAW"))
 				is_raw = true;
+			else if (strstr(line_buf, "Key"))
+				is_key = true;
 			f_puts("Filetype: M1 SubGHz NOISE\r\n", &f_sgh);
 		}
 		else if (strncmp(line_buf, "Version:", 8) == 0)
@@ -1735,6 +1745,37 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 			         subghz_modulation_text[modulation]);
 			f_puts(out_buf, &f_sgh);
 		}
+		else if (strncmp(line_buf, "Protocol:", 9) == 0)
+		{
+			const char *p = line_buf + 9;
+			while (*p == ' ') p++;
+			strncpy(key_protocol, p, sizeof(key_protocol) - 1);
+			key_protocol[sizeof(key_protocol) - 1] = '\0';
+		}
+		else if (strncmp(line_buf, "Bit:", 4) == 0)
+		{
+			key_bit_count = (uint32_t)strtoul(line_buf + 4, NULL, 10);
+		}
+		else if (strncmp(line_buf, "Key:", 4) == 0)
+		{
+			/* Parse hex bytes big-endian: "00 00 00 00 00 52 A1 2E" */
+			const char *p = line_buf + 4;
+			key_value = 0;
+			while (*p)
+			{
+				while (*p == ' ') p++;
+				if (*p == '\0') break;
+				char *endp;
+				unsigned long bv = strtoul(p, &endp, 16);
+				if (endp == p) break;
+				key_value = (key_value << 8) | (bv & 0xFF);
+				p = endp;
+			}
+		}
+		else if (strncmp(line_buf, "TE:", 3) == 0)
+		{
+			key_te = (uint32_t)strtoul(line_buf + 3, NULL, 10);
+		}
 		else if (strncmp(line_buf, "RAW_Data:", 9) == 0)
 		{
 			/* Parse signed values, write absolute values as Data: line */
@@ -1757,20 +1798,120 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 			}
 			strcat(out_buf, "\r\n");
 			f_puts(out_buf, &f_sgh);
+			has_data = true;
 		}
-		/* Protocol: line from .sub is ignored — .sgh doesn't use it */
 	}
 
 	f_close(&f_sub);
+
+	/* ── 3b. KEY file: encode protocol → raw timing ── */
+	if (is_key && key_protocol[0] != '\0' && key_bit_count > 0)
+	{
+		uint32_t te_long, gap_low;
+
+		/* Rolling code protocols — cannot replay from KEY data */
+		if (strstr(key_protocol, "KeeLoq") || strstr(key_protocol, "Keeloq") ||
+		    strstr(key_protocol, "Security") ||
+		    strstr(key_protocol, "Star") || strstr(key_protocol, "FAAC") ||
+		    strstr(key_protocol, "Somfy") || strstr(key_protocol, "Hormann") ||
+		    strstr(key_protocol, "Marantec") ||
+		    strstr(key_protocol, "Atomo") ||   /* CAME_Atomo */
+		    strstr(key_protocol, "Twee") ||    /* CAME_Twee */
+		    strstr(key_protocol, "FloR"))       /* Nice_FloR-S */
+		{
+			f_close(&f_sgh);
+			f_unlink(FLIPPER_SUB_TMP_SGH);
+			free(line_buf); free(out_buf);
+			return 6; /* rolling code — use RAW capture */
+		}
+
+		/* Map protocol to encoding parameters */
+		if (strstr(key_protocol, "Princeton") || strstr(key_protocol, "Gate") ||
+		    strstr(key_protocol, "Holtek") || strstr(key_protocol, "Linear") ||
+		    strstr(key_protocol, "SMC5326") || strstr(key_protocol, "Power") ||
+		    strstr(key_protocol, "iDo"))
+		{
+			/* 1:3 ratio protocols */
+			if (key_te == 0) key_te = 350;
+			te_long = key_te * 3;
+			gap_low = key_te * 30;
+		}
+		else if (strstr(key_protocol, "CAME") || strstr(key_protocol, "Nice") ||
+		         strstr(key_protocol, "Ansonic"))
+		{
+			/* 1:2 ratio protocols */
+			if (key_te == 0) key_te = 320;
+			te_long = key_te * 2;
+			gap_low = key_te * 36;
+		}
+		else
+		{
+			f_close(&f_sgh);
+			f_unlink(FLIPPER_SUB_TMP_SGH);
+			free(line_buf); free(out_buf);
+			return 7; /* unsupported protocol */
+		}
+
+		/* Clamp bit_count to 64 (uint64_t key max) */
+		if (key_bit_count > 64) key_bit_count = 64;
+
+		/* Write 3 repetitions of the encoded signal.
+		 * The replay engine adds 4 more replays (SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT),
+		 * so total TX = 3 × 5 = 15 transmissions — matches a real remote button press. */
+		for (int rep = 0; rep < 3; rep++)
+		{
+			int pos = snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "%s",
+			                   SUB_GHZ_DATAFILE_DATA_KEYWORD);
+			uint64_t mask = (key_bit_count < 64) ? (1ULL << (key_bit_count - 1)) : 0;
+
+			for (uint32_t b = 0; b < key_bit_count; b++)
+			{
+				if (key_value & mask)
+				{
+					/* Bit 1: long HIGH, short LOW */
+					pos += snprintf(&out_buf[pos], FLIPPER_SUB_LINE_MAX - pos,
+					                " %lu %lu", (unsigned long)te_long,
+					                (unsigned long)key_te);
+				}
+				else
+				{
+					/* Bit 0: short HIGH, long LOW */
+					pos += snprintf(&out_buf[pos], FLIPPER_SUB_LINE_MAX - pos,
+					                " %lu %lu", (unsigned long)key_te,
+					                (unsigned long)te_long);
+				}
+				mask >>= 1;
+
+				/* Split line if buffer getting full */
+				if (pos >= FLIPPER_SUB_LINE_MAX - 64)
+				{
+					strcat(out_buf, "\r\n");
+					f_puts(out_buf, &f_sgh);
+					pos = snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "%s",
+					               SUB_GHZ_DATAFILE_DATA_KEYWORD);
+				}
+			}
+
+			/* Sync gap: short HIGH pulse + long LOW gap */
+			pos += snprintf(&out_buf[pos], FLIPPER_SUB_LINE_MAX - pos,
+			                " %lu %lu", (unsigned long)key_te,
+			                (unsigned long)gap_low);
+
+			strcat(out_buf, "\r\n");
+			f_puts(out_buf, &f_sgh);
+		}
+		has_data = true;
+	}
+
 	f_close(&f_sgh);
 
 	free(line_buf);
 	free(out_buf);
 
-	if (!is_raw || frequency == 0)
+	if (!has_data || frequency == 0)
 	{
 		f_unlink(FLIPPER_SUB_TMP_SGH);
-		return 2; /* unsupported format or missing data */
+		return 2; /* no data or missing frequency */
 	}
 
 	/* ── 4. Map frequency to band/channel ── */
@@ -2578,7 +2719,7 @@ static void sub_ghz_tx_raw_init(void)
 	}
 
 	sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
-	sConfigOC.OCNPolarity = TIM_OCPOLARITY_HIGH;
+	sConfigOC.OCNPolarity = TIM_OCNPOLARITY_LOW;  // CH4N = OC4REF (no complement inversion)
 	sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
 	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
 	if ( HAL_TIM_OC_ConfigChannel(&timerhdl_subghz_tx, &sConfigOC, SUBGHZ_TX_TIMER_TX_CHANNEL) != HAL_OK)
@@ -3105,6 +3246,9 @@ static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, u
 
 	// Start the timer — TOGGLE mode on complementary output CH4N
 	HAL_TIMEx_OCN_Start(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
+
+	// Update polarity tracking for next buffer
+	subghz_tx_start_high ^= (len & 1);
 } // static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, uint8_t repeat)
 
 
@@ -3270,6 +3414,7 @@ static uint8_t sub_ghz_raw_replay_init(void)
 			ret_code = 1; // Change to common error code
 			break;
 		}
+		subghz_tx_start_high = 1; // Each replay starts with mark (HIGH)
 		sub_ghz_transmit_raw_restart((uint32_t)double_buffer_ptr[0], raw_samples_count);
 		if ( ret_code==SUB_GHZ_RAW_DATA_PARSER_READY ) // There're more samples to read?
 			ret_code = sub_ghz_parse_raw_data(1);

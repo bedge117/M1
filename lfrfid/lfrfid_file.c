@@ -83,7 +83,7 @@ static inline void uid_to_string(char *dst, size_t dst_size,
 /*============================================================================*/
 bool lfrfid_profile_load(const S_M1_file_info *f, const char* ext)
 {
-	char file_path[64];
+	char file_path[192];
 	char buf[200];
 
 	ParsedValue data;
