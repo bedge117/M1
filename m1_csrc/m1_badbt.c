@@ -206,7 +206,6 @@ static const ascii_hid_map_t ascii_to_hid[] =
     /* 0x7E '~'  */ {KEY_GRAVE,      1},
 };
 
-static const uint8_t blank_8x8[8] = {0};
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 
@@ -282,10 +281,22 @@ static void badbt_type_char(char c)
 /*============================================================================*/
 static void badbt_type_string(const char *str)
 {
+    uint8_t count = 0;
     while (*str && badbt_state.running)
     {
         badbt_type_char(*str++);
         osDelay(BADBT_INTER_CHAR_MS);
+
+        /* Check for abort every 4 characters */
+        if (++count >= 4)
+        {
+            count = 0;
+            if (badbt_check_abort())
+            {
+                badbt_state.running = 0;
+                break;
+            }
+        }
     }
 }
 
@@ -405,12 +416,21 @@ static bool badbt_parse_line(const char *line)
         strncmp(line, "REM\n", 4) == 0 || strcmp(line, "REM") == 0)
         return true;
 
-    /* DELAY <ms> */
+    /* DELAY <ms> — broken into 100ms chunks for abort responsiveness */
     if (strncmp(line, "DELAY ", 6) == 0)
     {
         uint32_t ms = (uint32_t)atoi(line + 6);
-        if (ms > 0)
-            osDelay(ms);
+        while (ms > 0 && badbt_state.running)
+        {
+            uint32_t chunk = (ms > 100) ? 100 : ms;
+            osDelay(chunk);
+            ms -= chunk;
+            if (badbt_check_abort())
+            {
+                badbt_state.running = 0;
+                break;
+            }
+        }
         return true;
     }
 
@@ -570,7 +590,7 @@ static void badbt_show_progress(const char *filename)
     else
         m1_draw_text(&m1_u8g2, 2, 52, 124, "Done", TEXT_ALIGN_CENTER);
 
-    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Stop", "", blank_8x8);
+    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Stop", "OK", arrowright_8x8);
 
     m1_u8g2_nextpage();
 }
@@ -593,7 +613,10 @@ static bool badbt_check_abort(void)
         {
             if (xQueueReceive(button_events_q_hdl, &btn, 0) == pdTRUE)
             {
-                if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+                if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+                 || btn.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK
+                 || btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+                 || btn.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
                 {
                     return true;
                 }
@@ -618,7 +641,7 @@ static bool badbt_wait_for_connection(void)
     m1_draw_text(&m1_u8g2, 2, 10, 124, "Bad-BT", TEXT_ALIGN_CENTER);
     m1_draw_text(&m1_u8g2, 2, 26, 124, m1_badbt_name, TEXT_ALIGN_CENTER);
     m1_draw_text(&m1_u8g2, 2, 42, 124, "Connecting...", TEXT_ALIGN_CENTER);
-    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "", blank_8x8);
+    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
     m1_u8g2_nextpage();
 
     /* Poll for connection with user abort check */
@@ -661,7 +684,7 @@ static bool badbt_wait_for_connection(void)
         snprintf(time_str, sizeof(time_str), "%lus / %ds", (unsigned long)elapsed, BADBT_CONNECT_TIMEOUT);
         m1_draw_text(&m1_u8g2, 2, 50, 124, time_str, TEXT_ALIGN_CENTER);
 
-        m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "", blank_8x8);
+        m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
         m1_u8g2_nextpage();
     }
 
@@ -780,6 +803,37 @@ static bool badbt_execute_file(const char *filepath)
 
 /*============================================================================*/
 /**
+  * @brief  (Re)init file browser pointed directly at the BadUSB folder.
+  *         Deinit first if needed, then init fresh at BADBT_DIR.
+  */
+/*============================================================================*/
+static void badbt_init_file_browser(void)
+{
+    S_M1_file_browser_hdl *fb = m1_fb_init(&m1_u8g2);
+
+    /* Point directly at BadUSB folder instead of root */
+    free(fb->info.dir_name);
+    fb->info.dir_name = malloc(strlen(BADBT_DIR) + 1);
+    strcpy(fb->info.dir_name, BADBT_DIR);
+    fb->dir_level = 1;
+    fb->listing_index_buffer = realloc(fb->listing_index_buffer, 2 * sizeof(uint16_t));
+    fb->row_index_buffer = realloc(fb->row_index_buffer, 2 * sizeof(uint16_t));
+    fb->listing_index_buffer[0] = 0;
+    fb->row_index_buffer[0] = 0;
+    fb->listing_index_buffer[1] = 0;
+    fb->row_index_buffer[1] = 0;
+
+    m1_u8g2_firstpage();
+    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+    u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+    m1_u8g2_nextpage();
+
+    m1_fb_display(NULL);
+}
+
+
+/*============================================================================*/
+/**
   * @brief  Bad-BT menu entry point
   *
   * Flow: Init HID → Wait for BLE connection → File browser loop
@@ -806,7 +860,7 @@ void badbt_run(void)
     u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
     m1_draw_text(&m1_u8g2, 2, 10, 124, "Bad-BT", TEXT_ALIGN_CENTER);
     m1_draw_text(&m1_u8g2, 2, 30, 124, "Init BLE HID...", TEXT_ALIGN_CENTER);
-    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "", blank_8x8);
+    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
     m1_u8g2_nextpage();
 
     /* Ensure ESP32 hardware and SPI task are initialized */
@@ -860,15 +914,8 @@ void badbt_run(void)
     if (!m1_fb_check_existence(BADBT_DIR))
         m1_fb_make_dir(BADBT_DIR);
 
-    /* Init file browser */
-    m1_fb_init(&m1_u8g2);
-
-    m1_u8g2_firstpage();
-    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-    u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
-    m1_u8g2_nextpage();
-
-    m1_fb_display(NULL);
+    /* Init file browser and navigate directly to BadUSB folder */
+    badbt_init_file_browser();
 
     /* File browser event loop — stays connected until BACK */
     while (1)
@@ -884,8 +931,9 @@ void badbt_run(void)
         if (ret != pdTRUE)
             continue;
 
-        /* BACK = disconnect & exit */
-        if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+        /* BACK/LEFT = disconnect & exit */
+        if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+         || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
         {
             m1_fb_deinit();
             break;
@@ -945,8 +993,9 @@ void badbt_run(void)
                     m1_message_box(&m1_u8g2, "Bad-BT", "Script", "error", " OK ");
             }
 
-            /* Return to file browser (still connected) */
-            m1_fb_display(NULL);
+            /* Return to BadUSB folder — full reinit for clean state */
+            m1_fb_deinit();
+            badbt_init_file_browser();
         }
     }
 

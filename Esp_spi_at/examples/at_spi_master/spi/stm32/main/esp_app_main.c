@@ -227,6 +227,7 @@ static void spi_trans_control_task(void* arg)
         {
             if (plan_send_len == 0) {
                 M1_LOG_E(TAG, "master want send data but length is 0\r\n");
+                spi_mutex_unlock();
                 continue;
             }
 
@@ -1423,24 +1424,58 @@ uint8_t ble_hid_init(ctrl_cmd_t *app_req, const char *device_name)
 	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_SER));
 	vTaskDelay(200);
 
-	// Step 2: Register HID GATT service/appearance on ESP32
-	ret = esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_HID_INIT, "1"));
-	if (ret != SUCCESS) { fail_step = 2; goto cleanup; }
+	// Step 2: Set GAP device name (shown after BLE connection)
+	{
+		char name_cmd[64];
+		const char *gap_name = (device_name && device_name[0] != '\0') ? device_name : "M1-BadBT";
+		snprintf(name_cmd, sizeof(name_cmd), "%s\"%s\"\r\n", ESP32C6_AT_REQ_BLE_NAME, gap_name);
+		esp_at_send_wait_ok(app_req, name_cmd);
+	}
 
-	// Step 3: Set security parameters for HID pairing
+	// Step 3: Register HID GATT service/appearance on ESP32
+	ret = esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_HID_INIT, "1"));
+	if (ret != SUCCESS) { fail_step = 3; goto cleanup; }
+
+	// Step 4: Set security parameters for HID pairing
 	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_SEC_PARAM, ""));
 
-	// Step 4: Set HID advertising data (UUID 1812)
+	// Step 5: Set advertising parameters & raw data with keyboard appearance
 	{
-		char adv_cmd[128];
+		char adv_cmd[196];
 		const char *name = (device_name && device_name[0] != '\0') ? device_name : "M1-BadBT";
+		uint8_t name_len = strlen(name);
+		if (name_len > 20) name_len = 20; /* cap to fit 31-byte adv limit */
+
+		/* AT+BLEADVPARAM: min=32(20ms),max=64(40ms),type=0(connectable),addr=0,ch=7,filter=0 */
+		esp_at_send_wait_ok(app_req, "AT+BLEADVPARAM=32,64,0,0,7,0\r\n");
+		vTaskDelay(50);
+
+		/* Build raw advertising data hex string:
+		 *   02 01 06               - Flags: LE General Discoverable + BR/EDR Not Supported
+		 *   03 03 12 18            - Complete 16-bit UUID: 0x1812 (HID)
+		 *   03 19 C1 03            - Appearance: 0x03C1 (Keyboard)
+		 *   XX 09 <name bytes>     - Complete Local Name
+		 */
+		char hex[128];
+		int pos = 0;
+		/* Flags */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "020106");
+		/* UUID 0x1812 (little-endian) */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "03031218");
+		/* Appearance 0x03C1 = Keyboard (little-endian: C1 03) */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "0319C103");
+		/* Complete Local Name */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "%02X09", name_len + 1);
+		for (uint8_t i = 0; i < name_len; i++)
+			pos += snprintf(hex + pos, sizeof(hex) - pos, "%02X", (uint8_t)name[i]);
+
 		snprintf(adv_cmd, sizeof(adv_cmd),
-		         "AT+BLEADVDATAEX=\"%s\",\"1812\",\"\",1\r\n", name);
+		         "AT+BLEADVDATA=\"%s\"\r\n", hex);
 		ret = esp_at_send_wait_ok(app_req, adv_cmd);
 	}
-	if (ret != SUCCESS) { fail_step = 4; goto cleanup; }
+	if (ret != SUCCESS) { fail_step = 5; goto cleanup; }
 
-	// Step 5: Start advertising
+	// Step 6: Start advertising
 	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_START, ""));
 
 	app_req->msg_type = CTRL_RESP;
@@ -1461,6 +1496,9 @@ uint8_t ble_hid_deinit(ctrl_cmd_t *app_req)
 
 	// Stop advertising
 	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_STOP, ""));
+
+	// Reset HID registration state so next init re-registers GATT services
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_HID_INIT, "0"));
 
 	// Deinit BLE entirely
 	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_NULL));
