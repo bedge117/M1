@@ -30,6 +30,7 @@
 #include "m1_storage.h"
 #include "m1_wifi.h"
 #include "m1_bt.h"
+#include "m1_802154.h"
 #include "m1_esp32_hal.h"
 #include "esp_app_main.h"
 #include "m1_compile_cfg.h"
@@ -382,11 +383,23 @@ S_M1_Menu_t menu_Settings =
     {&menu_Settings_LCD_and_Notifications, &menu_Settings_Storage, &menu_Settings_Power, &menu_Settings_System, &menu_Setting_Firmware_Update, &menu_Setting_ESP32, &menu_Settings_About}
 };
 
+/*------------------------------ > 802.15.4 ----------------------------------*/
+
+S_M1_Menu_t menu_802154_Zigbee =
+{
+    "Zigbee Scan", zigbee_scan, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_802154_Thread =
+{
+    "Thread Scan", thread_scan, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 /*--------------------------------- > Wifi -----------------------------------*/
 
 S_M1_Menu_t menu_Wifi_Scan_AP =
 {
-    "Scan & Connect", wifi_scan_ap, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "WiFi Scan+Connect", wifi_scan_ap, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Wifi_Config =
@@ -407,14 +420,14 @@ S_M1_Menu_t menu_Wifi_Disconnect =
 
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 4, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
+    "Wifi", menu_wifi_init, NULL, NULL, 6, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_802154_Zigbee, &menu_802154_Thread, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
 };
 #else
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 2, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_Wifi_Config}
+    "Wifi", menu_wifi_init, NULL, NULL, 4, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_802154_Zigbee, &menu_802154_Thread, &menu_Wifi_Config}
 };
 #endif
 

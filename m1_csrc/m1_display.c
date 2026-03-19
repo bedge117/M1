@@ -609,7 +609,10 @@ uint8_t m1_message_box(u8g2_t *u8g2, const char *title1, const char *title2, con
 				// Notification is only sent to this task when there's any button activity,
 				// so it doesn't need to wait when reading the event from the queue
 				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK ) // user wants to exit?
+				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK
+			  || this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK
+			  || this_button_status.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK
+			  || this_button_status.event[BUTTON_RIGHT_KP_ID]==BUTTON_EVENT_CLICK ) // user wants to exit?
 				{
 					; // Do extra tasks here if needed
 

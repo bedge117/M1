@@ -30,6 +30,13 @@ uint8_t wifi_disconnect_ap(ctrl_cmd_t *app_req);
 uint8_t wifi_get_ip(ctrl_cmd_t *app_req);
 #endif
 
+#ifdef M1_APP_BADBT_ENABLE
+uint8_t ble_hid_init(ctrl_cmd_t *app_req, const char *device_name);
+uint8_t ble_hid_deinit(ctrl_cmd_t *app_req);
+uint8_t ble_hid_send_kb(ctrl_cmd_t *app_req, uint8_t modifier, uint8_t key1);
+uint8_t ble_hid_wait_connect(ctrl_cmd_t *app_req, uint8_t timeout_sec);
+#endif
+
 #ifdef M1_APP_BT_MANAGE_ENABLE
 uint8_t ble_scan_list_ex(ctrl_cmd_t *app_req);
 uint8_t esp_get_version(ctrl_cmd_t *app_req);

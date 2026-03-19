@@ -59,4 +59,8 @@ bt_connection_state_t *bt_get_connection_state(void);
 
 #endif /* M1_APP_BT_MANAGE_ENABLE */
 
+#ifdef M1_APP_BADBT_ENABLE
+void bluetooth_set_badbt_name(void);
+#endif
+
 #endif /* M1_BT_H_ */

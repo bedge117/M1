@@ -381,6 +381,7 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_bq25896.c
     ../../m1_csrc/m1_bq27421.c
     ../../m1_csrc/m1_bt.c
+    ../../m1_csrc/m1_802154.c
     ../../m1_csrc/m1_buzzer.c
     ../../m1_csrc/m1_cli.c
     ../../m1_csrc/m1_cli_help.c
@@ -442,7 +443,8 @@ target_sources(m1_01 INTERFACE
     # === Enhanced firmware: BadUSB (Phase 7) ===
     ../../USB/Class/HID/Src/usbd_hid.c
     ../../m1_csrc/m1_badusb.c
-    # === Bad-BT moved to feature/bad-bt branch ===
+    # === Enhanced firmware: Bad-BT (Phase 8) ===
+    ../../m1_csrc/m1_badbt.c
     # === Enhanced firmware: Built-in Games (Phase 9) ===
     ../../m1_csrc/m1_games.c
     ../../m1_csrc/game_snake.c

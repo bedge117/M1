@@ -56,7 +56,6 @@
 #define BT_LIST_START_Y				13
 #define BT_LIST_VISIBLE				4
 
-static const uint8_t blank_8x8[8] = {0};
 
 #endif /* M1_APP_BT_MANAGE_ENABLE */
 
@@ -342,11 +341,13 @@ static void bt_scan_detail_screen(ble_scanlist_t *dev)
 		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
 			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				break;
 			}
-			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+			      || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				/* Save device */
 				bool saved = bt_add_device((char *)dev->addr, (char *)dev->name, dev->addr_type);
@@ -432,7 +433,8 @@ void bluetooth_scan(void)
 			if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 			{
 				xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+				if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+				 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 					break;
 			}
 		}
@@ -482,7 +484,8 @@ void bluetooth_scan(void)
 		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
 			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				break;
 			}
@@ -498,7 +501,8 @@ void bluetooth_scan(void)
 				else selection = 0;
 				redraw = true;
 			}
-			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+			      || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				bt_scan_detail_screen(&list[selection]);
 				redraw = true;
@@ -569,7 +573,8 @@ static void bt_saved_detail_screen(uint8_t dev_idx)
 		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
 			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				break;
 			}
@@ -579,7 +584,8 @@ static void bt_saved_detail_screen(uint8_t dev_idx)
 				menu_sel = menu_sel ? 0 : 1;
 				redraw = true;
 			}
-			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+			      || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				if (menu_sel == 1) /* Delete */
 				{
@@ -658,7 +664,7 @@ void bluetooth_saved_devices(void)
 			{
 				bt_draw_title_bar("Saved Devices");
 				u8g2_DrawStr(&m1_u8g2, 2, 30, "No saved devices");
-				m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "", blank_8x8);
+				m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
 				m1_u8g2_nextpage();
 			}
 			else
@@ -694,7 +700,8 @@ void bluetooth_saved_devices(void)
 		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
 			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				xQueueReset(main_q_hdl);
 				break;
@@ -717,7 +724,8 @@ void bluetooth_saved_devices(void)
 					redraw = true;
 				}
 			}
-			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+			      || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				if (s_saved_count > 0)
 				{
@@ -726,6 +734,11 @@ void bluetooth_saved_devices(void)
 					if (selection >= s_saved_count && s_saved_count > 0)
 						selection = s_saved_count - 1;
 					redraw = true;
+				}
+				else
+				{
+					xQueueReset(main_q_hdl);
+					break;
 				}
 			}
 		}
@@ -813,7 +826,7 @@ void bluetooth_info(void)
 		u8g2_DrawStr(&m1_u8g2, 2, y, "Not connected");
 	}
 
-	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "", blank_8x8);
+	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
 	m1_u8g2_nextpage();
 
 	/* Wait for BACK */
@@ -823,7 +836,10 @@ void bluetooth_info(void)
 		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
 			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
 				break;
 		}
 	}
@@ -839,6 +855,24 @@ bt_connection_state_t *bt_get_connection_state(void)
 }
 
 
+
+
+#ifdef M1_APP_BADBT_ENABLE
+void bluetooth_set_badbt_name(void)
+{
+	char new_name[BADBT_NAME_MAX_LEN + 1] = {0};
+
+	uint8_t len = m1_vkb_get_filename("Bad-BT Name", m1_badbt_name, new_name);
+	if (len > 0)
+	{
+		strncpy(m1_badbt_name, new_name, BADBT_NAME_MAX_LEN);
+		m1_badbt_name[BADBT_NAME_MAX_LEN] = '\0';
+		settings_save_to_sd();
+
+		bt_show_message("Name saved:", m1_badbt_name, 1500);
+	}
+}
+#endif /* M1_APP_BADBT_ENABLE */
 
 
 #else /* !M1_APP_BT_MANAGE_ENABLE — original scan/advertise code */
@@ -917,7 +951,8 @@ void bluetooth_scan(void)
 			if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
 			{
 				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
+				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK
+				  || this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK )
 				{
 					if (app_req.u.wifi_ap_scan.out_list != NULL)
 					{
@@ -1058,7 +1093,8 @@ void bluetooth_advertise(void)
 			if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
 			{
 				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
+				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK
+				  || this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK )
 				{
 					u8g2_DrawXBMP(&m1_u8g2, M1_LCD_DISPLAY_WIDTH - 18*2, M1_LCD_DISPLAY_HEIGHT/2 - 2, 18, 32, hourglass_18x32);
 					m1_u8g2_nextpage();
@@ -1110,7 +1146,8 @@ void bluetooth_config(void)
 			if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
 			{
 				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
+				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK
+				  || this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK )
 				{
 					;
 					xQueueReset(main_q_hdl);

@@ -1,10 +1,11 @@
 /* See COPYING.txt for license details. */
 
 /*
- * m1_badusb.c
+ * m1_badbt.c
  *
- * BadUSB — USB HID keyboard injection with DuckyScript parser.
- * Reads script files from SD card and types keystrokes via USB HID.
+ * Bad-BT — BLE HID keyboard injection with DuckyScript parser.
+ * Reads script files from SD card and types keystrokes via BLE HID.
+ * Same DuckyScript format as BadUSB, but wireless over Bluetooth.
  */
 
 /*************************** I N C L U D E S **********************************/
@@ -14,32 +15,37 @@
 #include "m1_lcd.h"
 #include "m1_display.h"
 #include "m1_file_browser.h"
-#include "m1_usb_cdc_msc.h"
 #include "m1_menu.h"
 #include "m1_tasks.h"
 #include "m1_system.h"
 #include "m1_sdcard.h"
 #include "m1_compile_cfg.h"
-#include "m1_badusb.h"
-#include "usbd_hid.h"
+#include "m1_badbt.h"
+#include "m1_esp32_hal.h"
+#include "esp_app_main.h"
+#include "ctrl_api.h"
 #include "m1_log_debug.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 
-#ifdef M1_APP_BADUSB_ENABLE
+#ifdef M1_APP_BADBT_ENABLE
 
 /*************************** D E F I N E S ************************************/
 
-#define M1_LOGDB_TAG  "BUSB"
+#define M1_LOGDB_TAG  "BBT"
 
 /* Timing */
-#define BADUSB_ENUM_TIMEOUT_MS    5000  /* Max wait for host to enumerate HID */
-#define BADUSB_ENUM_POLL_MS       50    /* Poll interval for enumeration check */
-#define BADUSB_KEY_PRESS_MS       6     /* Hold key down (must exceed bInterval=2ms) */
-#define BADUSB_KEY_RELEASE_MS     6     /* Delay after release */
-#define BADUSB_INTER_CHAR_MS      2     /* Between characters in STRING */
-#define BADUSB_TX_WAIT_MS         20    /* Max wait for HID TX complete */
+#define BADBT_KEY_PRESS_MS        30    /* Hold key down (BLE is slower than USB) */
+#define BADBT_KEY_RELEASE_MS      30    /* Delay after release */
+#define BADBT_INTER_CHAR_MS       10    /* Between characters in STRING */
+#define BADBT_CONNECT_TIMEOUT     120   /* Seconds to wait for BLE connection */
+
+/* HID Modifier bits (same as USB HID) */
+#define HID_MOD_LCTRL   0x01
+#define HID_MOD_LSHIFT  0x02
+#define HID_MOD_LALT    0x04
+#define HID_MOD_LGUI    0x08
 
 /* HID Keyboard scancodes */
 #define KEY_NONE                  0x00
@@ -135,10 +141,8 @@ typedef struct
 
 /***************************** V A R I A B L E S ******************************/
 
-static badusb_state_t badusb_state;
-
-/* USB HID report buffer: [modifier, reserved, key1..key6] */
-static uint8_t hid_report[8];
+static badbt_state_t badbt_state;
+static ctrl_cmd_t badbt_req;  /* initialized via CTRL_CMD_DEFAULT_REQ() before use */
 
 /* ASCII to HID scancode table (US keyboard layout, indices 0x20-0x7E) */
 static const ascii_hid_map_t ascii_to_hid[] =
@@ -202,126 +206,97 @@ static const ascii_hid_map_t ascii_to_hid[] =
     /* 0x7E '~'  */ {KEY_GRAVE,      1},
 };
 
+
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 
-static void badusb_wait_tx_idle(void);
-static void badusb_send_key(uint8_t modifier, uint8_t keycode);
-static void badusb_release_all(void);
-static void badusb_type_char(char c);
-static void badusb_type_string(const char *str);
-static bool badusb_parse_line(const char *line);
-static uint8_t badusb_parse_key_name(const char *name);
-static uint8_t badusb_parse_modifier(const char *name, const char **remainder);
-static uint16_t badusb_count_lines(const char *buf, uint32_t len);
-static void badusb_show_progress(const char *filename);
-static bool badusb_check_abort(void);
+static void badbt_send_key(uint8_t modifier, uint8_t keycode);
+static void badbt_release_all(void);
+static void badbt_type_char(char c);
+static void badbt_type_string(const char *str);
+static bool badbt_parse_line(const char *line);
+static uint8_t badbt_parse_key_name(const char *name);
+static uint8_t badbt_parse_modifier(const char *name, const char **remainder);
+static uint16_t badbt_count_lines(const char *buf, uint32_t len);
+static void badbt_show_progress(const char *filename);
+static bool badbt_check_abort(void);
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
 
 /*============================================================================*/
 /**
-  * @brief  Show a crash breadcrumb on the LCD (survives until reboot splash)
+  * @brief  Send a key press via BLE HID, wait, then release
   */
 /*============================================================================*/
-static void badusb_breadcrumb(uint8_t phase)
+static void badbt_send_key(uint8_t modifier, uint8_t keycode)
 {
-    char buf[24];
-    snprintf(buf, sizeof(buf), "BadUSB Phase: %d", phase);
-    m1_u8g2_firstpage();
-    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-    u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
-    m1_draw_text(&m1_u8g2, 2, 30, 124, buf, TEXT_ALIGN_CENTER);
-    m1_u8g2_nextpage();
-}
+    ble_hid_send_kb(&badbt_req, modifier, keycode);
+    osDelay(BADBT_KEY_PRESS_MS);
 
-/*============================================================================*/
-/**
-  * @brief  Wait for previous HID report transfer to complete (IDLE state)
-  */
-/*============================================================================*/
-static void badusb_wait_tx_idle(void)
-{
-    USBD_HID_HandleTypeDef *hhid = (USBD_HID_HandleTypeDef *)hUsbDeviceFS.pClassData;
-    if (hhid == NULL) return;
-
-    uint32_t start = osKernelGetTickCount();
-    while (hhid->state != HID_IDLE)
-    {
-        if ((osKernelGetTickCount() - start) > BADUSB_TX_WAIT_MS)
-            break;
-        osDelay(1);
-    }
-}
-
-/*============================================================================*/
-/**
-  * @brief  Send a key press (modifier + keycode), wait, then release
-  */
-/*============================================================================*/
-static void badusb_send_key(uint8_t modifier, uint8_t keycode)
-{
-    badusb_wait_tx_idle();
-    memset(hid_report, 0, sizeof(hid_report));
-    hid_report[0] = modifier;
-    hid_report[2] = keycode;
-    USBD_HID_SendReport(&hUsbDeviceFS, hid_report, sizeof(hid_report));
-    osDelay(BADUSB_KEY_PRESS_MS);
-
-    badusb_release_all();
-    osDelay(BADUSB_KEY_RELEASE_MS);
+    badbt_release_all();
+    osDelay(BADBT_KEY_RELEASE_MS);
 }
 
 
 /*============================================================================*/
 /**
-  * @brief  Release all keys (send empty report)
+  * @brief  Release all keys (send empty HID report)
   */
 /*============================================================================*/
-static void badusb_release_all(void)
+static void badbt_release_all(void)
 {
-    badusb_wait_tx_idle();
-    memset(hid_report, 0, sizeof(hid_report));
-    USBD_HID_SendReport(&hUsbDeviceFS, hid_report, sizeof(hid_report));
+    ble_hid_send_kb(&badbt_req, 0, 0);
 }
 
 
 /*============================================================================*/
 /**
-  * @brief  Type a single ASCII character via HID keyboard
+  * @brief  Type a single ASCII character via BLE HID keyboard
   */
 /*============================================================================*/
-static void badusb_type_char(char c)
+static void badbt_type_char(char c)
 {
     if (c < 0x20 || c > 0x7E)
     {
         if (c == '\n' || c == '\r')
         {
-            badusb_send_key(0, KEY_ENTER);
+            badbt_send_key(0, KEY_ENTER);
         }
         else if (c == '\t')
         {
-            badusb_send_key(0, KEY_TAB);
+            badbt_send_key(0, KEY_TAB);
         }
         return;
     }
 
     const ascii_hid_map_t *entry = &ascii_to_hid[c - 0x20];
     uint8_t mod = entry->shift ? HID_MOD_LSHIFT : 0;
-    badusb_send_key(mod, entry->keycode);
+    badbt_send_key(mod, entry->keycode);
 }
 
 
 /*============================================================================*/
 /**
-  * @brief  Type a string character by character
+  * @brief  Type a string character by character via BLE HID
   */
 /*============================================================================*/
-static void badusb_type_string(const char *str)
+static void badbt_type_string(const char *str)
 {
-    while (*str && badusb_state.running)
+    uint8_t count = 0;
+    while (*str && badbt_state.running)
     {
-        badusb_type_char(*str++);
-        osDelay(BADUSB_INTER_CHAR_MS);
+        badbt_type_char(*str++);
+        osDelay(BADBT_INTER_CHAR_MS);
+
+        /* Check for abort every 4 characters */
+        if (++count >= 4)
+        {
+            count = 0;
+            if (badbt_check_abort())
+            {
+                badbt_state.running = 0;
+                break;
+            }
+        }
     }
 }
 
@@ -332,7 +307,7 @@ static void badusb_type_string(const char *str)
   * @retval HID keycode or KEY_NONE if not recognized
   */
 /*============================================================================*/
-static uint8_t badusb_parse_key_name(const char *name)
+static uint8_t badbt_parse_key_name(const char *name)
 {
     if (strcmp(name, "ENTER") == 0 || strcmp(name, "RETURN") == 0)  return KEY_ENTER;
     if (strcmp(name, "TAB") == 0)           return KEY_TAB;
@@ -381,16 +356,12 @@ static uint8_t badusb_parse_key_name(const char *name)
 /*============================================================================*/
 /**
   * @brief  Parse a modifier keyword and return its HID modifier bit
-  * @param  name: input string (may contain "CTRL", "ALT", "SHIFT", "GUI", etc.)
-  * @param  remainder: output pointer to the rest of the string after the modifier
-  * @retval modifier bitmask or 0 if not a modifier
   */
 /*============================================================================*/
-static uint8_t badusb_parse_modifier(const char *name, const char **remainder)
+static uint8_t badbt_parse_modifier(const char *name, const char **remainder)
 {
     *remainder = NULL;
 
-    /* Check for modifier with space or dash separator */
     struct {
         const char *keyword;
         uint8_t     mod;
@@ -427,11 +398,11 @@ static uint8_t badusb_parse_modifier(const char *name, const char **remainder)
 
 /*============================================================================*/
 /**
-  * @brief  Parse and execute a single DuckyScript line
+  * @brief  Parse and execute a single DuckyScript line (BLE HID transport)
   * @retval true if line was valid, false on error
   */
 /*============================================================================*/
-static bool badusb_parse_line(const char *line)
+static bool badbt_parse_line(const char *line)
 {
     /* Skip leading whitespace */
     while (*line == ' ' || *line == '\t') line++;
@@ -445,12 +416,21 @@ static bool badusb_parse_line(const char *line)
         strncmp(line, "REM\n", 4) == 0 || strcmp(line, "REM") == 0)
         return true;
 
-    /* DELAY <ms> */
+    /* DELAY <ms> — broken into 100ms chunks for abort responsiveness */
     if (strncmp(line, "DELAY ", 6) == 0)
     {
         uint32_t ms = (uint32_t)atoi(line + 6);
-        if (ms > 0)
-            osDelay(ms);
+        while (ms > 0 && badbt_state.running)
+        {
+            uint32_t chunk = (ms > 100) ? 100 : ms;
+            osDelay(chunk);
+            ms -= chunk;
+            if (badbt_check_abort())
+            {
+                badbt_state.running = 0;
+                break;
+            }
+        }
         return true;
     }
 
@@ -459,14 +439,14 @@ static bool badusb_parse_line(const char *line)
         strncmp(line, "DEFAULTDELAY ", 13) == 0)
     {
         const char *p = line + (line[7] == '_' ? 14 : 13);
-        badusb_state.default_delay_ms = (uint16_t)atoi(p);
+        badbt_state.default_delay_ms = (uint16_t)atoi(p);
         return true;
     }
 
     /* STRING <text> */
     if (strncmp(line, "STRING ", 7) == 0)
     {
-        badusb_type_string(line + 7);
+        badbt_type_string(line + 7);
         return true;
     }
 
@@ -474,16 +454,16 @@ static bool badusb_parse_line(const char *line)
     if (strncmp(line, "REPEAT ", 7) == 0)
     {
         int count = atoi(line + 7);
-        if (count > 0 && badusb_state.last_line[0] != '\0')
+        if (count > 0 && badbt_state.last_line[0] != '\0')
         {
-            for (int i = 0; i < count && badusb_state.running; i++)
+            for (int i = 0; i < count && badbt_state.running; i++)
             {
-                badusb_parse_line(badusb_state.last_line);
-                if (badusb_state.default_delay_ms > 0)
-                    osDelay(badusb_state.default_delay_ms);
+                badbt_parse_line(badbt_state.last_line);
+                if (badbt_state.default_delay_ms > 0)
+                    osDelay(badbt_state.default_delay_ms);
             }
         }
-        return true;  /* Don't update last_line for REPEAT */
+        return true;
     }
 
     /* Try as modifier combo: CTRL x, GUI r, ALT F4, SHIFT INSERT, etc. */
@@ -492,10 +472,9 @@ static bool badusb_parse_line(const char *line)
         const char *cur = line;
         const char *rest = NULL;
 
-        /* Accumulate all modifiers (supports CTRL-ALT x, CTRL SHIFT ESC, etc.) */
         while (cur && *cur)
         {
-            uint8_t m = badusb_parse_modifier(cur, &rest);
+            uint8_t m = badbt_parse_modifier(cur, &rest);
             if (m == 0)
                 break;
             mod_accum |= m;
@@ -506,39 +485,33 @@ static bool badusb_parse_line(const char *line)
         {
             if (cur != NULL && *cur != '\0')
             {
-                /* There's a key after the modifier(s) */
-                /* Remove trailing whitespace/newline */
                 char keybuf[32];
                 strncpy(keybuf, cur, sizeof(keybuf) - 1);
                 keybuf[sizeof(keybuf) - 1] = '\0';
-                /* Trim trailing whitespace */
                 int kl = (int)strlen(keybuf);
                 while (kl > 0 && (keybuf[kl-1] == '\r' || keybuf[kl-1] == '\n' ||
                        keybuf[kl-1] == ' '))
                     keybuf[--kl] = '\0';
 
-                uint8_t keycode = badusb_parse_key_name(keybuf);
+                uint8_t keycode = badbt_parse_key_name(keybuf);
                 if (keycode != KEY_NONE)
                 {
-                    /* Check if the key itself needs shift (e.g., for uppercase) */
                     if (strlen(keybuf) == 1 && keybuf[0] >= 0x20 && keybuf[0] <= 0x7E)
                     {
                         uint8_t char_mod = ascii_to_hid[keybuf[0] - 0x20].shift ?
                                            HID_MOD_LSHIFT : 0;
                         mod_accum |= char_mod;
                     }
-                    badusb_send_key(mod_accum, keycode);
+                    badbt_send_key(mod_accum, keycode);
                 }
                 else
                 {
-                    /* Modifier only, no recognized key */
-                    badusb_send_key(mod_accum, KEY_NONE);
+                    badbt_send_key(mod_accum, KEY_NONE);
                 }
             }
             else
             {
-                /* Modifier alone (e.g., just "GUI") */
-                badusb_send_key(mod_accum, KEY_NONE);
+                badbt_send_key(mod_accum, KEY_NONE);
             }
             return true;
         }
@@ -546,7 +519,6 @@ static bool badusb_parse_line(const char *line)
 
     /* Try as standalone key name */
     {
-        /* Trim trailing CR/LF */
         char keybuf[32];
         strncpy(keybuf, line, sizeof(keybuf) - 1);
         keybuf[sizeof(keybuf) - 1] = '\0';
@@ -555,16 +527,16 @@ static bool badusb_parse_line(const char *line)
                keybuf[kl-1] == ' '))
             keybuf[--kl] = '\0';
 
-        uint8_t keycode = badusb_parse_key_name(keybuf);
+        uint8_t keycode = badbt_parse_key_name(keybuf);
         if (keycode != KEY_NONE)
         {
-            badusb_send_key(0, keycode);
+            badbt_send_key(0, keycode);
             return true;
         }
     }
 
     M1_LOG_W(M1_LOGDB_TAG, "Unknown cmd: %s\r\n", line);
-    return true;  /* Skip unrecognized lines rather than aborting */
+    return true;
 }
 
 
@@ -573,7 +545,7 @@ static bool badusb_parse_line(const char *line)
   * @brief  Count lines in a text buffer
   */
 /*============================================================================*/
-static uint16_t badusb_count_lines(const char *buf, uint32_t len)
+static uint16_t badbt_count_lines(const char *buf, uint32_t len)
 {
     uint16_t count = 0;
     for (uint32_t i = 0; i < len; i++)
@@ -581,7 +553,6 @@ static uint16_t badusb_count_lines(const char *buf, uint32_t len)
         if (buf[i] == '\n')
             count++;
     }
-    /* Count last line if no trailing newline */
     if (len > 0 && buf[len - 1] != '\n')
         count++;
     return count;
@@ -593,7 +564,7 @@ static uint16_t badusb_count_lines(const char *buf, uint32_t len)
   * @brief  Show execution progress on LCD
   */
 /*============================================================================*/
-static void badusb_show_progress(const char *filename)
+static void badbt_show_progress(const char *filename)
 {
     char buf[32];
 
@@ -601,7 +572,7 @@ static void badusb_show_progress(const char *filename)
     u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
     u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
 
-    m1_draw_text(&m1_u8g2, 2, 10, 124, "BadUSB", TEXT_ALIGN_CENTER);
+    m1_draw_text(&m1_u8g2, 2, 10, 124, "Bad-BT", TEXT_ALIGN_CENTER);
 
     /* Show filename (truncated) */
     char name_buf[24];
@@ -611,10 +582,10 @@ static void badusb_show_progress(const char *filename)
 
     /* Progress */
     snprintf(buf, sizeof(buf), "Line %d / %d",
-             badusb_state.current_line, badusb_state.total_lines);
+             badbt_state.current_line, badbt_state.total_lines);
     m1_draw_text(&m1_u8g2, 2, 38, 124, buf, TEXT_ALIGN_CENTER);
 
-    if (badusb_state.running)
+    if (badbt_state.running)
         m1_draw_text(&m1_u8g2, 2, 52, 124, "Running...", TEXT_ALIGN_CENTER);
     else
         m1_draw_text(&m1_u8g2, 2, 52, 124, "Done", TEXT_ALIGN_CENTER);
@@ -631,12 +602,11 @@ static void badusb_show_progress(const char *filename)
   * @retval true if abort requested
   */
 /*============================================================================*/
-static bool badusb_check_abort(void)
+static bool badbt_check_abort(void)
 {
     S_M1_Main_Q_t q_item;
     S_M1_Buttons_Status btn;
 
-    /* Non-blocking check */
     if (xQueueReceive(main_q_hdl, &q_item, 0) == pdTRUE)
     {
         if (q_item.q_evt_type == Q_EVENT_KEYPAD)
@@ -659,21 +629,85 @@ static bool badusb_check_abort(void)
 
 /*============================================================================*/
 /**
-  * @brief  Execute a BadUSB script file
-  * @param  filepath: full path to script on SD card (e.g., "0:/BadUSB/test.txt")
-  * @retval true on success, false on error
+  * @brief  Show "waiting for connection" screen with abort check
+  * @retval true if connected, false if aborted or timeout
   */
 /*============================================================================*/
-bool badusb_execute_file(const char *filepath)
+static bool badbt_wait_for_connection(void)
+{
+    m1_u8g2_firstpage();
+    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+    u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+    m1_draw_text(&m1_u8g2, 2, 10, 124, "Bad-BT", TEXT_ALIGN_CENTER);
+    m1_draw_text(&m1_u8g2, 2, 26, 124, m1_badbt_name, TEXT_ALIGN_CENTER);
+    m1_draw_text(&m1_u8g2, 2, 42, 124, "Connecting...", TEXT_ALIGN_CENTER);
+    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
+    m1_u8g2_nextpage();
+
+    /* Poll for connection with user abort check */
+    uint32_t t0 = osKernelGetTickCount();
+    uint8_t dots = 0;
+
+    while ((osKernelGetTickCount() - t0) < (BADBT_CONNECT_TIMEOUT * 1000))
+    {
+        /* Check for connection via ESP32 (1-second polls) */
+        uint8_t ret = ble_hid_wait_connect(&badbt_req, 1);
+        if (ret == SUCCESS)
+        {
+            badbt_state.connected = 1;
+            return true;
+        }
+
+        /* Check for user abort */
+        if (badbt_check_abort())
+            return false;
+
+        /* Update screen with animated dots */
+        dots = (dots + 1) % 4;
+        char dot_str[8];
+        memset(dot_str, '.', dots);
+        dot_str[dots] = '\0';
+
+        m1_u8g2_firstpage();
+        u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+        u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+        m1_draw_text(&m1_u8g2, 2, 10, 124, "Bad-BT", TEXT_ALIGN_CENTER);
+        m1_draw_text(&m1_u8g2, 2, 24, 124, m1_badbt_name, TEXT_ALIGN_CENTER);
+
+        char wait_str[24];
+        snprintf(wait_str, sizeof(wait_str), "Pair from target%s", dot_str);
+        m1_draw_text(&m1_u8g2, 2, 38, 124, wait_str, TEXT_ALIGN_CENTER);
+
+        /* Show elapsed time */
+        uint32_t elapsed = (osKernelGetTickCount() - t0) / 1000;
+        char time_str[16];
+        snprintf(time_str, sizeof(time_str), "%lus / %ds", (unsigned long)elapsed, BADBT_CONNECT_TIMEOUT);
+        m1_draw_text(&m1_u8g2, 2, 50, 124, time_str, TEXT_ALIGN_CENTER);
+
+        m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
+        m1_u8g2_nextpage();
+    }
+
+    return false;
+}
+
+
+/*============================================================================*/
+/**
+  * @brief  Execute a DuckyScript file over BLE HID (assumes already connected)
+  * @param  filepath: full path to script on SD card
+  * @retval true on success, false on error/abort
+  */
+/*============================================================================*/
+static bool badbt_execute_file(const char *filepath)
 {
     FIL fp;
     FRESULT fres;
     UINT bytes_read;
-    char script_buf[BADUSB_MAX_SCRIPT_SIZE];
-    char line_buf[BADUSB_MAX_LINE_LEN];
+    char script_buf[BADBT_MAX_SCRIPT_SIZE];
+    char line_buf[BADBT_MAX_LINE_LEN];
 
-    /* Phase 1: File read */
-    badusb_breadcrumb(1);
+    /* Read script file */
     fres = f_open(&fp, filepath, FA_READ);
     if (fres != FR_OK)
     {
@@ -681,8 +715,7 @@ bool badusb_execute_file(const char *filepath)
         return false;
     }
 
-    /* Read entire file */
-    fres = f_read(&fp, script_buf, BADUSB_MAX_SCRIPT_SIZE - 1, &bytes_read);
+    fres = f_read(&fp, script_buf, BADBT_MAX_SCRIPT_SIZE - 1, &bytes_read);
     f_close(&fp);
 
     if (fres != FR_OK || bytes_read == 0)
@@ -692,123 +725,77 @@ bool badusb_execute_file(const char *filepath)
     }
     script_buf[bytes_read] = '\0';
 
-    /* Init state */
-    memset(&badusb_state, 0, sizeof(badusb_state));
-    badusb_state.running = 1;
-    badusb_state.total_lines = badusb_count_lines(script_buf, bytes_read);
+    /* Init execution state */
+    memset(&badbt_state, 0, sizeof(badbt_state));
+    badbt_state.running   = 1;
+    badbt_state.connected = 1;
+    badbt_state.total_lines = badbt_count_lines(script_buf, bytes_read);
 
-    /* Extract just the filename for display */
     const char *fname = strrchr(filepath, '/');
     if (fname) fname++; else fname = filepath;
 
-    /* Reset HID debug counters before switching */
-    USBD_HID_ResetDbgCounters();
+    /* Execute script lines */
+    const char *p = script_buf;
+    const char *end = script_buf + bytes_read;
 
-    /* Phase 2: USB switch to HID */
-    badusb_breadcrumb(2);
-    m1_usb_switch_to_hid();
-
-    /* Phase 3: Wait for enumeration */
-    badusb_breadcrumb(3);
+    while (p < end && badbt_state.running)
     {
-        uint32_t t0 = osKernelGetTickCount();
-        while (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED)
+        const char *line_end = p;
+        while (line_end < end && *line_end != '\n')
+            line_end++;
+
+        size_t line_len = (size_t)(line_end - p);
+        if (line_len >= BADBT_MAX_LINE_LEN)
+            line_len = BADBT_MAX_LINE_LEN - 1;
+
+        memcpy(line_buf, p, line_len);
+        line_buf[line_len] = '\0';
+
+        /* Trim trailing CR */
+        if (line_len > 0 && line_buf[line_len - 1] == '\r')
+            line_buf[line_len - 1] = '\0';
+
+        badbt_state.current_line++;
+
+        /* Execute the line */
+        badbt_parse_line(line_buf);
+
+        /* Save for REPEAT */
+        if (strncmp(line_buf, "REPEAT ", 7) != 0)
         {
-            if ((osKernelGetTickCount() - t0) > BADUSB_ENUM_TIMEOUT_MS)
-                break;
-            osDelay(BADUSB_ENUM_POLL_MS);
+            strncpy(badbt_state.last_line, line_buf,
+                    sizeof(badbt_state.last_line) - 1);
+            badbt_state.last_line[sizeof(badbt_state.last_line) - 1] = '\0';
         }
 
-        if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED)
+        /* Default delay between commands */
+        if (badbt_state.default_delay_ms > 0)
+            osDelay(badbt_state.default_delay_ms);
+
+        /* Update progress display every 4 lines */
+        if ((badbt_state.current_line & 3) == 0)
+            badbt_show_progress(fname);
+
+        /* Check for abort */
+        if (badbt_check_abort())
         {
-            badusb_state.running = 0;
+            badbt_state.running = 0;
+            break;
         }
 
-        /* Phase 4: Settle delay (3s) */
-        badusb_breadcrumb(4);
-        osDelay(3000);
-
-        /* Phase 5: Prime endpoint */
-        badusb_breadcrumb(5);
-        if (badusb_state.running)
-        {
-            memset(hid_report, 0, sizeof(hid_report));
-            USBD_HID_SendReport(&hUsbDeviceFS, hid_report, sizeof(hid_report));
-            osDelay(50);
-        }
-    }
-
-    /* Phase 6: Execute script lines */
-    badusb_breadcrumb(6);
-
-    if (badusb_state.running)
-    {
-        const char *p = script_buf;
-        const char *end = script_buf + bytes_read;
-
-        while (p < end && badusb_state.running)
-        {
-            /* Extract one line */
-            const char *line_end = p;
-            while (line_end < end && *line_end != '\n')
-                line_end++;
-
-            size_t line_len = (size_t)(line_end - p);
-            if (line_len >= BADUSB_MAX_LINE_LEN)
-                line_len = BADUSB_MAX_LINE_LEN - 1;
-
-            memcpy(line_buf, p, line_len);
-            line_buf[line_len] = '\0';
-
-            /* Trim trailing CR */
-            if (line_len > 0 && line_buf[line_len - 1] == '\r')
-                line_buf[line_len - 1] = '\0';
-
-            badusb_state.current_line++;
-
-            /* Execute the line */
-            badusb_parse_line(line_buf);
-
-            /* Save for REPEAT (unless it was a REPEAT command itself) */
-            if (strncmp(line_buf, "REPEAT ", 7) != 0)
-            {
-                strncpy(badusb_state.last_line, line_buf,
-                        sizeof(badusb_state.last_line) - 1);
-                badusb_state.last_line[sizeof(badusb_state.last_line) - 1] = '\0';
-            }
-
-            /* Default delay between commands */
-            if (badusb_state.default_delay_ms > 0)
-                osDelay(badusb_state.default_delay_ms);
-
-            /* Update progress display every 4 lines */
-            if ((badusb_state.current_line & 3) == 0)
-                badusb_show_progress(fname);
-
-            /* Check for abort */
-            if (badusb_check_abort())
-            {
-                badusb_state.running = 0;
-                break;
-            }
-
-            /* Advance past newline */
-            p = line_end;
-            if (p < end && *p == '\n')
-                p++;
-        }
+        /* Advance past newline */
+        p = line_end;
+        if (p < end && *p == '\n')
+            p++;
     }
 
     /* Ensure all keys released */
-    badusb_release_all();
+    badbt_release_all();
 
     /* Show final progress */
-    badusb_state.running = 0;
-    badusb_show_progress(fname);
+    badbt_state.running = 0;
+    badbt_show_progress(fname);
     osDelay(500);
-
-    /* Switch USB back to CDC+MSC */
-    m1_usb_switch_to_normal();
 
     return true;
 }
@@ -816,21 +803,44 @@ bool badusb_execute_file(const char *filepath)
 
 /*============================================================================*/
 /**
-  * @brief  Stop a running BadUSB script
+  * @brief  (Re)init file browser pointed directly at the BadUSB folder.
+  *         Deinit first if needed, then init fresh at BADBT_DIR.
   */
 /*============================================================================*/
-void badusb_stop(void)
+static void badbt_init_file_browser(void)
 {
-    badusb_state.running = 0;
+    S_M1_file_browser_hdl *fb = m1_fb_init(&m1_u8g2);
+
+    /* Point directly at BadUSB folder instead of root */
+    free(fb->info.dir_name);
+    fb->info.dir_name = malloc(strlen(BADBT_DIR) + 1);
+    strcpy(fb->info.dir_name, BADBT_DIR);
+    fb->dir_level = 1;
+    fb->listing_index_buffer = realloc(fb->listing_index_buffer, 2 * sizeof(uint16_t));
+    fb->row_index_buffer = realloc(fb->row_index_buffer, 2 * sizeof(uint16_t));
+    fb->listing_index_buffer[0] = 0;
+    fb->row_index_buffer[0] = 0;
+    fb->listing_index_buffer[1] = 0;
+    fb->row_index_buffer[1] = 0;
+
+    m1_u8g2_firstpage();
+    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+    u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+    m1_u8g2_nextpage();
+
+    m1_fb_display(NULL);
 }
 
 
 /*============================================================================*/
 /**
-  * @brief  BadUSB menu entry point — browse files, select, execute
+  * @brief  Bad-BT menu entry point
+  *
+  * Flow: Init HID → Wait for BLE connection → File browser loop
+  *       (select & execute payloads, stay connected) → Back = disconnect
   */
 /*============================================================================*/
-void badusb_run(void)
+void badbt_run(void)
 {
     S_M1_Buttons_Status this_button_status;
     S_M1_Main_Q_t q_item;
@@ -838,31 +848,76 @@ void badusb_run(void)
     BaseType_t ret;
     char filepath[128];
 
-    /* Check SD card */
-    if (m1_sdcard_get_status() != SD_access_OK)
+    /* ---- Phase 1: Init ESP32 & BLE HID ---- */
+
     {
-        m1_message_box(&m1_u8g2, "BadUSB", "SD card not", "available", " OK ");
+        ctrl_cmd_t tmp = CTRL_CMD_DEFAULT_REQ();
+        badbt_req = tmp;
+    }
+
+    m1_u8g2_firstpage();
+    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+    u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+    m1_draw_text(&m1_u8g2, 2, 10, 124, "Bad-BT", TEXT_ALIGN_CENTER);
+    m1_draw_text(&m1_u8g2, 2, 30, 124, "Init BLE HID...", TEXT_ALIGN_CENTER);
+    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
+    m1_u8g2_nextpage();
+
+    /* Ensure ESP32 hardware and SPI task are initialized */
+    if ( !m1_esp32_get_init_status() )
+        m1_esp32_init();
+
+    if ( !get_esp32_main_init_status() )
+        esp32_main_init();
+
+    if ( !get_esp32_main_init_status() )
+    {
+        m1_message_box(&m1_u8g2, "Bad-BT", "ESP32 not", "ready", " OK ");
         return;
     }
 
-    /* Ensure BadUSB directory exists */
-    if (!m1_fb_check_existence(BADUSB_DIR))
+    uint8_t init_ret = ble_hid_init(&badbt_req, m1_badbt_name);
+    if (init_ret != SUCCESS)
     {
-        m1_fb_make_dir(BADUSB_DIR);
+        char step_msg[16];
+        snprintf(step_msg, sizeof(step_msg), "fail step %d", init_ret);
+        m1_message_box(&m1_u8g2, "Bad-BT", "BLE HID init", step_msg, " OK ");
+        return;
     }
 
-    /* Init file browser */
-    m1_fb_init(&m1_u8g2);
+    /* ---- Phase 2: Wait for target device to pair ---- */
 
-    /* Setup display */
-    m1_u8g2_firstpage();
-    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-    u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
-    m1_u8g2_nextpage();
+    memset(&badbt_state, 0, sizeof(badbt_state));
 
-    m1_fb_display(NULL);
+    if (!badbt_wait_for_connection())
+    {
+        ble_hid_deinit(&badbt_req);
+        if (!badbt_state.connected)
+            m1_message_box(&m1_u8g2, "Bad-BT", "Connection", "timeout", " OK ");
+        return;
+    }
 
-    /* File browser event loop */
+    /* Brief settle delay after connection */
+    osDelay(1000);
+
+    /* ---- Phase 3: Connected — file browser loop ---- */
+
+    /* Check SD card */
+    if (m1_sdcard_get_status() != SD_access_OK)
+    {
+        ble_hid_deinit(&badbt_req);
+        m1_message_box(&m1_u8g2, "Bad-BT", "SD card not", "available", " OK ");
+        return;
+    }
+
+    /* Ensure BadUSB directory exists (shared with BadUSB) */
+    if (!m1_fb_check_existence(BADBT_DIR))
+        m1_fb_make_dir(BADBT_DIR);
+
+    /* Init file browser and navigate directly to BadUSB folder */
+    badbt_init_file_browser();
+
+    /* File browser event loop — stays connected until BACK */
     while (1)
     {
         ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
@@ -876,8 +931,9 @@ void badusb_run(void)
         if (ret != pdTRUE)
             continue;
 
-        /* BACK exits to menu */
-        if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+        /* BACK/LEFT = disconnect & exit */
+        if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+         || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
         {
             m1_fb_deinit();
             break;
@@ -896,11 +952,10 @@ void badusb_run(void)
             strncpy(msg_line, f_info->file_name, sizeof(msg_line) - 1);
             msg_line[sizeof(msg_line) - 1] = '\0';
 
-            /* Confirmation screen */
             m1_u8g2_firstpage();
             u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
             u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
-            m1_draw_text(&m1_u8g2, 2, 10, 124, "Run BadUSB?", TEXT_ALIGN_CENTER);
+            m1_draw_text(&m1_u8g2, 2, 10, 124, "Run script?", TEXT_ALIGN_CENTER);
             m1_draw_text(&m1_u8g2, 2, 28, 124, msg_line, TEXT_ALIGN_CENTER);
             m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Run", arrowright_8x8);
             m1_u8g2_nextpage();
@@ -931,24 +986,21 @@ void badusb_run(void)
 
             if (confirmed)
             {
-                /* Execute the script */
-                bool ok = badusb_execute_file(filepath);
-
-                /* Show result */
+                bool ok = badbt_execute_file(filepath);
                 if (ok)
-                {
-                    m1_message_box(&m1_u8g2, "BadUSB", "Script", "complete", " OK ");
-                }
+                    m1_message_box(&m1_u8g2, "Bad-BT", "Script", "complete", " OK ");
                 else
-                {
-                    m1_message_box(&m1_u8g2, "BadUSB", "Script", "error", " OK ");
-                }
+                    m1_message_box(&m1_u8g2, "Bad-BT", "Script", "error", " OK ");
             }
 
-            /* Return to file browser */
-            m1_fb_display(NULL);
+            /* Return to BadUSB folder — full reinit for clean state */
+            m1_fb_deinit();
+            badbt_init_file_browser();
         }
     }
+
+    /* ---- Phase 4: Disconnect & cleanup ---- */
+    ble_hid_deinit(&badbt_req);
 }
 
-#endif /* M1_APP_BADUSB_ENABLE */
+#endif /* M1_APP_BADBT_ENABLE */

@@ -56,6 +56,9 @@ S_M1_Buttons_Status m1_buttons_status = {	.event= {BUTTON_EVENT_IDLE, BUTTON_EVE
 S_M1_Device_Status_t 	m1_device_stat = {0};
 uint8_t                 m1_southpaw_mode = 0;
 uint8_t                 m1_esp32_auto_init = 0;
+#ifdef M1_APP_BADBT_ENABLE
+char                    m1_badbt_name[BADBT_NAME_MAX_LEN + 1] = "M1-BadBT";
+#endif
 QueueHandle_t 			button_events_q_hdl = NULL;
 TaskHandle_t			system_task_hdl;
 TaskHandle_t 			idle_task_hdl;
