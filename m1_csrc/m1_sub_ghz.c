@@ -1677,7 +1677,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	bool is_raw = false;
 	bool is_key = false;
 	bool has_data = false;
-	float freq_mhz, freq_min;
+	float freq_mhz;
 
 	/* KEY file fields */
 	char key_protocol[32] = {0};
@@ -1914,34 +1914,20 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 		return 2; /* no data or missing frequency */
 	}
 
-	/* ── 4. Map frequency to band/channel ── */
+	/* ── 4. Use exact frequency via CUSTOM mode ── */
 	freq_mhz = (float)frequency / 1000000.0f;
 	subghz_replay_freq = freq_mhz;
 	subghz_replay_mod  = modulation;
 
-	for (subghz_replay_band = 0;
-	     subghz_replay_band < SUB_GHZ_BAND_EOL;
-	     subghz_replay_band++)
-	{
-		freq_min = subghz_band_steps[subghz_replay_band][0];
-		float freq_max = freq_min +
-		                 0.25f * subghz_band_steps[subghz_replay_band][1];
-		if (freq_mhz >= freq_min && freq_mhz <= freq_max)
-			break;
-	}
-	if (subghz_replay_band >= SUB_GHZ_BAND_EOL)
+	if (frequency < 142000000UL || frequency > 1050000000UL)
 	{
 		f_unlink(FLIPPER_SUB_TMP_SGH);
 		return 3; /* unsupported frequency */
 	}
 
+	subghz_custom_freq_hz = frequency;
+	subghz_replay_band    = SUB_GHZ_BAND_CUSTOM;
 	subghz_replay_channel = 0;
-	freq_min = subghz_band_steps[subghz_replay_band][0];
-	while (freq_mhz > freq_min)
-	{
-		freq_min += 0.25f;
-		subghz_replay_channel++;
-	}
 
 	/* ── 5. Set up datfile_info → temp .sgh ── */
 	strncpy((char *)datfile_info.dat_filename, FLIPPER_SUB_TMP_SGH,
@@ -2047,9 +2033,26 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 				    sub_ghz_replay_continue(subghz_replay_ret_code);
 				if (subghz_replay_ret_code == SUB_GHZ_RAW_DATA_PARSER_IDLE)
 				{
-					m1_led_fast_blink(LED_BLINK_ON_RGB,
-					                  LED_FASTBLINK_PWM_OFF,
-					                  LED_FASTBLINK_ONTIME_OFF);
+					/* Auto-restart: loop continuously until BACK */
+					sub_ghz_set_opmode(SUB_GHZ_OPMODE_TX,
+					                   subghz_replay_band,
+					                   subghz_replay_channel,
+					                   tx_power_values[subghz_tx_power_idx]);
+					subghz_replay_ret_code = sub_ghz_raw_replay_init();
+					if (subghz_replay_ret_code != 1)
+					{
+						double_buffer_ptr_id = 1;
+						subghz_decenc_ctl.ntx_raw_repeat =
+						    SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT;
+					}
+					else
+					{
+						/* Restart failed — stop */
+						m1_led_fast_blink(LED_BLINK_ON_RGB,
+						                  LED_FASTBLINK_PWM_OFF,
+						                  LED_FASTBLINK_ONTIME_OFF);
+						subghz_replay_ret_code = SUB_GHZ_RAW_DATA_PARSER_IDLE;
+					}
 				}
 			}
 		} /* while (running) */
@@ -3566,8 +3569,13 @@ static uint8_t sub_ghz_fcc_ism_band_check(uint8_t band, uint8_t channel)
 
 	ret = 1;
 
-	freq = subghz_band_steps[band][0];
-	freq += channel*CHANNEL_STEP;
+	if (band == SUB_GHZ_BAND_CUSTOM)
+		freq = (float)subghz_custom_freq_hz / 1000000.0f;
+	else if (band < SUB_GHZ_BAND_EOL)
+		freq = subghz_band_steps[band][0] + channel * CHANNEL_STEP;
+	else
+		return 1; /* unknown band — reject */
+
 	for (i=0; i<subghz_regions_list[m1_device_stat.config.ism_band_region].bands_list; i++)
 	{
 		if ( (freq >= subghz_regions_list[m1_device_stat.config.ism_band_region].this_region[i][0]) &&
