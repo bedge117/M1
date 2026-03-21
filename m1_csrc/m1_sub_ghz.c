@@ -668,16 +668,17 @@ static void sub_ghz_set_opmode(uint8_t opmode, uint8_t band, uint8_t channel, ui
 			SI446x_Get_IntStatus(0, 0, 0);
 			/* Direct mode async TX: modulation source = GPIO2, OOK */
 			SI446x_Change_ModType(0xC8 | mod_type);
-			/* Configure SI4463 GPIO2 as INPUT for direct TX data from MCU.
-			 * Without this, GPIO2 stays in its init config (output) and the
-			 * SI4463 ignores the OOK modulation signal from TIM1_CH4N. */
+			M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] ModType=0x%02X\r\n", 0xC8 | mod_type);
+			/* Configure SI4463 GPIO2 as INPUT for direct TX data from MCU */
 			{
 				extern void SI446x_GPIO_Config(uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t);
 				SI446x_GPIO_Config(0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00);
 			}
+			M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] GPIO2=INPUT(0x04), antenna=TX\r\n");
 			SI446x_Get_IntStatus(0, 0, 0);
 			Radio_Start_Tx(channel, START_TX_COMPLETE_STATE_NOCHANGE, 0);
 			SI446x_Set_Tx_Power(tx_power);
+			M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] Radio_Start_Tx ch=%d pwr=%d\r\n", channel, tx_power);
 			break;
 
 		default: // SUB_GHZ_OPMODE_ISOLATED
@@ -1386,14 +1387,18 @@ static void subghz_replay_browse_gui_update(uint8_t param)
 		/* Check if this is a Flipper .sub file */
 		{
 			size_t nlen = strlen(f_info->file_name);
+			M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] file selected: '%s' len=%d ext='%s'\r\n",
+			         f_info->file_name, (int)nlen,
+			         (nlen > 4) ? &f_info->file_name[nlen - 4] : "???");
+
 			if (nlen > 4 && strcmp(&f_info->file_name[nlen - 4], ".sub") == 0)
 			{
-				/* Build full path and use the Flipper replay engine
-				 * (exact frequency, continuous loop, handles RAW + KEY formats) */
 				char sub_path[256];
 				snprintf(sub_path, sizeof(sub_path), "%s/%s",
 				         f_info->dir_name, f_info->file_name);
+				M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] calling replay_flipper_file: '%s'\r\n", sub_path);
 				uint8_t ret = sub_ghz_replay_flipper_file(sub_path);
+				M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] replay_flipper_file returned %d\r\n", ret);
 				if (ret)
 				{
 					const char *err_msg = "File error!";
@@ -1763,6 +1768,7 @@ static uint8_t sub_ghz_file_load(void)
 /*============================================================================*/
 void sub_ghz_replay(void)
 {
+	M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] sub_ghz_replay() ENTERED\r\n");
 	m1_gui_submenu_update(NULL, 0, 0, X_MENU_UPDATE_INIT);
 	subghz_uiview_gui_latest_param = 0xFF; // Initialize with an invalid parameter
 
@@ -1811,10 +1817,12 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	uint32_t key_bit_count = 0;
 	uint32_t key_te = 0;
 
+	M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] replay_flipper_file ENTER: '%s'\r\n", sub_path);
+
 	line_buf = malloc(FLIPPER_SUB_LINE_MAX);
-	if (!line_buf) return 1;
+	if (!line_buf) { M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] malloc line_buf FAILED\r\n"); return 1; }
 	out_buf = malloc(FLIPPER_SUB_OUT_MAX);
-	if (!out_buf) { free(line_buf); return 1; }
+	if (!out_buf) { M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] malloc out_buf FAILED\r\n"); free(line_buf); return 1; }
 
 	/* ── 1. Open .sub source ── */
 	fr = f_open(&f_sub, sub_path, FA_READ);
@@ -2101,6 +2109,9 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	freq_mhz = (float)frequency / 1000000.0f;
 	subghz_replay_freq = freq_mhz;
 	subghz_replay_mod  = modulation;
+
+	M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] .sub parsed: freq=%luHz mod=%d is_raw=%d is_key=%d has_data=%d\r\n",
+	         (unsigned long)frequency, modulation, is_raw, is_key, has_data);
 
 	if (frequency < 142000000UL || frequency > 1050000000UL)
 	{
@@ -2706,9 +2717,14 @@ static void sub_ghz_saved_action_menu(const char *filepath, const char *filename
 			if (sel == 0) /* Emulate */
 			{
 				size_t nlen = strlen(filename);
+				M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] SAVED Emulate: '%s' len=%d ext='%s'\r\n",
+				         filename, (int)nlen,
+				         (nlen > 4) ? &filename[nlen - 4] : "???");
 				if (nlen > 4 && strcmp(&filename[nlen - 4], ".sub") == 0)
 				{
+					M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] .sub detected, calling replay: '%s'\r\n", filepath);
 					uint8_t rc = sub_ghz_replay_flipper_file(filepath);
+					M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] replay returned %d\r\n", rc);
 					if (rc)
 					{
 						const char *err = "Replay error!";
@@ -4217,6 +4233,8 @@ static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, u
 		subghz_decenc_ctl.ntx_raw_dest = dest;
 
 		HAL_StatusTypeDef ret = TIM_DMA_Start_IT(timerhdl_subghz_tx.hdma[TIM_DMA_ID_UPDATE], dma_src, dest, dma_len);
+		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] DMA_Start ret=%d src=0x%08lX len=%lu\r\n",
+		         ret, (unsigned long)dma_src, (unsigned long)dma_len);
 		if ( ret != HAL_OK)
 			return;
 	}
@@ -4436,41 +4454,73 @@ static uint8_t sub_ghz_replay_start(bool record_mode, S_M1_SubGHz_Band band, uin
 		m1_sdm_task_stop(); // Stop sampling raw data and flush data to SD card and then close file
 		ret_code = sub_ghz_raw_samples_init();
 	} // if ( record_mode )
+	M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] replay_start: band=%d ch=%d pwr=%d rec=%d ism_check=%d\r\n",
+	         band, channel, power, record_mode, ret_code);
+
 	while ( !ret_code )
 	{
 		ret_code = sub_ghz_parse_raw_data(0);
+		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] parse_raw ret=%d samples=%d\r\n", ret_code, raw_samples_count);
 		if ( ret_code & SUB_GHZ_RAW_DATA_PARSER_ERROR_MASK )
 		{
-			ret_code = 1; // Change to common error code
+			M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] PARSE ERROR 0x%02X\r\n", ret_code);
+			ret_code = 1;
 			break;
 		}
-		if ( raw_samples_count==0 ) // No samples found in Record mode or Replay mode?
+		if ( raw_samples_count==0 )
 		{
-			if ( record_mode ) // Try to replay in Record mode?
+			if ( record_mode )
 			{
-				raw_samples_count = 10; // Just play dummy data
+				raw_samples_count = 10;
 			}
 			else
 			{
-				ret_code = 1; // Change to common error code
+				M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] NO SAMPLES — aborting\r\n");
+				ret_code = 1;
 				break;
 			}
-		} // if ( raw_samples_count==0 )
-		M1_LOG_I(M1_LOGDB_TAG, "sub_ghz_replay_start: %d samples\r\n", raw_samples_count);
+		}
+
+		/* Log first 8 samples so we can verify data */
+		{
+			uint16_t *buf = double_buffer_ptr[0];
+			uint16_t n = (raw_samples_count > 8) ? 8 : raw_samples_count;
+			M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] %d samples, first %d: ", raw_samples_count, n);
+			for (uint16_t dbg_i = 0; dbg_i < n; dbg_i++)
+				M1_LOG_I(M1_LOGDB_TAG, "%u ", buf[dbg_i]);
+			M1_LOG_I(M1_LOGDB_TAG, "\r\n");
+		}
+
+		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] tx_raw_init...\r\n");
 		sub_ghz_tx_raw_init();
+
+		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] set_opmode TX band=%d...\r\n", band);
 		sub_ghz_set_opmode(SUB_GHZ_OPMODE_TX, band, channel, power);
+
+		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] transmit_raw src=0x%08lX dst=0x%08lX len=%d rep=%d\r\n",
+		         (unsigned long)(uint32_t)double_buffer_ptr[0],
+		         (unsigned long)(uint32_t)&timerhdl_subghz_tx.Instance->ARR,
+		         raw_samples_count, SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT);
 		sub_ghz_transmit_raw((uint32_t)double_buffer_ptr[0], (uint32_t)&timerhdl_subghz_tx.Instance->ARR, raw_samples_count, SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT);
-		if ( ret_code==SUB_GHZ_RAW_DATA_PARSER_READY ) // There're more samples to read?
+
+		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] transmit_raw started, TIM1->CR1=0x%08lX ARR=%lu CNT=%lu BDTR=0x%08lX\r\n",
+		         (unsigned long)timerhdl_subghz_tx.Instance->CR1,
+		         (unsigned long)timerhdl_subghz_tx.Instance->ARR,
+		         (unsigned long)timerhdl_subghz_tx.Instance->CNT,
+		         (unsigned long)timerhdl_subghz_tx.Instance->BDTR);
+
+		if ( ret_code==SUB_GHZ_RAW_DATA_PARSER_READY )
 			ret_code = sub_ghz_parse_raw_data(1);
-		else // COMPLETE
-			ret_code = SUB_GHZ_RAW_DATA_PARSER_STOPPED; // No more sample
+		else
+			ret_code = SUB_GHZ_RAW_DATA_PARSER_STOPPED;
 		break;
 	} // while ( !ret_code )
 	if ( ret_code==1 )
 	{
+		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] ERROR exit — deinit\r\n");
 		sub_ghz_raw_samples_deinit(record_mode);
-		ret_code = 0; // Reset
-	} // if ( ret_code==1 )
+		ret_code = 0;
+	}
 
 	return ret_code;
 } // static uint8_t sub_ghz_replay_start(bool record_mode, S_M1_SubGHz_Band band, uint8_t channel, uint8_t power)

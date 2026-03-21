@@ -70,7 +70,7 @@
 // Command:                  RF_915_OOK_GPIO_PIN_CFG
 // Description:              Configures the GPIO pins.
 */
-#define RF_915_OOK_GPIO_PIN_CFG 0x13, 0x15, 0x08, 0x13, 0x1A, 0x00, 0x00, 0x00
+#define RF_915_OOK_GPIO_PIN_CFG 0x13, 0x15, 0x08, 0x04, 0x1A, 0x00, 0x00, 0x00
 
 /*
 // Set properties:           RF_915_OOK_GLOBAL_XO_TUNE_2
