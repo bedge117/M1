@@ -204,11 +204,12 @@ static uint16_t ceDirectRx(uint8_t *buf, uint16_t bufSize)
 
         if (irqs & ST25R3916_IRQ_MASK_RXE) {
             uint16_t numBytes = st25r3916GetNumFIFOBytes();
-            if (numBytes == 0 || numBytes > bufSize) {
-                return 0;
+            if (numBytes < 3 || numBytes > bufSize) {
+                return 0;  /* Too short (need at least cmd + CRC) or overflow */
             }
             st25r3916ReadFifo(buf, numBytes);
-            return numBytes;
+            /* Strip 2-byte CRC_A — reader appends it, we don't need it */
+            return numBytes - 2;
         }
 
         /* Check field still present periodically */
@@ -260,6 +261,8 @@ static void ceT2TDirectLoop(const uint8_t *firstCmd, uint16_t firstCmdLen)
                     uint16_t p = (uint16_t)startPage + i;
                     if (pageCnt > 0 && p >= pageCnt) p = p % pageCnt;
                     if (!nfc_ctx_get_t2t_page(p, pg)) memset(pg, 0, 4);
+                    /* Mask PWD (page 133) and PACK (page 134) — write-only per NTAG spec */
+                    if (pageCnt >= 135 && (p == 133 || p == 134)) memset(pg, 0, 4);
                     memcpy(&g_ceTxBuf[txLen], pg, 4);
                     txLen += 4;
                 }
@@ -278,6 +281,8 @@ static void ceT2TDirectLoop(const uint8_t *firstCmd, uint16_t firstCmdLen)
                 for (uint16_t i = sp; i <= ep; i++) {
                     if (txLen + 4 > sizeof(g_ceTxBuf)) break;
                     if (!nfc_ctx_get_t2t_page(i, pg)) memset(pg, 0, 4);
+                    /* Mask PWD/PACK pages */
+                    if (pageCnt >= 135 && (i == 133 || i == 134)) memset(pg, 0, 4);
                     memcpy(&g_ceTxBuf[txLen], pg, 4);
                     txLen += 4;
                 }

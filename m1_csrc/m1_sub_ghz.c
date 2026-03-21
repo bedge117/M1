@@ -27,6 +27,7 @@
 #include "m1_storage.h"
 #include "m1_sdcard_man.h"
 #include "flipper_subghz.h"
+#include "m1_virtual_kb.h"
 #include "uiView.h"
 
 /*************************** D E F I N E S ************************************/
@@ -92,7 +93,7 @@
 // 322MHz-335.4MHz, 399.9MHz-410MHz
 //#define SUBGHZ_FCC_ISM_BAND_304_100				(float)304.10001 // FZ
 #define SUBGHZ_FCC_ISM_BAND_300_000				(float)300.00001
-#define SUBGHZ_FCC_ISM_BAND_310_000				(float)310.00001
+#define SUBGHZ_FCC_ISM_BAND_310_000				(float)300.00001
 #define SUBGHZ_FCC_ISM_BAND_321_950				(float)321.95001
 
 #define SUBGHZ_FCC_ISM_BAND_344_000				(float)344.00001
@@ -110,7 +111,8 @@ const char *subghz_ism_regions_text[SUBGHZ_ISM_BAND_REGIONS_LIST] =
 {
 	"North America",
 	"Europe",
-	"Asia"
+	"Asia",
+	"Off"
 };
 
 static const char *subghz_modulation_text[SUBGHZ_MODULATION_LIST] =
@@ -207,6 +209,9 @@ const S_M1_SUBGHZ_ISM_REGIONS_t subghz_regions_list[SUBGHZ_ISM_BAND_REGIONS_LIST
 	{	.this_region = subghz_fcc_ism_bands_ASIA,
 		.bands_list = SUBGHZ_ISM_BANDS_LIST_ASIA
 	},
+	{	.this_region = NULL,
+		.bands_list = 0
+	},
 };
 
 /* Frequency-sorted band order for UI navigation (L/R buttons) */
@@ -216,6 +221,92 @@ static const S_M1_SubGHz_Band subghz_band_order[SUBGHZ_BAND_ORDER_COUNT] = {
 	SUB_GHZ_BAND_300, SUB_GHZ_BAND_310, SUB_GHZ_BAND_315,
 	SUB_GHZ_BAND_345, SUB_GHZ_BAND_372, SUB_GHZ_BAND_390,
 	SUB_GHZ_BAND_433, SUB_GHZ_BAND_433_92, SUB_GHZ_BAND_915
+};
+
+/*============================================================================*/
+/* Flipper Zero-compatible frequency presets (17 frequencies)                  */
+/*============================================================================*/
+#define SUBGHZ_FREQ_PRESET_COUNT    17
+#define SUBGHZ_FREQ_DEFAULT_IDX     10  /* 433.92 MHz */
+
+static const struct {
+	uint32_t freq_hz;
+	const char *label;
+} subghz_freq_presets[SUBGHZ_FREQ_PRESET_COUNT] = {
+	{ 300000000, "300.00"  },
+	{ 303875000, "303.87"  },
+	{ 304250000, "304.25"  },
+	{ 310000000, "310.00"  },
+	{ 315000000, "315.00"  },
+	{ 318000000, "318.00"  },
+	{ 390000000, "390.00"  },
+	{ 418000000, "418.00"  },
+	{ 433075000, "433.07"  },
+	{ 433420000, "433.42"  },
+	{ 433920000, "433.92"  },
+	{ 434420000, "434.42"  },
+	{ 434775000, "434.77"  },
+	{ 438900000, "438.90"  },
+	{ 868350000, "868.35"  },
+	{ 915000000, "915.00"  },
+	{ 925000000, "925.00"  }
+};
+
+/* Hopper frequencies (Flipper Zero default) */
+#define SUBGHZ_HOPPER_FREQ_COUNT    6
+static const uint32_t subghz_hopper_freqs[SUBGHZ_HOPPER_FREQ_COUNT] = {
+	310000000, 315000000, 318000000, 390000000, 433920000, 868350000
+};
+
+/* Flipper-style modulation presets */
+#define SUBGHZ_MOD_PRESET_COUNT     4
+static const struct {
+	const char *label;
+	S_M1_SubGHz_Modulation mod;
+} subghz_mod_presets[SUBGHZ_MOD_PRESET_COUNT] = {
+	{ "AM270", MODULATION_OOK },
+	{ "AM650", MODULATION_OOK },
+	{ "FM238", MODULATION_FSK },
+	{ "FM476", MODULATION_FSK }
+};
+
+/* Sub-GHz config state (shared between Read / Read RAW / Config screen) */
+typedef struct {
+	uint8_t freq_idx;       /* Index into subghz_freq_presets[] */
+	uint8_t mod_idx;        /* Index into subghz_mod_presets[] */
+	bool    hopping;
+	bool    bin_raw;
+	bool    sound;
+} SubGHz_Config_t;
+
+static SubGHz_Config_t subghz_cfg = {
+	.freq_idx = SUBGHZ_FREQ_DEFAULT_IDX,
+	.mod_idx  = 1,    /* AM650 — Flipper default */
+	.hopping  = false,
+	.bin_raw  = false,
+	.sound    = true
+};
+
+/* Add Manually protocol entries */
+#define SUBGHZ_ADD_MANUALLY_COUNT   11
+static const struct {
+	const char *label;
+	uint32_t freq_hz;
+	uint8_t  bits;
+	uint16_t te;
+	uint8_t  ratio;  /* 3 = 1:3 (Princeton), 2 = 1:2 (CAME/Nice) */
+} subghz_add_manually_list[SUBGHZ_ADD_MANUALLY_COUNT] = {
+	{ "Princeton 433",   433920000,  24, 350, 3 },
+	{ "Princeton 315",   315000000,  24, 350, 3 },
+	{ "Nice FLO 12b",    433920000,  12, 700, 2 },
+	{ "Nice FLO 24b",    433920000,  24, 700, 2 },
+	{ "CAME 12bit",      433920000,  12, 320, 2 },
+	{ "CAME 24bit",      433920000,  24, 320, 2 },
+	{ "CAME 12b 868",    868350000,  12, 320, 2 },
+	{ "Linear 300",      300000000,  10, 500, 3 },
+	{ "Gate TX 433",     433920000,  24, 350, 3 },
+	{ "DoorHan 315",     315000000,  24, 350, 3 },
+	{ "DoorHan 433",     433920000,  24, 350, 3 }
 };
 
 static uint8_t subghz_band_order_find(S_M1_SubGHz_Band band)
@@ -319,6 +410,14 @@ S_M1_SubGHz_Scan_Config subghz_scan_config =
 	.modulation = MODULATION_OOK
 };
 
+/* Helper: set subghz_custom_freq_hz + scan_config from config preset */
+static void subghz_apply_config(void)
+{
+	subghz_custom_freq_hz = subghz_freq_presets[subghz_cfg.freq_idx].freq_hz;
+	subghz_scan_config.band = SUB_GHZ_BAND_CUSTOM;
+	subghz_scan_config.modulation = subghz_mod_presets[subghz_cfg.mod_idx].mod;
+}
+
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 
 void menu_sub_ghz_init(void);
@@ -357,6 +456,14 @@ static uint8_t sub_ghz_parse_raw_data(uint8_t buffer_ptr_id);
 static uint8_t sub_ghz_file_load(void);
 
 static bool sub_ghz_custom_freq_entry(void);
+
+/* Flipper-matching feature functions */
+void sub_ghz_read(void);
+void sub_ghz_saved(void);
+void sub_ghz_add_manually(void);
+static void sub_ghz_config_screen(void);
+static void sub_ghz_saved_action_menu(const char *filepath, const char *filename);
+static void sub_ghz_add_manually_transmit(uint8_t proto_idx, uint64_t key_val);
 
 static void subghz_record_gui_init(void);
 static void subghz_record_gui_create(uint8_t param);
@@ -516,7 +623,10 @@ static void sub_ghz_set_opmode(uint8_t opmode, uint8_t band, uint8_t channel, ui
 			if (subghz_custom_freq_hz >= 850000000UL)
 			{
 				init_freq = SUB_GHZ_BAND_915;
-				mod_type = MODEM_MOD_TYPE_FSK;
+				/* Use replay/scan modulation if set, default to OOK (most 868 MHz
+				 * devices in Europe use OOK, not FSK) */
+				mod_type = (subghz_scan_config.modulation == MODULATION_FSK)
+				         ? MODEM_MOD_TYPE_FSK : MODEM_MOD_TYPE_OOK;
 			}
 			else if (subghz_custom_freq_hz >= 420000000UL)
 			{
@@ -783,15 +893,18 @@ static void subghz_record_gui_update(uint8_t param)
 	switch (param)
 	{
 		case SUBGHZ_RECORD_DISPLAY_PARAM_READY:
+		{
 			/* Graphic work starts here */
+			char cfg_line[32];
 		    u8g2_FirstPage(&m1_u8g2); // This call required for page drawing in mode 1
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 			u8g2_DrawBox(&m1_u8g2, 70, 0, 58, 10);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // set the color to White
 			u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
 			u8g2_DrawXBMP(&m1_u8g2, 70, 1, 8, 8, arrowleft_8x8);
-			u8g2_DrawXBMP(&m1_u8g2, 120, 1, 8, 8, arrowright_8x8);
-			u8g2_DrawStr(&m1_u8g2, 82, 8, "Change");
+			u8g2_DrawStr(&m1_u8g2, 82, 8, "Cfg");
+			u8g2_DrawXBMP(&m1_u8g2, 100, 1, 8, 8, arrowright_8x8);
+			u8g2_DrawStr(&m1_u8g2, 110, 8, "Freq");
 
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 			u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12); // Draw an inverted bar at the bottom to display options
@@ -799,26 +912,16 @@ static void subghz_record_gui_update(uint8_t param)
 			u8g2_DrawStr(&m1_u8g2, 96, 61, "Start");
 			u8g2_DrawXBMP(&m1_u8g2, 84, 52, 10, 10, target_10x10); // draw TARGET icon
 
-	//		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-	//		u8g2_DrawStr(&m1_u8g2, 56, 30, "Receiving...");
-
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-			if (subghz_scan_config.band == SUB_GHZ_BAND_CUSTOM)
-			{
-				char cfreq_str[16];
-				snprintf(cfreq_str, sizeof(cfreq_str), "%lu.%03lu",
-				         subghz_custom_freq_hz / 1000000UL,
-				         (subghz_custom_freq_hz % 1000000UL) / 1000UL);
-				u8g2_DrawStr(&m1_u8g2, 55, 18, cfreq_str);
-			}
-			else
-			{
-				u8g2_DrawStr(&m1_u8g2, 60, 18, subghz_band_text[subghz_scan_config.band]);
-			}
-			u8g2_DrawStr(&m1_u8g2, 108, 18, subghz_modulation_text[subghz_scan_config.modulation]);
+			/* Show frequency + modulation from config presets */
+			snprintf(cfg_line, sizeof(cfg_line), "%s %s",
+			         subghz_freq_presets[subghz_cfg.freq_idx].label,
+			         subghz_mod_presets[subghz_cfg.mod_idx].label);
+			u8g2_DrawStr(&m1_u8g2, 55, 18, cfg_line);
 
 			u8g2_DrawXBMP(&m1_u8g2, 0, 5, 50, 27, subghz_antenna_50x27);
 			break;
+		}
 
 		case SUBGHZ_RECORD_DISPLAY_PARAM_ACTIVE:
 			// Clear the CHANGE option at the top right
@@ -1044,13 +1147,11 @@ static int subghz_record_kp_handler(void)
 		{
 			if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_READY )
 			{
-				if (subghz_scan_config.band == SUB_GHZ_BAND_CUSTOM)
-					strncpy(infix, "CUS", 4);
-				else
-					strncpy(infix, subghz_band_text[subghz_scan_config.band], 3);
+				subghz_apply_config(); /* Apply config presets to radio */
+				strncpy(infix, subghz_freq_presets[subghz_cfg.freq_idx].label, 3);
 				infix[3] = '\0';
 				datfile_info.file_infix = infix;
-				datfile_info.file_suffix = subghz_modulation_text[subghz_scan_config.modulation];
+				datfile_info.file_suffix = subghz_mod_presets[subghz_cfg.mod_idx].label;
 				ret = m1_sdm_file_init(&datfile_info);
 				if ( !ret )
 				{
@@ -1130,14 +1231,12 @@ static int subghz_record_kp_handler(void)
 				} // else
 			} // else if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_PLAY )
 		} // else if(this_button_status.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK )
-		else if(this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK )	// Left
+		else if(this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK )	// Left = Config
 		{
 			if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_READY )
 			{
-				uint8_t idx = subghz_band_order_find(subghz_scan_config.band);
-				if (idx > 0) idx--; else idx = SUBGHZ_BAND_ORDER_COUNT - 1;
-				subghz_scan_config.band = subghz_band_order[idx];
-				subghz_scan_config.modulation = (subghz_scan_config.band == SUB_GHZ_BAND_915) ? MODULATION_FSK : MODULATION_OOK;
+				sub_ghz_config_screen();
+				subghz_apply_config();
 				m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_READY);
 			} // if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_READY )
 			else if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_COMPLETE )
@@ -1146,15 +1245,12 @@ static int subghz_record_kp_handler(void)
 				m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_READY);
 			} // else if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_COMPLETE )
 		} // else if(this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK )
-		else if(this_button_status.event[BUTTON_RIGHT_KP_ID]==BUTTON_EVENT_CLICK )	// Right
+		else if(this_button_status.event[BUTTON_RIGHT_KP_ID]==BUTTON_EVENT_CLICK )	// Right = cycle freq
 		{
 			if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_READY )
 			{
-				uint8_t idx = subghz_band_order_find(subghz_scan_config.band);
-				idx++;
-				if (idx >= SUBGHZ_BAND_ORDER_COUNT) idx = 0;
-				subghz_scan_config.band = subghz_band_order[idx];
-				subghz_scan_config.modulation = (subghz_scan_config.band == SUB_GHZ_BAND_915) ? MODULATION_FSK : MODULATION_OOK;
+				subghz_cfg.freq_idx = (subghz_cfg.freq_idx + 1) % SUBGHZ_FREQ_PRESET_COUNT;
+				subghz_apply_config();
 				m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_READY);
 			} // if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_READY )
 		} // else if(this_button_status.event[BUTTON_RIGHT_KP_ID]==BUTTON_EVENT_CLICK )
@@ -1286,7 +1382,34 @@ static void subghz_replay_browse_gui_update(uint8_t param)
 			break;
 		} // if ( f_info->file_is_selected )
 
-		if ( sub_ghz_file_load() ) // Error?
+		/* Check if this is a Flipper .sub file */
+		{
+			size_t nlen = strlen(f_info->file_name);
+			if (nlen > 4 && strcmp(&f_info->file_name[nlen - 4], ".sub") == 0)
+			{
+				/* Build full path and use the Flipper replay engine
+				 * (exact frequency, continuous loop, handles RAW + KEY formats) */
+				char sub_path[256];
+				snprintf(sub_path, sizeof(sub_path), "%s/%s",
+				         f_info->dir_name, f_info->file_name);
+				uint8_t ret = sub_ghz_replay_flipper_file(sub_path);
+				if (ret)
+				{
+					const char *err_msg = "File error!";
+					if (ret == 6) err_msg = "Rolling code!";
+					else if (ret == 7) err_msg = "Unknown protocol";
+					m1_message_box(&m1_u8g2, err_msg, "", "", "BACK to return");
+					continue;
+				}
+				/* sub_ghz_replay_flipper_file() is self-contained:
+				 * it ran its own event loop, TX, and cleanup.
+				 * Signal the outer view loop to exit cleanly. */
+				m1_app_send_q_message(main_q_hdl, Q_EVENT_MENU_EXIT);
+				break;
+			}
+		}
+
+		if ( sub_ghz_file_load() ) // Error? (.sgh native format)
 		{
 			m1_message_box(&m1_u8g2, "File error!", "", "", "BACK to return");
 			continue;
@@ -1667,6 +1790,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 {
 #define FLIPPER_SUB_TMP_SGH   "/SUBGHZ/_flipper_tmp.sgh"
 #define FLIPPER_SUB_LINE_MAX  512
+#define FLIPPER_SUB_OUT_MAX   256
 
 	FIL f_sub, f_sgh;
 	FRESULT fr;
@@ -1677,6 +1801,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	bool is_raw = false;
 	bool is_key = false;
 	bool has_data = false;
+	bool in_raw_continuation = false;
 	float freq_mhz;
 
 	/* KEY file fields */
@@ -1687,7 +1812,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 
 	line_buf = malloc(FLIPPER_SUB_LINE_MAX);
 	if (!line_buf) return 1;
-	out_buf = malloc(FLIPPER_SUB_LINE_MAX);
+	out_buf = malloc(FLIPPER_SUB_OUT_MAX);
 	if (!out_buf) { free(line_buf); return 1; }
 
 	/* ── 1. Open .sub source ── */
@@ -1711,10 +1836,51 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	/* ── 3. Parse .sub file — collect header + data ── */
 	while (f_gets(line_buf, FLIPPER_SUB_LINE_MAX, &f_sub))
 	{
-		/* Strip trailing CR/LF */
+		/* Check if this read reached a real line ending */
 		size_t len = strlen(line_buf);
+		bool line_complete = (len > 0 &&
+		    (line_buf[len - 1] == '\n' || line_buf[len - 1] == '\r'));
+
+		/* Strip trailing CR/LF */
 		while (len > 0 && (line_buf[len - 1] == '\r' || line_buf[len - 1] == '\n'))
 			line_buf[--len] = '\0';
+
+		/* Continuation of a long RAW_Data line that was split by f_gets */
+		if (in_raw_continuation)
+		{
+			const char *p = line_buf;
+			int pos = snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "%s",
+			                   SUB_GHZ_DATAFILE_DATA_KEYWORD);
+			while (*p)
+			{
+				while (*p == ' ') p++;
+				if (*p == '\0') break;
+				char *endp;
+				long val = strtol(p, &endp, 10);
+				if (endp == p) break;
+				p = endp;
+				if (val < 0) val = -val;
+				if (val == 0) continue; /* skip zero (truncated number at boundary) */
+				pos += snprintf(&out_buf[pos],
+				                (size_t)(FLIPPER_SUB_OUT_MAX - pos),
+				                " %lu", (unsigned long)val);
+				if (pos >= FLIPPER_SUB_OUT_MAX - 16)
+				{
+					strcat(out_buf, "\r\n");
+					f_puts(out_buf, &f_sgh);
+					pos = snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "%s",
+					               SUB_GHZ_DATAFILE_DATA_KEYWORD);
+				}
+			}
+			if (pos > 6) /* more than just "Data:" */
+			{
+				strcat(out_buf, "\r\n");
+				f_puts(out_buf, &f_sgh);
+				has_data = true;
+			}
+			in_raw_continuation = !line_complete;
+			continue;
+		}
 
 		if (strncmp(line_buf, "Filetype:", 9) == 0)
 		{
@@ -1731,7 +1897,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 		else if (strncmp(line_buf, "Frequency:", 10) == 0)
 		{
 			frequency = (uint32_t)strtoul(line_buf + 10, NULL, 10);
-			snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "Frequency: %lu\r\n",
+			snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "Frequency: %lu\r\n",
 			         (unsigned long)frequency);
 			f_puts(out_buf, &f_sgh);
 		}
@@ -1741,7 +1907,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 				modulation = MODULATION_OOK;
 			else if (strstr(line_buf, "2FSK") || strstr(line_buf, "FSK"))
 				modulation = MODULATION_FSK;
-			snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "Modulation: %s\r\n",
+			snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "Modulation: %s\r\n",
 			         subghz_modulation_text[modulation]);
 			f_puts(out_buf, &f_sgh);
 		}
@@ -1778,9 +1944,12 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 		}
 		else if (strncmp(line_buf, "RAW_Data:", 9) == 0)
 		{
-			/* Parse signed values, write absolute values as Data: line */
+			/* Parse signed values, write absolute values as Data: lines.
+			 * Flipper RAW_Data lines can be thousands of chars —
+			 * f_gets may split them across multiple reads.
+			 * Flush output when buffer fills, start new Data: line. */
 			const char *p = line_buf + 9;
-			int pos = snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "%s",
+			int pos = snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "%s",
 			                   SUB_GHZ_DATAFILE_DATA_KEYWORD);
 			while (*p)
 			{
@@ -1791,14 +1960,27 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 				if (endp == p) break;   /* no more numbers */
 				p = endp;
 				if (val < 0) val = -val;
+				if (val == 0) continue; /* skip zero */
 				pos += snprintf(&out_buf[pos],
-				                (size_t)(FLIPPER_SUB_LINE_MAX - pos),
+				                (size_t)(FLIPPER_SUB_OUT_MAX - pos),
 				                " %lu", (unsigned long)val);
-				if (pos >= FLIPPER_SUB_LINE_MAX - 16) break;
+				if (pos >= FLIPPER_SUB_OUT_MAX - 16)
+				{
+					/* Flush this Data: line and start a new one */
+					strcat(out_buf, "\r\n");
+					f_puts(out_buf, &f_sgh);
+					pos = snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "%s",
+					               SUB_GHZ_DATAFILE_DATA_KEYWORD);
+				}
 			}
-			strcat(out_buf, "\r\n");
-			f_puts(out_buf, &f_sgh);
-			has_data = true;
+			if (pos > 6) /* more than just "Data:" */
+			{
+				strcat(out_buf, "\r\n");
+				f_puts(out_buf, &f_sgh);
+				has_data = true;
+			}
+			/* If f_gets truncated this line, mark for continuation */
+			in_raw_continuation = !line_complete;
 		}
 	}
 
@@ -1862,7 +2044,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 		{
 			int pos = snprintf(out_buf, FLIPPER_SUB_LINE_MAX, "%s",
 			                   SUB_GHZ_DATAFILE_DATA_KEYWORD);
-			uint64_t mask = (key_bit_count < 64) ? (1ULL << (key_bit_count - 1)) : 0;
+			uint64_t mask = 1ULL << (key_bit_count - 1);
 
 			for (uint32_t b = 0; b < key_bit_count; b++)
 			{
@@ -1928,6 +2110,8 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	subghz_custom_freq_hz = frequency;
 	subghz_replay_band    = SUB_GHZ_BAND_CUSTOM;
 	subghz_replay_channel = 0;
+	/* Propagate parsed modulation so sub_ghz_set_opmode uses it for CUSTOM band */
+	subghz_scan_config.modulation = modulation;
 
 	/* ── 5. Set up datfile_info → temp .sgh ── */
 	strncpy((char *)datfile_info.dat_filename, FLIPPER_SUB_TMP_SGH,
@@ -2068,6 +2252,802 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 #undef FLIPPER_SUB_TMP_SGH
 #undef FLIPPER_SUB_LINE_MAX
 } // uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
+
+
+/*============================================================================*/
+/* Flipper-matching Sub-GHz features                                          */
+/*============================================================================*/
+
+/*============================================================================*/
+/**
+  * @brief  Config screen — accessible from Read and Read RAW.
+  *         Matches Flipper Zero's SubGHz config: Frequency, Hopping,
+  *         Modulation (AM270/AM650/FM238/FM476), Bin_RAW, Sound.
+  */
+/*============================================================================*/
+#define CFG_ITEMS      5
+#define CFG_FREQUENCY  0
+#define CFG_HOPPING    1
+#define CFG_MODULATION 2
+#define CFG_BINRAW     3
+#define CFG_SOUND      4
+
+static void sub_ghz_config_draw(uint8_t sel)
+{
+	char tmp[24];
+
+	m1_u8g2_firstpage();
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	m1_draw_text(&m1_u8g2, 2, 10, 124, "Config", TEXT_ALIGN_CENTER);
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+
+	for (uint8_t i = 0; i < CFG_ITEMS; i++)
+	{
+		uint8_t y = 14 + i * 10;
+		if (sel == i)
+		{
+			u8g2_DrawBox(&m1_u8g2, 0, y, 128, 10);
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+		}
+
+		const char *val = "";
+		switch (i)
+		{
+			case CFG_FREQUENCY:
+				m1_draw_text(&m1_u8g2, 4, y + 9, 62, "Frequency:", TEXT_ALIGN_LEFT);
+				snprintf(tmp, sizeof(tmp), "%s MHz", subghz_freq_presets[subghz_cfg.freq_idx].label);
+				val = tmp;
+				break;
+			case CFG_HOPPING:
+				m1_draw_text(&m1_u8g2, 4, y + 9, 62, "Hopping:", TEXT_ALIGN_LEFT);
+				val = subghz_cfg.hopping ? "ON" : "OFF";
+				break;
+			case CFG_MODULATION:
+				m1_draw_text(&m1_u8g2, 4, y + 9, 62, "Modulation:", TEXT_ALIGN_LEFT);
+				val = subghz_mod_presets[subghz_cfg.mod_idx].label;
+				break;
+			case CFG_BINRAW:
+				m1_draw_text(&m1_u8g2, 4, y + 9, 62, "Bin_RAW:", TEXT_ALIGN_LEFT);
+				val = subghz_cfg.bin_raw ? "ON" : "OFF";
+				break;
+			case CFG_SOUND:
+				m1_draw_text(&m1_u8g2, 4, y + 9, 62, "Sound:", TEXT_ALIGN_LEFT);
+				val = subghz_cfg.sound ? "ON" : "OFF";
+				break;
+		}
+		u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
+		m1_draw_text(&m1_u8g2, 68, y + 9, 56, val, TEXT_ALIGN_LEFT);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+	}
+
+	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Change", arrowright_8x8);
+	m1_u8g2_nextpage();
+}
+
+static void sub_ghz_config_screen(void)
+{
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	uint8_t sel = CFG_FREQUENCY;
+
+	sub_ghz_config_draw(sel);
+
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE || q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+		ret = xQueueReceive(button_events_q_hdl, &btn, 0);
+		if (ret != pdTRUE) continue;
+
+		if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			xQueueReset(main_q_hdl);
+			return;
+		}
+		else if (btn.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			sel = (sel > 0) ? sel - 1 : CFG_ITEMS - 1;
+		}
+		else if (btn.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			sel = (sel + 1) % CFG_ITEMS;
+		}
+		else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK ||
+		         btn.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			switch (sel)
+			{
+				case CFG_FREQUENCY:
+					subghz_cfg.freq_idx = (subghz_cfg.freq_idx + 1) % SUBGHZ_FREQ_PRESET_COUNT;
+					break;
+				case CFG_HOPPING:
+					subghz_cfg.hopping = !subghz_cfg.hopping;
+					break;
+				case CFG_MODULATION:
+					subghz_cfg.mod_idx = (subghz_cfg.mod_idx + 1) % SUBGHZ_MOD_PRESET_COUNT;
+					break;
+				case CFG_BINRAW:
+					subghz_cfg.bin_raw = !subghz_cfg.bin_raw;
+					break;
+				case CFG_SOUND:
+					subghz_cfg.sound = !subghz_cfg.sound;
+					break;
+			}
+		}
+		else if (btn.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			switch (sel)
+			{
+				case CFG_FREQUENCY:
+					subghz_cfg.freq_idx = (subghz_cfg.freq_idx > 0) ?
+					    subghz_cfg.freq_idx - 1 : SUBGHZ_FREQ_PRESET_COUNT - 1;
+					break;
+				case CFG_HOPPING:
+					subghz_cfg.hopping = !subghz_cfg.hopping;
+					break;
+				case CFG_MODULATION:
+					subghz_cfg.mod_idx = (subghz_cfg.mod_idx > 0) ?
+					    subghz_cfg.mod_idx - 1 : SUBGHZ_MOD_PRESET_COUNT - 1;
+					break;
+				case CFG_BINRAW:
+					subghz_cfg.bin_raw = !subghz_cfg.bin_raw;
+					break;
+				case CFG_SOUND:
+					subghz_cfg.sound = !subghz_cfg.sound;
+					break;
+			}
+		}
+		sub_ghz_config_draw(sel);
+	}
+}
+
+#undef CFG_ITEMS
+#undef CFG_FREQUENCY
+#undef CFG_HOPPING
+#undef CFG_MODULATION
+#undef CFG_BINRAW
+#undef CFG_SOUND
+
+
+/*============================================================================*/
+/**
+  * @brief  Read mode — protocol-aware decoder (matches Flipper Zero "Read")
+  *         Listens on configured frequency, decodes protocols, displays info.
+  *         LEFT opens config screen. DOWN saves decoded signal as .sub.
+  */
+/*============================================================================*/
+static void sub_ghz_read_draw_ready(void)
+{
+	char line[40];
+	m1_u8g2_firstpage();
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawXBMP(&m1_u8g2, 0, 5, 50, 27, subghz_antenna_50x27);
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+
+	/* Top-right: frequency + modulation */
+	snprintf(line, sizeof(line), "%s %s",
+	         subghz_freq_presets[subghz_cfg.freq_idx].label,
+	         subghz_mod_presets[subghz_cfg.mod_idx].label);
+	u8g2_DrawStr(&m1_u8g2, 55, 8, line);
+
+	if (subghz_cfg.hopping)
+		u8g2_DrawStr(&m1_u8g2, 55, 18, "Hopping ON");
+
+	/* Bottom bar */
+	u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 2, 61, "Cfg");
+	u8g2_DrawStr(&m1_u8g2, 94, 61, "Start");
+	u8g2_DrawXBMP(&m1_u8g2, 82, 52, 10, 10, target_10x10);
+	m1_u8g2_nextpage();
+}
+
+void sub_ghz_read(void)
+{
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	SubGHz_Dec_Info_t decoded;
+	bool listening = false;
+	bool has_decode = false;
+	char line[40];
+	uint8_t hopper_idx = 0;
+
+	menu_sub_ghz_init();
+	xQueueReset(main_q_hdl);
+	subghz_apply_config();
+
+	sub_ghz_read_draw_ready();
+
+	while (1)
+	{
+		if (listening)
+		{
+			/* Poll for decoded data */
+			if (subghz_decenc_read(&decoded, false))
+			{
+				has_decode = true;
+				if (subghz_cfg.sound)
+					m1_buzzer_notification();
+
+				/* Show decoded info */
+				m1_u8g2_firstpage();
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+
+				snprintf(line, sizeof(line), "%s MHz %s",
+				         subghz_freq_presets[subghz_cfg.freq_idx].label,
+				         subghz_mod_presets[subghz_cfg.mod_idx].label);
+				u8g2_DrawStr(&m1_u8g2, 2, 8, line);
+
+				u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+				u8g2_DrawStr(&m1_u8g2, 2, 22, protocol_text[decoded.protocol]);
+
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+				snprintf(line, sizeof(line), "Key: 0x%08lX", (uint32_t)decoded.key);
+				u8g2_DrawStr(&m1_u8g2, 2, 32, line);
+				snprintf(line, sizeof(line), "Bit:%d TE:%d RSSI:%ddBm",
+				         decoded.bit_len, decoded.te, decoded.rssi);
+				u8g2_DrawStr(&m1_u8g2, 2, 42, line);
+
+				/* Bottom bar: Save / Send */
+				u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				u8g2_DrawXBMP(&m1_u8g2, 48, 53, 8, 8, arrowdown_8x8);
+				u8g2_DrawStr(&m1_u8g2, 58, 61, "Save");
+				u8g2_DrawXBMP(&m1_u8g2, 84, 52, 10, 10, target_10x10);
+				u8g2_DrawStr(&m1_u8g2, 96, 61, "Send");
+				m1_u8g2_nextpage();
+			}
+
+			/* Hopping: cycle through frequencies */
+			if (subghz_cfg.hopping && !has_decode)
+			{
+				hopper_idx = (hopper_idx + 1) % SUBGHZ_HOPPER_FREQ_COUNT;
+				subghz_custom_freq_hz = subghz_hopper_freqs[hopper_idx];
+				sub_ghz_set_opmode(SUB_GHZ_OPMODE_RX, SUB_GHZ_BAND_CUSTOM, 0, 0);
+				SI446x_Change_Modem_OOK_PDTC(SUB_GHZ_433_92_NEW_PDTC);
+			}
+		}
+
+		ret = xQueueReceive(main_q_hdl, &q_item, listening ? 5 : portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+		if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+
+		ret = xQueueReceive(button_events_q_hdl, &btn, 0);
+		if (ret != pdTRUE) continue;
+
+		if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (listening)
+			{
+				/* Stop listening */
+				sub_ghz_rx_pause();
+				sub_ghz_rx_deinit();
+				sub_ghz_set_opmode(SUB_GHZ_OPMODE_ISOLATED, SUB_GHZ_BAND_CUSTOM, 0, 0);
+				subghz_decenc_ctl.pulse_det_stat = PULSE_DET_IDLE;
+				listening = false;
+				has_decode = false;
+				subghz_apply_config();
+				sub_ghz_read_draw_ready();
+			}
+			else
+			{
+				menu_sub_ghz_exit();
+				xQueueReset(main_q_hdl);
+				return;
+			}
+		}
+		else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (!listening)
+			{
+				/* Start listening */
+				subghz_apply_config();
+				subghz_decenc_ctl.pulse_det_stat = PULSE_DET_ACTIVE;
+				sub_ghz_set_opmode(SUB_GHZ_OPMODE_RX, SUB_GHZ_BAND_CUSTOM, 0, 0);
+				SI446x_Change_Modem_OOK_PDTC(SUB_GHZ_433_92_NEW_PDTC);
+				sub_ghz_rx_init();
+				sub_ghz_rx_start();
+				listening = true;
+				has_decode = false;
+				m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+			}
+			else if (has_decode)
+			{
+				/* Send (emulate) the decoded signal */
+				flipper_subghz_signal_t sub_sig;
+				memset(&sub_sig, 0, sizeof(sub_sig));
+				sub_sig.type = FLIPPER_SUBGHZ_TYPE_PARSED;
+				sub_sig.frequency = subghz_freq_presets[subghz_cfg.freq_idx].freq_hz;
+				strncpy(sub_sig.preset, "FuriHalSubGhzPresetOok650Async", FLIPPER_SUBGHZ_PRESET_MAX_LEN - 1);
+				strncpy(sub_sig.protocol, protocol_text[decoded.protocol], FLIPPER_SUBGHZ_PROTO_MAX_LEN - 1);
+				sub_sig.bit_count = decoded.bit_len;
+				sub_sig.key = decoded.key;
+				sub_sig.te = decoded.te;
+
+				/* Stop RX, save temp .sub, replay it */
+				sub_ghz_rx_pause();
+				sub_ghz_rx_deinit();
+
+				char tmp_path[48];
+				snprintf(tmp_path, sizeof(tmp_path), "/SUBGHZ/_read_tmp.sub");
+				flipper_subghz_save(tmp_path, &sub_sig);
+				sub_ghz_replay_flipper_file(tmp_path);
+				f_unlink(tmp_path);
+
+				/* Resume listening */
+				subghz_apply_config();
+				subghz_decenc_ctl.pulse_det_stat = PULSE_DET_ACTIVE;
+				sub_ghz_set_opmode(SUB_GHZ_OPMODE_RX, SUB_GHZ_BAND_CUSTOM, 0, 0);
+				SI446x_Change_Modem_OOK_PDTC(SUB_GHZ_433_92_NEW_PDTC);
+				sub_ghz_rx_init();
+				sub_ghz_rx_start();
+				has_decode = false;
+			}
+		}
+		else if (btn.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (!listening)
+			{
+				/* Open config screen */
+				sub_ghz_config_screen();
+				subghz_apply_config();
+				sub_ghz_read_draw_ready();
+			}
+		}
+		else if (btn.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (listening && has_decode)
+			{
+				/* Save decoded signal as .sub file */
+				flipper_subghz_signal_t sub_sig;
+				memset(&sub_sig, 0, sizeof(sub_sig));
+				sub_sig.type = FLIPPER_SUBGHZ_TYPE_PARSED;
+				sub_sig.frequency = subghz_freq_presets[subghz_cfg.freq_idx].freq_hz;
+				strncpy(sub_sig.preset, "FuriHalSubGhzPresetOok650Async", FLIPPER_SUBGHZ_PRESET_MAX_LEN - 1);
+				strncpy(sub_sig.protocol, protocol_text[decoded.protocol], FLIPPER_SUBGHZ_PROTO_MAX_LEN - 1);
+				sub_sig.bit_count = decoded.bit_len;
+				sub_sig.key = decoded.key;
+				sub_sig.te = decoded.te;
+
+				uint32_t next_num = m1_sdm_getlastfilenumber("/SUBGHZ", "sig_") + 1;
+				char save_path[48];
+				snprintf(save_path, sizeof(save_path), "/SUBGHZ/sig_%04lu.sub", next_num);
+
+				if (flipper_subghz_save(save_path, &sub_sig))
+					m1_message_box(&m1_u8g2, "Saved:", save_path + 8, "", "BACK to continue");
+				else
+					m1_message_box(&m1_u8g2, "Save failed!", "", "", "BACK to continue");
+			}
+		}
+		else if (btn.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (!listening)
+			{
+				/* Quick frequency change (cycle presets) */
+				subghz_cfg.freq_idx = (subghz_cfg.freq_idx + 1) % SUBGHZ_FREQ_PRESET_COUNT;
+				subghz_apply_config();
+				sub_ghz_read_draw_ready();
+			}
+		}
+	}
+}
+
+
+/*============================================================================*/
+/**
+  * @brief  Saved menu — browse 0:/SUBGHZ/, select file, show action menu
+  *         (Emulate / Rename / Delete). Matches Flipper Zero "Saved".
+  */
+/*============================================================================*/
+static const char *saved_action_labels[] = { "Emulate", "Rename", "Delete", "Back" };
+#define SAVED_ACTION_COUNT 4
+
+static void sub_ghz_saved_draw_actions(uint8_t sel, const char *filename)
+{
+	m1_u8g2_firstpage();
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
+
+	/* Truncate filename for display */
+	char dname[22];
+	strncpy(dname, filename, 21);
+	dname[21] = '\0';
+	u8g2_DrawStr(&m1_u8g2, 2, 10, dname);
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+	for (uint8_t i = 0; i < SAVED_ACTION_COUNT; i++)
+	{
+		uint8_t y = 14 + i * 12;
+		if (i == sel)
+		{
+			u8g2_DrawBox(&m1_u8g2, 0, y, 128, 12);
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+		}
+		u8g2_DrawStr(&m1_u8g2, 8, y + 10, saved_action_labels[i]);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	}
+	m1_u8g2_nextpage();
+}
+
+static void sub_ghz_saved_action_menu(const char *filepath, const char *filename)
+{
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	uint8_t sel = 0;
+
+	sub_ghz_saved_draw_actions(sel, filename);
+
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE || q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+		ret = xQueueReceive(button_events_q_hdl, &btn, 0);
+		if (ret != pdTRUE) continue;
+
+		if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			return;
+		else if (btn.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+			sel = (sel > 0) ? sel - 1 : SAVED_ACTION_COUNT - 1;
+		else if (btn.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+			sel = (sel + 1) % SAVED_ACTION_COUNT;
+		else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (sel == 0) /* Emulate */
+			{
+				size_t nlen = strlen(filename);
+				if (nlen > 4 && strcmp(&filename[nlen - 4], ".sub") == 0)
+				{
+					uint8_t rc = sub_ghz_replay_flipper_file(filepath);
+					if (rc)
+					{
+						const char *err = "Replay error!";
+						if (rc == 6) err = "Rolling code!";
+						else if (rc == 7) err = "Unknown protocol";
+						m1_message_box(&m1_u8g2, err, "", "", "BACK to return");
+					}
+				}
+				else
+				{
+					/* Native .sgh — load into replay engine */
+					strncpy((char *)datfile_info.dat_filename, filepath,
+					        sizeof(datfile_info.dat_filename) - 1);
+					if (!sub_ghz_file_load())
+					{
+						menu_sub_ghz_init();
+						subghz_replay_ret_code = sub_ghz_replay_start(false, subghz_replay_band,
+						    subghz_replay_channel, 255);
+						if (subghz_replay_ret_code)
+						{
+							double_buffer_ptr_id = 1;
+							m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+							/* Wait for BACK to stop */
+							while (1)
+							{
+								ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+								if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
+								{
+									xQueueReceive(button_events_q_hdl, &btn, 0);
+									if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+									{
+										sub_ghz_raw_tx_stop();
+										sub_ghz_raw_samples_deinit(false);
+										sub_ghz_ring_buffers_deinit();
+										sub_ghz_tx_raw_deinit();
+										m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+										break;
+									}
+								}
+								else if (q_item.q_evt_type == Q_EVENT_SUBGHZ_TX)
+								{
+									subghz_replay_ret_code = sub_ghz_replay_continue(subghz_replay_ret_code);
+								}
+							}
+						}
+						menu_sub_ghz_exit();
+					}
+					else
+						m1_message_box(&m1_u8g2, "File error!", "", "", "BACK to return");
+				}
+				return; /* After emulate, return to file browser */
+			}
+			else if (sel == 1) /* Rename */
+			{
+				char base_name[32];
+				char new_name[32];
+				/* Extract filename without extension */
+				strncpy(base_name, filename, sizeof(base_name) - 1);
+				base_name[sizeof(base_name) - 1] = '\0';
+				char *dot = strrchr(base_name, '.');
+				char ext[8] = "";
+				if (dot)
+				{
+					strncpy(ext, dot, sizeof(ext) - 1);
+					*dot = '\0';
+				}
+				if (m1_vkb_get_filename("Rename", base_name, new_name))
+				{
+					/* Build new path */
+					char new_path[256];
+					char dir[200];
+					strncpy(dir, filepath, sizeof(dir) - 1);
+					dir[sizeof(dir) - 1] = '\0';
+					char *last_slash = strrchr(dir, '/');
+					if (last_slash) *last_slash = '\0';
+					snprintf(new_path, sizeof(new_path), "%s/%s%s", dir, new_name, ext);
+					if (f_rename(filepath, new_path) == FR_OK)
+						m1_message_box(&m1_u8g2, "Renamed to:", new_name, "", "BACK to return");
+					else
+						m1_message_box(&m1_u8g2, "Rename failed!", "", "", "BACK to return");
+				}
+				return;
+			}
+			else if (sel == 2) /* Delete */
+			{
+				/* Confirm dialog */
+				m1_u8g2_firstpage();
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
+				u8g2_DrawStr(&m1_u8g2, 10, 20, "Delete file?");
+				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+				char dname2[22];
+				strncpy(dname2, filename, 21); dname2[21] = '\0';
+				u8g2_DrawStr(&m1_u8g2, 10, 34, dname2);
+				u8g2_DrawStr(&m1_u8g2, 10, 50, "OK=Yes  BACK=No");
+				m1_u8g2_nextpage();
+
+				while (1)
+				{
+					ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+					if (ret != pdTRUE || q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+					xQueueReceive(button_events_q_hdl, &btn, 0);
+					if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+					{
+						f_unlink(filepath);
+						m1_message_box(&m1_u8g2, "Deleted.", "", "", "BACK to return");
+						break;
+					}
+					else if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+						break;
+				}
+				return;
+			}
+			else /* Back */
+				return;
+		}
+		sub_ghz_saved_draw_actions(sel, filename);
+	}
+}
+
+void sub_ghz_saved(void)
+{
+	menu_sub_ghz_init();
+	xQueueReset(main_q_hdl);
+
+	while (true)
+	{
+		f_info = storage_browse("0:/SUBGHZ");
+		if (!f_info->file_is_selected)
+			break;
+
+		/* Build full path */
+		char full_path[256];
+		snprintf(full_path, sizeof(full_path), "%s/%s",
+		         f_info->dir_name, f_info->file_name);
+
+		/* Show action menu */
+		sub_ghz_saved_action_menu(full_path, f_info->file_name);
+	}
+
+	menu_sub_ghz_exit();
+	xQueueReset(main_q_hdl);
+}
+
+
+/*============================================================================*/
+/**
+  * @brief  Add Manually — generate and transmit a protocol signal.
+  *         Matches Flipper Zero "Add Manually" menu.
+  *         User selects protocol, enters hex key value, transmits.
+  */
+/*============================================================================*/
+static void sub_ghz_add_manually_transmit(uint8_t proto_idx, uint64_t key_val)
+{
+	const uint32_t freq_hz = subghz_add_manually_list[proto_idx].freq_hz;
+	const uint8_t bits = subghz_add_manually_list[proto_idx].bits;
+	const uint16_t te = subghz_add_manually_list[proto_idx].te;
+	const uint8_t ratio = subghz_add_manually_list[proto_idx].ratio;
+
+	/* Build a .sub KEY file and use existing replay engine */
+	flipper_subghz_signal_t sig;
+	memset(&sig, 0, sizeof(sig));
+	sig.type = FLIPPER_SUBGHZ_TYPE_PARSED;
+	sig.frequency = freq_hz;
+	strncpy(sig.preset, "FuriHalSubGhzPresetOok650Async", FLIPPER_SUBGHZ_PRESET_MAX_LEN - 1);
+
+	/* Protocol name from label (before space) */
+	strncpy(sig.protocol, subghz_add_manually_list[proto_idx].label, FLIPPER_SUBGHZ_PROTO_MAX_LEN - 1);
+	char *sp = strchr(sig.protocol, ' ');
+	if (sp) *sp = '\0';
+
+	sig.bit_count = bits;
+	sig.key = key_val;
+	sig.te = te;
+
+	char tmp_path[48] = "/SUBGHZ/_addman_tmp.sub";
+	flipper_subghz_save(tmp_path, &sig);
+	sub_ghz_replay_flipper_file(tmp_path);
+	f_unlink(tmp_path);
+}
+
+#define ADDMAN_VISIBLE_ITEMS  5
+
+static void sub_ghz_add_manually_draw_list(uint8_t sel, uint8_t scroll_top)
+{
+	m1_u8g2_firstpage();
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	m1_draw_text(&m1_u8g2, 2, 10, 124, "Add Manually", TEXT_ALIGN_CENTER);
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+	for (uint8_t i = 0; i < ADDMAN_VISIBLE_ITEMS && (scroll_top + i) < SUBGHZ_ADD_MANUALLY_COUNT; i++)
+	{
+		uint8_t idx = scroll_top + i;
+		uint8_t y = 12 + i * 10;
+		if (idx == sel)
+		{
+			u8g2_DrawBox(&m1_u8g2, 0, y, 128, 10);
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+		}
+		u8g2_DrawStr(&m1_u8g2, 4, y + 9, subghz_add_manually_list[idx].label);
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	}
+
+	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Select", arrowright_8x8);
+	m1_u8g2_nextpage();
+}
+
+static void sub_ghz_add_manually_draw_key_entry(uint8_t proto_idx, const uint8_t *digits,
+                                                 uint8_t hex_digits, uint8_t cursor)
+{
+	char hex_str[20];
+	m1_u8g2_firstpage();
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 2, 10, subghz_add_manually_list[proto_idx].label);
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+	char freq_str[16];
+	snprintf(freq_str, sizeof(freq_str), "%lu.%02lu MHz",
+	         subghz_add_manually_list[proto_idx].freq_hz / 1000000UL,
+	         (subghz_add_manually_list[proto_idx].freq_hz % 1000000UL) / 10000UL);
+	u8g2_DrawStr(&m1_u8g2, 2, 20, freq_str);
+
+	/* Draw hex key in large font */
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	int p = 0;
+	hex_str[p++] = '0';
+	hex_str[p++] = 'x';
+	for (uint8_t d = 0; d < hex_digits; d++)
+		hex_str[p++] = "0123456789ABCDEF"[digits[d]];
+	hex_str[p] = '\0';
+	u8g2_DrawStr(&m1_u8g2, 4, 38, hex_str);
+
+	/* Cursor underline */
+	uint8_t cx = 4 + (cursor + 2) * 8; /* +2 for "0x" prefix */
+	u8g2_DrawHLine(&m1_u8g2, cx, 40, 7);
+
+	u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 0, 56, "\x18\x19:Hex L/R:Move OK:Send");
+	m1_u8g2_nextpage();
+}
+
+void sub_ghz_add_manually(void)
+{
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	uint8_t sel = 0;
+	uint8_t scroll_top = 0;
+
+	menu_sub_ghz_init();
+	xQueueReset(main_q_hdl);
+
+	sub_ghz_add_manually_draw_list(sel, scroll_top);
+
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE || q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+		ret = xQueueReceive(button_events_q_hdl, &btn, 0);
+		if (ret != pdTRUE) continue;
+
+		if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			menu_sub_ghz_exit();
+			xQueueReset(main_q_hdl);
+			return;
+		}
+		else if (btn.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (sel > 0) sel--;
+			else sel = SUBGHZ_ADD_MANUALLY_COUNT - 1;
+			if (sel < scroll_top) scroll_top = sel;
+			if (sel >= scroll_top + ADDMAN_VISIBLE_ITEMS) scroll_top = sel - ADDMAN_VISIBLE_ITEMS + 1;
+		}
+		else if (btn.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			sel++;
+			if (sel >= SUBGHZ_ADD_MANUALLY_COUNT) sel = 0;
+			if (sel < scroll_top) scroll_top = sel;
+			if (sel >= scroll_top + ADDMAN_VISIBLE_ITEMS) scroll_top = sel - ADDMAN_VISIBLE_ITEMS + 1;
+		}
+		else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			/* Key entry screen */
+			uint8_t bits = subghz_add_manually_list[sel].bits;
+			uint8_t hex_digits = (bits + 3) / 4; /* Round up to hex digits */
+			uint8_t digits[16] = {0};
+			uint8_t cursor = 0;
+			bool entry_done = false;
+
+			sub_ghz_add_manually_draw_key_entry(sel, digits, hex_digits, cursor);
+
+			while (!entry_done)
+			{
+				ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+				if (ret != pdTRUE || q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+				ret = xQueueReceive(button_events_q_hdl, &btn, 0);
+				if (ret != pdTRUE) continue;
+
+				if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					entry_done = true;
+				}
+				else if (btn.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					digits[cursor] = (digits[cursor] + 1) & 0x0F;
+					sub_ghz_add_manually_draw_key_entry(sel, digits, hex_digits, cursor);
+				}
+				else if (btn.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					digits[cursor] = (digits[cursor] - 1) & 0x0F;
+					sub_ghz_add_manually_draw_key_entry(sel, digits, hex_digits, cursor);
+				}
+				else if (btn.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					if (cursor < hex_digits - 1) cursor++;
+					sub_ghz_add_manually_draw_key_entry(sel, digits, hex_digits, cursor);
+				}
+				else if (btn.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					if (cursor > 0) cursor--;
+					sub_ghz_add_manually_draw_key_entry(sel, digits, hex_digits, cursor);
+				}
+				else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+				{
+					/* Build key value and transmit */
+					uint64_t key_val = 0;
+					for (uint8_t d = 0; d < hex_digits; d++)
+						key_val = (key_val << 4) | digits[d];
+
+					sub_ghz_add_manually_transmit(sel, key_val);
+					sub_ghz_add_manually_draw_key_entry(sel, digits, hex_digits, cursor);
+				}
+			}
+		}
+		sub_ghz_add_manually_draw_list(sel, scroll_top);
+	}
+}
 
 
 /*============================================================================*/
@@ -3568,6 +4548,10 @@ static uint8_t sub_ghz_fcc_ism_band_check(uint8_t band, uint8_t channel)
 	uint8_t i, ret;
 
 	ret = 1;
+
+	/* Region "Off" — no filtering, allow all frequencies */
+	if (subghz_regions_list[m1_device_stat.config.ism_band_region].bands_list == 0)
+		return 0;
 
 	if (band == SUB_GHZ_BAND_CUSTOM)
 		freq = (float)subghz_custom_freq_hz / 1000000.0f;
