@@ -665,17 +665,18 @@ static void sub_ghz_set_opmode(uint8_t opmode, uint8_t band, uint8_t channel, ui
 
 		case SUB_GHZ_OPMODE_TX:
 			radio_set_antenna_mode(RADIO_ANTENNA_MODE_TX);
-			// Read INTs, clear pending ones
 			SI446x_Get_IntStatus(0, 0, 0);
-			// Direct mode asynchronous mode, TX direct mode on GPIO2,  modulation is sourced in real-time, OOK
-			// Mode: TX_DIRECT_MODE_TYPE[7]	TX_DIRECT_MODE_GPIO[6:5]	MOD_SOURCE[4:3]	MOD_TYPE[2:0]
-			//					1					10						01				000
+			/* Direct mode async TX: modulation source = GPIO2, OOK */
 			SI446x_Change_ModType(0xC8 | mod_type);
-			// Read INTs, clear pending ones
+			/* Configure SI4463 GPIO2 as INPUT for direct TX data from MCU.
+			 * Without this, GPIO2 stays in its init config (output) and the
+			 * SI4463 ignores the OOK modulation signal from TIM1_CH4N. */
+			{
+				extern void SI446x_GPIO_Config(uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t);
+				SI446x_GPIO_Config(0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00);
+			}
 			SI446x_Get_IntStatus(0, 0, 0);
-			/* Start sending packet, channel 0, START immediately */
-			Radio_Start_Tx(channel, START_TX_COMPLETE_STATE_NOCHANGE, 0); // Do not change state after completion of the packet transmission
-			//SI446x_Start_Tx_CW(uint8_t channel);
+			Radio_Start_Tx(channel, START_TX_COMPLETE_STATE_NOCHANGE, 0);
 			SI446x_Set_Tx_Power(tx_power);
 			break;
 
