@@ -120,23 +120,18 @@ static uint16_t s_lastRxBits;
 static uint8_t  s_lastRxBuf[32]; /* As needed length */
 
 
-/*============================================================================*/
-/**
- * @brief Direct CE TX — write FIFO + TRANSMIT_WITH_CRC (Flipper-style)
- */
-/*============================================================================*/
-static bool ceDirectTx(const uint8_t *data, uint16_t len)
+/* Odd parity of a byte (1 if odd number of 1-bits, 0 if even) */
+static inline uint8_t oddParity8(uint8_t x)
 {
-    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
-    st25r3916GetInterrupt(0xFFFFFFFF);  /* Drain all pending IRQs */
+    x ^= x >> 4;
+    x ^= x >> 2;
+    x ^= x >> 1;
+    return x & 1;
+}
 
-    st25r3916SetNumTxBits(rfalConvBytesToBits(len));
-    if (len > 0 && data != NULL) {
-        st25r3916WriteFifo(data, len);
-    }
-
-    st25r3916ExecuteCommand(ST25R3916_CMD_TRANSMIT_WITH_CRC);
-
+/* Shared TX completion helper */
+static bool ceWaitTxDone(void)
+{
     for (uint32_t t = 0; t < 100000; t++) {
         if (st25r3916GetInterrupt(ST25R3916_IRQ_MASK_TXE) & ST25R3916_IRQ_MASK_TXE)
             return true;
@@ -146,26 +141,162 @@ static bool ceDirectTx(const uint8_t *data, uint16_t len)
 
 /*============================================================================*/
 /**
- * @brief Direct CE TX without CRC — for MFC (Crypto-1 encrypts its own CRC)
+ * @brief Send 4-bit short frame (ACK/NAK) — no parity, no CRC
+ * Per NTAG/T2T spec: ACK=0xA, NAK=0x0, AUTH_NAK=0x4
+ */
+/*============================================================================*/
+static bool ceDirectTxShort(uint8_t nibble)
+{
+    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+    st25r3916GetInterrupt(0xFFFFFFFF);
+
+    /* Disable auto-parity for short frames */
+    st25r3916SetRegisterBits(ST25R3916_REG_ISO14443A_NFC,
+                             ST25R3916_REG_ISO14443A_NFC_no_tx_par);
+
+    st25r3916SetNumTxBits(4);
+    st25r3916WriteFifo(&nibble, 1);
+    st25r3916ExecuteCommand(ST25R3916_CMD_TRANSMIT_WITHOUT_CRC);
+
+    bool ok = ceWaitTxDone();
+
+    /* Restore auto-parity */
+    st25r3916ClrRegisterBits(ST25R3916_REG_ISO14443A_NFC,
+                             ST25R3916_REG_ISO14443A_NFC_no_tx_par);
+    return ok;
+}
+
+/*============================================================================*/
+/**
+ * @brief Send data with custom (encrypted) parity — for MFC Crypto-1
+ *
+ * Packs data bytes with caller-supplied parity bits into a raw bit stream.
+ * Sets no_tx_par so the ST25R3916 sends the bit stream as-is.
+ * NFC-A LSB-first bit ordering: bit 0 of each byte is transmitted first.
+ *
+ * @param data     Data bytes (already encrypted)
+ * @param parity   Parity bits packed 1 bit per data byte (bit 0 = byte 0 parity)
+ * @param numBytes Number of data bytes
+ */
+/*============================================================================*/
+static bool ceDirectTxEncryptedParity(const uint8_t *data, const uint8_t *parity, uint16_t numBytes)
+{
+    /* Pack data + parity: for each data byte, 8 data bits + 1 parity bit = 9 bits.
+     * Total bits = numBytes * 9. Pack into a byte array (LSB first). */
+    uint8_t packed[32]; /* Enough for 18 bytes * 9 bits / 8 = 21 packed bytes */
+    uint16_t totalBits = numBytes * 9;
+    uint16_t packedLen = (totalBits + 7) / 8;
+
+    if (packedLen > sizeof(packed)) return false;
+    memset(packed, 0, packedLen);
+
+    uint16_t bitPos = 0;
+    for (uint16_t i = 0; i < numBytes; i++) {
+        /* 8 data bits (LSB first) */
+        for (uint8_t b = 0; b < 8; b++) {
+            if (data[i] & (1 << b)) {
+                packed[bitPos / 8] |= (1 << (bitPos % 8));
+            }
+            bitPos++;
+        }
+        /* 1 parity bit */
+        if (parity[i / 8] & (1 << (i % 8))) {
+            packed[bitPos / 8] |= (1 << (bitPos % 8));
+        }
+        bitPos++;
+    }
+
+    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+    st25r3916GetInterrupt(0xFFFFFFFF);
+
+    /* Disable auto-parity — we supply our own */
+    st25r3916SetRegisterBits(ST25R3916_REG_ISO14443A_NFC,
+                             ST25R3916_REG_ISO14443A_NFC_no_tx_par);
+
+    st25r3916SetNumTxBits(totalBits);
+    st25r3916WriteFifo(packed, packedLen);
+    st25r3916ExecuteCommand(ST25R3916_CMD_TRANSMIT_WITHOUT_CRC);
+
+    bool ok = ceWaitTxDone();
+
+    /* Restore auto-parity */
+    st25r3916ClrRegisterBits(ST25R3916_REG_ISO14443A_NFC,
+                             ST25R3916_REG_ISO14443A_NFC_no_tx_par);
+    return ok;
+}
+
+/*============================================================================*/
+/**
+ * @brief Direct CE TX — write FIFO + TRANSMIT_WITH_CRC (Flipper-style)
+ */
+/*============================================================================*/
+static bool ceDirectTx(const uint8_t *data, uint16_t len)
+{
+    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+    st25r3916GetInterrupt(0xFFFFFFFF);
+    st25r3916SetNumTxBits(rfalConvBytesToBits(len));
+    if (len > 0 && data != NULL) st25r3916WriteFifo(data, len);
+    st25r3916ExecuteCommand(ST25R3916_CMD_TRANSMIT_WITH_CRC);
+    return ceWaitTxDone();
+}
+
+/*============================================================================*/
+/**
+ * @brief Direct CE TX without CRC — for MFC nT (standard parity, no CRC)
  */
 /*============================================================================*/
 static bool ceDirectTxNoCrc(const uint8_t *data, uint16_t len)
 {
     st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
     st25r3916GetInterrupt(0xFFFFFFFF);
-
     st25r3916SetNumTxBits(rfalConvBytesToBits(len));
-    if (len > 0 && data != NULL) {
-        st25r3916WriteFifo(data, len);
-    }
-
+    if (len > 0 && data != NULL) st25r3916WriteFifo(data, len);
     st25r3916ExecuteCommand(ST25R3916_CMD_TRANSMIT_WITHOUT_CRC);
+    return ceWaitTxDone();
+}
 
-    for (uint32_t t = 0; t < 100000; t++) {
-        if (st25r3916GetInterrupt(ST25R3916_IRQ_MASK_TXE) & ST25R3916_IRQ_MASK_TXE)
-            return true;
+/*============================================================================*/
+/**
+ * @brief Direct CE RX with no_rx_par — for receiving MFC encrypted frames
+ * Disables parity checking so encrypted parity doesn't cause errors.
+ */
+/*============================================================================*/
+static uint16_t ceDirectRxNoPar(uint8_t *buf, uint16_t bufSize)
+{
+    st25r3916SetRegisterBits(ST25R3916_REG_ISO14443A_NFC,
+                             ST25R3916_REG_ISO14443A_NFC_no_rx_par);
+
+    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+    st25r3916GetInterrupt(0xFFFFFFFF);
+    st25r3916ExecuteCommand(ST25R3916_CMD_UNMASK_RECEIVE_DATA);
+
+    const uint32_t allIrqs = ST25R3916_IRQ_MASK_RXE | ST25R3916_IRQ_MASK_EOF |
+                             ST25R3916_IRQ_MASK_ERR1 | ST25R3916_IRQ_MASK_ERR2;
+
+    uint16_t result = 0;
+    for (;;) {
+        uint32_t irqs = st25r3916GetInterrupt(allIrqs);
+        if (irqs & ST25R3916_IRQ_MASK_EOF) break;
+        if (irqs & (ST25R3916_IRQ_MASK_ERR1 | ST25R3916_IRQ_MASK_ERR2)) {
+            st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+            st25r3916GetInterrupt(0xFFFFFFFF);
+            st25r3916ExecuteCommand(ST25R3916_CMD_UNMASK_RECEIVE_DATA);
+            continue;
+        }
+        if (irqs & ST25R3916_IRQ_MASK_RXE) {
+            uint16_t numBytes = st25r3916GetNumFIFOBytes();
+            if (numBytes > 0 && numBytes <= bufSize) {
+                st25r3916ReadFifo(buf, numBytes);
+                result = numBytes; /* No CRC stripping — encrypted frames don't have standard CRC */
+            }
+            break;
+        }
+        if (!st25r3916IsExtFieldOn()) break;
     }
-    return false;
+
+    st25r3916ClrRegisterBits(ST25R3916_REG_ISO14443A_NFC,
+                             ST25R3916_REG_ISO14443A_NFC_no_rx_par);
+    return result;
 }
 
 /*============================================================================*/
@@ -321,13 +452,12 @@ static void ceT2TDirectLoop(const uint8_t *firstCmd, uint16_t firstCmdLen)
                 break;
             }
 
-            case 0xA2: {  /* WRITE */
+            case 0xA2: {  /* WRITE → 4-bit ACK */
                 if (cmdLen < 6) continue;
                 uint8_t wdata[4];
                 memcpy(wdata, &cmd[2], 4);
                 nfc_ctx_set_t2t_page(cmd[1], wdata);
-                g_ceTxBuf[0] = 0x0A;
-                if (!ceDirectTx(g_ceTxBuf, 1)) return;
+                if (!ceDirectTxShort(0x0A)) return;
                 break;
             }
 
@@ -515,18 +645,23 @@ static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
             return false;
         }
 
-        /* Compute and send encrypted aT = suc96(nT) */
+        /* Compute and send encrypted aT = suc96(nT) with encrypted parity */
         uint32_t aT  = mfc_prng_successor(s_mfcCe.nT, 96);
-        uint32_t ks3 = crypto1_word(&s_mfcCe.cs, 0, 0);
-        uint32_t eaT = aT ^ ks3;
+        uint8_t aTplain[4] = {
+            (uint8_t)(aT >> 24), (uint8_t)(aT >> 16),
+            (uint8_t)(aT >> 8),  (uint8_t)(aT)
+        };
 
         uint8_t aTbuf[4];
-        aTbuf[0] = (uint8_t)(eaT >> 24);
-        aTbuf[1] = (uint8_t)(eaT >> 16);
-        aTbuf[2] = (uint8_t)(eaT >> 8);
-        aTbuf[3] = (uint8_t)(eaT);
+        uint8_t aTpar = 0; /* Packed parity: bit i = encrypted parity for byte i */
+        for (int i = 0; i < 4; i++) {
+            uint8_t parBit = crypto1_parity_bit(&s_mfcCe.cs) ^ oddParity8(aTplain[i]);
+            aTpar |= (parBit << i);
+            uint8_t ks = crypto1_byte(&s_mfcCe.cs, 0, 0);
+            aTbuf[i] = aTplain[i] ^ ks;
+        }
 
-        if (!ceDirectTxNoCrc(aTbuf, sizeof(aTbuf))) {
+        if (!ceDirectTxEncryptedParity(aTbuf, &aTpar, 4)) {
             s_mfcCe.phase = MFC_CE_IDLE;
             return false;
         }
@@ -573,14 +708,17 @@ static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
             resp[16] = (uint8_t)(crc & 0xFF);
             resp[17] = (uint8_t)(crc >> 8);
 
-            /* Encrypt the response */
+            /* Encrypt the response with encrypted parity */
             uint8_t enc[18];
+            uint8_t encPar[3] = {0}; /* 18 bits → 3 bytes */
             for (int i = 0; i < 18; i++) {
+                uint8_t parBit = crypto1_parity_bit(&s_mfcCe.cs) ^ oddParity8(resp[i]);
+                encPar[i / 8] |= (parBit << (i % 8));
                 uint8_t ks = crypto1_byte(&s_mfcCe.cs, 0, 0);
                 enc[i] = resp[i] ^ ks;
             }
 
-            if (!ceDirectTxNoCrc(enc, sizeof(enc))) {
+            if (!ceDirectTxEncryptedParity(enc, encPar, 18)) {
                 s_mfcCe.phase = MFC_CE_IDLE;
                 return false;
             }
