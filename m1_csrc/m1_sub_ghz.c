@@ -3675,15 +3675,13 @@ static void sub_ghz_tx_raw_init(void)
 	TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 	uint32_t tim_prescaler_val;
 
-	/* Pin configuration: output push-pull */
+	/* Pin configuration: regular GPIO output (NOT AF — TIM1_CH4N doesn't
+	 * exist on PD5/STM32H573). The TIM1_UP ISR toggles this pin manually. */
 	gpio_init_struct.Pin = SUBGHZ_TX_GPIO_PIN;
-	gpio_init_struct.Mode = GPIO_MODE_AF_PP;
-	gpio_init_struct.Pull = GPIO_PULLDOWN;//GPIO_NOPULL;
-	gpio_init_struct.Speed = GPIO_SPEED_FREQ_HIGH;
-	gpio_init_struct.Alternate = SUBGHZ_GPIO_AF_TX;
+	gpio_init_struct.Mode = GPIO_MODE_OUTPUT_PP;
+	gpio_init_struct.Pull = GPIO_NOPULL;
+	gpio_init_struct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
 	HAL_GPIO_Init(SUBGHZ_TX_GPIO_PORT, &gpio_init_struct);
-
-	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(SUBGHZ_TX_GPIO_PORT, SUBGHZ_TX_GPIO_PIN, GPIO_PIN_RESET);
 
 	/*  Clock Configuration for TIMER */
@@ -4203,53 +4201,51 @@ static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, u
 	if ( source==0 || dest==0 || len==0 )
 		return;
 
-	// Save these data for repeat
+	/* PD5 (SI4463_GPIO2) does NOT have TIM1_CH4N alternate function on STM32H573.
+	 * Instead of relying on the non-existent AF output, configure PD5 as regular
+	 * GPIO output and drive it manually. DMA still feeds timing values to TIM1->ARR,
+	 * and the TIM1_UP interrupt toggles PD5 on each period boundary.
+	 *
+	 * Set PD5 HIGH initially (first sample = mark = carrier ON). */
+	{
+		GPIO_InitTypeDef gpio = {0};
+		gpio.Pin   = SUBGHZ_TX_GPIO_PIN;
+		gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+		gpio.Pull  = GPIO_NOPULL;
+		gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+		HAL_GPIO_Init(SUBGHZ_TX_GPIO_PORT, &gpio);
+		HAL_GPIO_WritePin(SUBGHZ_TX_GPIO_PORT, SUBGHZ_TX_GPIO_PIN, GPIO_PIN_SET);
+	}
+
 	subghz_decenc_ctl.ntx_raw_repeat = repeat;
 	subghz_tx_tc_flag = 0;
-	subghz_tx_start_high = 1; // First buffer always starts with mark (HIGH)
+	subghz_tx_start_high = 1;
 
-	// Load first sample directly into ARR (avoids GenerateEvent which would toggle OC4REF)
 	timerhdl_subghz_tx.Instance->ARR = ((uint16_t *)source)[0];
 	timerhdl_subghz_tx.Instance->CNT = 0;
 
-	// Force OC4REF to correct initial state for first sample (mark = HIGH)
-	{
-		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		ccmr2 |= (0x5UL << 12); // FORCED_ACTIVE (OC4REF = HIGH)
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		ccmr2 |= (0x3UL << 12); // Switch back to TOGGLE mode
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-	}
-
-	// Start DMA from second sample onward (first was loaded into ARR manually)
 	if ( len > 1 )
 	{
-		uint32_t dma_src = source + sizeof(uint16_t); // Skip first sample
-		uint32_t dma_len = (len - 1) << 1;            // Remaining samples in bytes
+		uint32_t dma_src = source + sizeof(uint16_t);
+		uint32_t dma_len = (len - 1) << 1;
 		subghz_decenc_ctl.ntx_raw_len = dma_len;
 		subghz_decenc_ctl.ntx_raw_src = dma_src;
 		subghz_decenc_ctl.ntx_raw_dest = dest;
 
 		HAL_StatusTypeDef ret = TIM_DMA_Start_IT(timerhdl_subghz_tx.hdma[TIM_DMA_ID_UPDATE], dma_src, dest, dma_len);
-		M1_LOG_I(M1_LOGDB_TAG, "[TX-DBG] DMA_Start ret=%d src=0x%08lX len=%lu\r\n",
-		         ret, (unsigned long)dma_src, (unsigned long)dma_len);
 		if ( ret != HAL_OK)
 			return;
 	}
 	else
 	{
-		// Single sample: no DMA needed, just play one period
 		subghz_decenc_ctl.ntx_raw_len = 0;
-		subghz_tx_tc_flag = 1; // Will stop after this one period
-		__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
+		subghz_tx_tc_flag = 1;
 	}
 
-	// Start the timer — TOGGLE mode on complementary output CH4N
-	HAL_TIMEx_OCN_Start(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
+	/* Enable TIM1_UP interrupt — the ISR toggles PD5 on each period */
+	__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
+	__HAL_TIM_ENABLE(&timerhdl_subghz_tx);
 
-	// Update polarity tracking for next buffer
 	subghz_tx_start_high ^= (len & 1);
 } // static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, uint8_t repeat)
 
@@ -4275,21 +4271,10 @@ static void sub_ghz_transmit_raw_restart(uint32_t source, uint32_t len)
 	timerhdl_subghz_tx.Instance->ARR = ((uint16_t *)source)[0];
 	timerhdl_subghz_tx.Instance->CNT = 0;
 
-	// Force OC4REF to correct initial state based on polarity tracking
-	{
-		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		if (subghz_tx_start_high)
-			ccmr2 |= (0x5UL << 12); // FORCED_ACTIVE (HIGH)
-		else
-			ccmr2 |= (0x4UL << 12); // FORCED_INACTIVE (LOW)
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		ccmr2 |= (0x3UL << 12); // Switch back to TOGGLE mode
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-	}
+	/* Set PD5 to correct initial state based on polarity tracking */
+	HAL_GPIO_WritePin(SUBGHZ_TX_GPIO_PORT, SUBGHZ_TX_GPIO_PIN,
+	                  subghz_tx_start_high ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-	// Start DMA from second sample onward
 	if ( len > 1 )
 	{
 		uint32_t dma_src = source + sizeof(uint16_t);
@@ -4309,14 +4294,13 @@ static void sub_ghz_transmit_raw_restart(uint32_t source, uint32_t len)
 	{
 		subghz_decenc_ctl.ntx_raw_len = 0;
 		subghz_tx_tc_flag = 1;
-		__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
 	}
 
 	// Update polarity tracking for next buffer
 	subghz_tx_start_high ^= (len & 1);
 
-	// Restart the timer
-	__HAL_TIM_MOE_ENABLE(&timerhdl_subghz_tx);
+	/* Enable TIM1_UP interrupt for GPIO toggling + restart timer */
+	__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
 	__HAL_TIM_ENABLE(&timerhdl_subghz_tx);
 } // static void sub_ghz_transmit_raw_restart(uint32_t source, uint32_t len)
 

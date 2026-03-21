@@ -630,29 +630,33 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 /*============================================================================*/
 void TIM1_UP_IRQHandler(void)
 {
-	S_M1_Main_Q_t q_item;
-	portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
-
 	__HAL_TIM_CLEAR_FLAG(&timerhdl_subghz_tx, TIM_FLAG_UPDATE);
 
-	/* This ISR is only enabled after DMA TC. The last sample has now been played.
-	 * Stop the timer and signal the task. */
-	__HAL_TIM_DISABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
-	timerhdl_subghz_tx.Instance->CR1 &= ~TIM_CR1_CEN; // Stop timer
-
-	/* Force OC4REF inactive (pin LOW) to silence the transmitter */
+	if (subghz_tx_tc_flag)
 	{
-		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		ccmr2 |= (0x4UL << 12); // FORCED_INACTIVE
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
+		/* End of buffer — stop timer, drive pin LOW, signal task */
+		S_M1_Main_Q_t q_item;
+		portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
+
+		__HAL_TIM_DISABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
+		timerhdl_subghz_tx.Instance->CR1 &= ~TIM_CR1_CEN;
+
+		/* Drive PD5 LOW to silence the transmitter */
+		SI4463_GPIO2_GPIO_Port->BSRR = (uint32_t)SI4463_GPIO2_Pin << 16; /* Reset */
+
+		subghz_tx_tc_flag = 0;
+
+		q_item.q_evt_type = Q_EVENT_SUBGHZ_TX;
+		xQueueSendFromISR(main_q_hdl, &q_item, &xHigherPriorityTaskWoken);
+		portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 	}
-
-	subghz_tx_tc_flag = 0;
-
-	q_item.q_evt_type = Q_EVENT_SUBGHZ_TX;
-	xQueueSendFromISR(main_q_hdl, &q_item, &xHigherPriorityTaskWoken);
-	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	else
+	{
+		/* Per-period toggle: flip PD5 (SI4463_GPIO2) on each timer overflow.
+		 * TIM1_CH4N AF doesn't exist on PD5 (STM32H573), so we toggle manually.
+		 * DMA is still feeding new ARR values — we just toggle the GPIO. */
+		SI4463_GPIO2_GPIO_Port->ODR ^= SI4463_GPIO2_Pin;
+	}
 } // void TIM1_UP_IRQHandler(void)
 
 
