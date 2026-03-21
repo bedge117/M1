@@ -120,6 +120,220 @@ static uint16_t s_lastRxBits;
 static uint8_t  s_lastRxBuf[32]; /* As needed length */
 
 
+/*============================================================================*/
+/**
+ * @brief Direct CE TX — write FIFO + TRANSMIT_WITH_CRC (Flipper-style)
+ */
+/*============================================================================*/
+static bool ceDirectTx(const uint8_t *data, uint16_t len)
+{
+    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+    st25r3916GetInterrupt(0xFFFFFFFF);  /* Drain all pending IRQs */
+
+    st25r3916SetNumTxBits(rfalConvBytesToBits(len));
+    if (len > 0 && data != NULL) {
+        st25r3916WriteFifo(data, len);
+    }
+
+    st25r3916ExecuteCommand(ST25R3916_CMD_TRANSMIT_WITH_CRC);
+
+    for (uint32_t t = 0; t < 100000; t++) {
+        if (st25r3916GetInterrupt(ST25R3916_IRQ_MASK_TXE) & ST25R3916_IRQ_MASK_TXE)
+            return true;
+    }
+    return false;
+}
+
+/*============================================================================*/
+/**
+ * @brief Direct CE TX without CRC — for MFC (Crypto-1 encrypts its own CRC)
+ */
+/*============================================================================*/
+static bool ceDirectTxNoCrc(const uint8_t *data, uint16_t len)
+{
+    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+    st25r3916GetInterrupt(0xFFFFFFFF);
+
+    st25r3916SetNumTxBits(rfalConvBytesToBits(len));
+    if (len > 0 && data != NULL) {
+        st25r3916WriteFifo(data, len);
+    }
+
+    st25r3916ExecuteCommand(ST25R3916_CMD_TRANSMIT_WITHOUT_CRC);
+
+    for (uint32_t t = 0; t < 100000; t++) {
+        if (st25r3916GetInterrupt(ST25R3916_IRQ_MASK_TXE) & ST25R3916_IRQ_MASK_TXE)
+            return true;
+    }
+    return false;
+}
+
+/*============================================================================*/
+/**
+ * @brief Direct CE RX — wait for reader command, read FIFO (Flipper-style)
+ * @return Number of bytes received, 0 on timeout/field-off
+ */
+/*============================================================================*/
+static uint16_t ceDirectRx(uint8_t *buf, uint16_t bufSize)
+{
+    /* Arm RX */
+    st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+    st25r3916GetInterrupt(0xFFFFFFFF);
+    st25r3916ExecuteCommand(ST25R3916_CMD_UNMASK_RECEIVE_DATA);
+
+    /* Wait for RXE (command received) or field-off */
+    const uint32_t allIrqs = ST25R3916_IRQ_MASK_RXE | ST25R3916_IRQ_MASK_EOF |
+                             ST25R3916_IRQ_MASK_ERR1 | ST25R3916_IRQ_MASK_ERR2 |
+                             ST25R3916_IRQ_MASK_PAR  | ST25R3916_IRQ_MASK_CRC;
+
+    for (;;) {
+        uint32_t irqs = st25r3916GetInterrupt(allIrqs);
+
+        if (irqs & ST25R3916_IRQ_MASK_EOF) {
+            return 0;  /* Field off */
+        }
+
+        if (irqs & (ST25R3916_IRQ_MASK_ERR1 | ST25R3916_IRQ_MASK_ERR2 |
+                     ST25R3916_IRQ_MASK_PAR  | ST25R3916_IRQ_MASK_CRC)) {
+            /* RX error — clear FIFO and re-arm */
+            st25r3916ExecuteCommand(ST25R3916_CMD_CLEAR_FIFO);
+            st25r3916GetInterrupt(0xFFFFFFFF);
+            st25r3916ExecuteCommand(ST25R3916_CMD_UNMASK_RECEIVE_DATA);
+            continue;
+        }
+
+        if (irqs & ST25R3916_IRQ_MASK_RXE) {
+            uint16_t numBytes = st25r3916GetNumFIFOBytes();
+            if (numBytes == 0 || numBytes > bufSize) {
+                return 0;
+            }
+            st25r3916ReadFifo(buf, numBytes);
+            return numBytes;
+        }
+
+        /* Check field still present periodically */
+        if (!st25r3916IsExtFieldOn()) {
+            return 0;
+        }
+    }
+}
+
+/*============================================================================*/
+/**
+ * @brief T2T CE hardware loop — runs after RFAL activation, bypasses RFAL
+ *        entirely for data exchange (same approach as Flipper Zero).
+ *
+ * Processes T2T commands until field drops. RFAL is not involved in
+ * the command/response cycle — only direct ST25R3916 register access.
+ */
+/*============================================================================*/
+static void ceT2TDirectLoop(const uint8_t *firstCmd, uint16_t firstCmdLen)
+{
+    uint8_t rxBuf[32];
+    const uint8_t *cmd;
+    uint16_t cmdLen;
+    bool firstPass = true;
+
+    /* Process first command that arrived during activation */
+    cmd    = firstCmd;
+    cmdLen = firstCmdLen;
+
+    for (;;) {
+        if (!firstPass) {
+            cmdLen = ceDirectRx(rxBuf, sizeof(rxBuf));
+            if (cmdLen == 0) break;  /* Field off or error */
+            cmd = rxBuf;
+        }
+        firstPass = false;
+
+        if (cmdLen < 1) continue;
+        uint8_t c = cmd[0];
+
+        switch (c) {
+            case 0x30: {  /* READ */
+                if (cmdLen < 2) continue;
+                uint8_t startPage = cmd[1];
+                uint16_t pageCnt  = nfc_ctx_get_t2t_page_count();
+                uint16_t txLen = 0;
+                uint8_t pg[4];
+                for (uint8_t i = 0; i < 4; i++) {
+                    uint16_t p = (uint16_t)startPage + i;
+                    if (pageCnt > 0 && p >= pageCnt) p = p % pageCnt;
+                    if (!nfc_ctx_get_t2t_page(p, pg)) memset(pg, 0, 4);
+                    memcpy(&g_ceTxBuf[txLen], pg, 4);
+                    txLen += 4;
+                }
+                if (!ceDirectTx(g_ceTxBuf, txLen)) return;
+                break;
+            }
+
+            case 0x3A: {  /* FAST_READ */
+                if (cmdLen < 3) continue;
+                uint8_t sp = cmd[1], ep = cmd[2];
+                uint16_t pageCnt = nfc_ctx_get_t2t_page_count();
+                if (ep < sp || sp >= pageCnt) continue;
+                if (ep >= pageCnt) ep = (uint8_t)(pageCnt - 1);
+                uint16_t txLen = 0;
+                uint8_t pg[4];
+                for (uint16_t i = sp; i <= ep; i++) {
+                    if (txLen + 4 > sizeof(g_ceTxBuf)) break;
+                    if (!nfc_ctx_get_t2t_page(i, pg)) memset(pg, 0, 4);
+                    memcpy(&g_ceTxBuf[txLen], pg, 4);
+                    txLen += 4;
+                }
+                if (!ceDirectTx(g_ceTxBuf, txLen)) return;
+                break;
+            }
+
+            case 0x60: {  /* GET_VERSION */
+                uint8_t ver[8];
+                if (!nfc_ctx_get_t2t_version(ver)) continue;
+                if (!ceDirectTx(ver, 8)) return;
+                break;
+            }
+
+            case 0x1B: {  /* PWD_AUTH → return PACK */
+                uint8_t pg[4];
+                g_ceTxBuf[0] = 0x00;
+                g_ceTxBuf[1] = 0x00;
+                if (nfc_ctx_get_t2t_page(134, pg)) {
+                    g_ceTxBuf[0] = pg[0];
+                    g_ceTxBuf[1] = pg[1];
+                }
+                if (!ceDirectTx(g_ceTxBuf, 2)) return;
+                break;
+            }
+
+            case 0x39: {  /* READ_CNT */
+                g_ceTxBuf[0] = g_ceTxBuf[1] = g_ceTxBuf[2] = 0x00;
+                if (!ceDirectTx(g_ceTxBuf, 3)) return;
+                break;
+            }
+
+            case 0x3C: {  /* READ_SIG */
+                memset(g_ceTxBuf, 0x00, 32);
+                if (!ceDirectTx(g_ceTxBuf, 32)) return;
+                break;
+            }
+
+            case 0xA2: {  /* WRITE */
+                if (cmdLen < 6) continue;
+                uint8_t wdata[4];
+                memcpy(wdata, &cmd[2], 4);
+                nfc_ctx_set_t2t_page(cmd[1], wdata);
+                g_ceTxBuf[0] = 0x0A;
+                if (!ceDirectTx(g_ceTxBuf, 1)) return;
+                break;
+            }
+
+            default:
+                /* Unknown command — ignore (no response = NAK behavior) */
+                break;
+        }
+    }
+}
+
+
 /*
  ******************************************************************************
  * MIFARE Classic Card Emulation State
@@ -250,25 +464,20 @@ static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
         nTbuf[2] = (uint8_t)(s_mfcCe.nT >> 8);
         nTbuf[3] = (uint8_t)(s_mfcCe.nT);
 
-        err = rfalTransceiveBlockingTx(
-            nTbuf, sizeof(nTbuf), NULL, 0, NULL,
-            (uint32_t)RFAL_TXRX_FLAGS_CRC_TX_MANUAL,
-            RFAL_FWT_NONE);
-
-        if (err != RFAL_ERR_NONE) {
-            platformLog("[CE-MFC] nT TX err=%d\r\n", err);
+        if (!ceDirectTxNoCrc(nTbuf, sizeof(nTbuf))) {
             s_mfcCe.phase = MFC_CE_IDLE;
             return false;
         }
 
         s_mfcCe.phase = MFC_CE_SENT_NT;
 
-        /* Re-arm RX */
+        /* RX re-arm happens in ceDirectRx when listener loop calls us next,
+         * or we can use the RFAL re-arm for compatibility with the existing
+         * MFC state machine that returns to the listener loop between phases */
         err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
         if (err == RFAL_ERR_NONE) {
             s_cePhase = CE_PHASE_WAIT_RX;
         }
-        platformLog("[CE-MFC] AUTH block %u: sent nT\r\n", blockNo);
         return true;
     }
 
@@ -312,25 +521,17 @@ static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
         aTbuf[2] = (uint8_t)(eaT >> 8);
         aTbuf[3] = (uint8_t)(eaT);
 
-        err = rfalTransceiveBlockingTx(
-            aTbuf, sizeof(aTbuf), NULL, 0, NULL,
-            (uint32_t)RFAL_TXRX_FLAGS_CRC_TX_MANUAL,
-            RFAL_FWT_NONE);
-
-        if (err != RFAL_ERR_NONE) {
-            platformLog("[CE-MFC] aT TX err=%d\r\n", err);
+        if (!ceDirectTxNoCrc(aTbuf, sizeof(aTbuf))) {
             s_mfcCe.phase = MFC_CE_IDLE;
             return false;
         }
 
         s_mfcCe.phase = MFC_CE_AUTHED;
 
-        /* Re-arm RX */
         err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
         if (err == RFAL_ERR_NONE) {
             s_cePhase = CE_PHASE_WAIT_RX;
         }
-        platformLog("[CE-MFC] auth OK → AUTHED\r\n");
         return true;
     }
 
@@ -374,18 +575,11 @@ static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
                 enc[i] = resp[i] ^ ks;
             }
 
-            err = rfalTransceiveBlockingTx(
-                enc, sizeof(enc), NULL, 0, NULL,
-                (uint32_t)RFAL_TXRX_FLAGS_CRC_TX_MANUAL,
-                RFAL_FWT_NONE);
-
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                platformLog("[CE-MFC] READ TX err=%d\r\n", err);
+            if (!ceDirectTxNoCrc(enc, sizeof(enc))) {
                 s_mfcCe.phase = MFC_CE_IDLE;
                 return false;
             }
 
-            /* Re-arm RX */
             err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
             if (err == RFAL_ERR_NONE) {
                 s_cePhase = CE_PHASE_WAIT_RX;
@@ -662,221 +856,86 @@ static bool CeHandleT2TCmdRx(const uint8_t *rx, uint16_t rxBits)
     
     switch (cmd) {
         case 0x30: {
-            /* READ command: Prepare response then start TX immediately */
+            /* READ: 4 pages */
             err = CeBuildT2TReadResp(rx, rxBits);
-            if (err != RFAL_ERR_NONE || g_ceTxLenBytes == 0U) {
-                return false;
-            }
-
-            /* Immediate synchronous transmission — NO logging before TX (kills FDT) */
-            err = rfalTransceiveBlockingTx(g_ceTxBuf, g_ceTxLenBytes, NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-            
-            /* TX complete, re-arm RX (wait for next command) */
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            if (err != RFAL_ERR_NONE || g_ceTxLenBytes == 0U) return false;
+            return ceDirectTx(g_ceTxBuf, g_ceTxLenBytes);
         }
-        
+
         case 0x3A: {
-            /* FAST_READ command: Read multiple pages sequentially (start ~ end) */
-            if (rxBytes < 3) {
-                return false;
-            }
-            
+            /* FAST_READ: pages startPage..endPage inclusive */
+            if (rxBytes < 3) return false;
             uint8_t startPage = rx[1];
             uint8_t endPage   = rx[2];
-            uint16_t pageCnt = nfc_ctx_get_t2t_page_count();
-            
-            if (endPage < startPage) {
-                return false;
-            }
-            
-            if (endPage >= pageCnt) {
-                endPage = (uint8_t)(pageCnt - 1);
-            }
-            
+            uint16_t pageCnt  = nfc_ctx_get_t2t_page_count();
+            if (endPage < startPage) return false;
+            if (endPage >= pageCnt)  endPage = (uint8_t)(pageCnt - 1);
+
             uint16_t numPages = (uint16_t)(endPage - startPage + 1);
             uint16_t txLen = 0;
             uint8_t pageBuf[4];
-            
             for (uint16_t i = 0; i < numPages; i++) {
-                uint16_t page = (uint16_t)startPage + i;
-                if (!nfc_ctx_get_t2t_page(page, pageBuf)) {
-                    pageBuf[0] = pageBuf[1] = pageBuf[2] = pageBuf[3] = 0x00;
-                }
-                
                 if (txLen + 4U > sizeof(g_ceTxBuf)) break;
+                if (!nfc_ctx_get_t2t_page((uint16_t)startPage + i, pageBuf))
+                    memset(pageBuf, 0, 4);
                 memcpy(&g_ceTxBuf[txLen], pageBuf, 4);
                 txLen += 4;
             }
-            
-            /* Immediate synchronous transmission */
-            err = rfalTransceiveBlockingTx(g_ceTxBuf, txLen, NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-            
-            /* TX complete, re-arm RX */
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            return ceDirectTx(g_ceTxBuf, txLen);
         }
-        
+
         case 0x60: {
-            /* GET_VERSION command: NTAG/Ultralight-C series */
+            /* GET_VERSION */
             uint8_t ver[8];
-            if (!nfc_ctx_get_t2t_version(ver)) {
-                return false;
-            }
-
-            /* Immediate synchronous transmission — NO logging before TX (kills FDT) */
-            err = rfalTransceiveBlockingTx(ver, sizeof(ver), NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-            
-            /* TX complete, re-arm RX (wait for next command) */
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            if (!nfc_ctx_get_t2t_version(ver)) return false;
+            return ceDirectTx(ver, 8);
         }
-        
+
         case 0xA2: {
-            /* WRITE command: Write one page (4 bytes) */
-            if (rxBytes < 6) {
-                return false;
-            }
-            
-            uint8_t page = rx[1];
-            uint8_t data[4];
-            memcpy(data, &rx[2], 4);
-            
-            /* Save page data */
-            nfc_ctx_set_t2t_page(page, data);
-            
-            /* WRITE response: ACK (0x0A), immediate synchronous transmission */
+            /* WRITE: save page, respond ACK */
+            if (rxBytes < 6) return false;
+            uint8_t wdata[4];
+            memcpy(wdata, &rx[2], 4);
+            nfc_ctx_set_t2t_page(rx[1], wdata);
             g_ceTxBuf[0] = 0x0A;
-            err = rfalTransceiveBlockingTx(g_ceTxBuf, 1, NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-            
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            return ceDirectTx(g_ceTxBuf, 1);
         }
-        
+
         case 0x1B: {
-            /* PWD_AUTH (NTAG215): Reader sends 4-byte password, we return 2-byte PACK.
-             * For emulation, always return PACK from page 134 regardless of password
-             * (password validation only matters for real tags, not emulation).
-             *
-             * READER CAPTURE: Save the password the reader sent so we can use it
-             * later to unlock the physical card for a full dump read. */
-            if (rxBytes >= 5) {
-                nfc_ctx_set_captured_pwd(&rx[1]);
-            }
-
-            uint8_t pack[2] = {0x00, 0x00};
+            /* PWD_AUTH: return 2-byte PACK from page 134 */
             uint8_t pageBuf[4];
+            g_ceTxBuf[0] = 0x00;
+            g_ceTxBuf[1] = 0x00;
             if (nfc_ctx_get_t2t_page(134, pageBuf)) {
-                pack[0] = pageBuf[0];
-                pack[1] = pageBuf[1];
+                g_ceTxBuf[0] = pageBuf[0];
+                g_ceTxBuf[1] = pageBuf[1];
             }
-
-            g_ceTxBuf[0] = pack[0];
-            g_ceTxBuf[1] = pack[1];
-
-            /* TX FIRST, log after — blocking UART kills FDT */
-            err = rfalTransceiveBlockingTx(g_ceTxBuf, 2, NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-
-            if (rxBytes >= 5) {
-                platformLog("[CE] PWD_AUTH: %02X%02X%02X%02X PACK:%02X%02X\r\n",
-                            rx[1], rx[2], rx[3], rx[4], pack[0], pack[1]);
-            }
-
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            return ceDirectTx(g_ceTxBuf, 2);
         }
 
         case 0x39: {
-            /* READ_CNT: Return 3-byte counter (all zeros) */
+            /* READ_CNT: 3-byte counter */
             g_ceTxBuf[0] = g_ceTxBuf[1] = g_ceTxBuf[2] = 0x00;
-
-            err = rfalTransceiveBlockingTx(g_ceTxBuf, 3, NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            return ceDirectTx(g_ceTxBuf, 3);
         }
 
         case 0x3C: {
-            /* READ_SIG: Return 32-byte ECC signature (all zeros for emulation) */
+            /* READ_SIG: 32-byte ECC signature */
             memset(g_ceTxBuf, 0x00, 32);
-
-            err = rfalTransceiveBlockingTx(g_ceTxBuf, 32, NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            return ceDirectTx(g_ceTxBuf, 32);
         }
 
         case 0xC2:
         case 0x53:
         case 0x57:
         case 0xE0: {
-            /* Misc commands: respond with ACK */
+            /* Misc: ACK */
             g_ceTxBuf[0] = 0x0A;
-
-            err = rfalTransceiveBlockingTx(g_ceTxBuf, 1, NULL, 0, NULL, RFAL_TXRX_FLAGS_DEFAULT, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE && err != RFAL_ERR_LINK_LOSS) {
-                return false;
-            }
-
-            g_ceTxPending = false;
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err == RFAL_ERR_NONE) {
-                s_cePhase = CE_PHASE_WAIT_RX;
-            }
-            return (err == RFAL_ERR_NONE);
+            return ceDirectTx(g_ceTxBuf, 1);
         }
-        
+
         default:
-            return false;           
+            return false;
     }
 }
 
@@ -1155,49 +1214,35 @@ void ListenerCycle(void)
                 break;
             }
 
-            /* For T2T: Call rfalNfcDataExchangeStart() first to check already received data */
-            /* T2T command received in LISTEN_ACTIVATED of rfal_nfc.c is stored in gNfcDev.rxBuf.rfBuf */
-            s_ceRxData   = NULL;
-            s_ceRxRcvLen = NULL;
-            
-            /* Get pointer to already received data (returns gNfcDev.rxBuf.rfBuf when called in ACTIVATED state) */
-            err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
-            if (err != RFAL_ERR_NONE) {
-                platformLog("[CE] DataExchangeStart error=%d\r\n", err);
+            /* T2T: Bypass RFAL data exchange entirely.
+             * Run a direct hardware loop (like Flipper Zero) that handles
+             * all T2T commands via ST25R3916 register access. The RFAL
+             * is only used for discovery/anti-collision — NOT data exchange. */
+            {
+                /* The first T2T command was received during listen activation
+                 * and is stored in the RFAL's internal RX buffer. Get a pointer. */
+                s_ceRxData   = NULL;
+                s_ceRxRcvLen = NULL;
+                err = rfalNfcDataExchangeStart(NULL, 0, &s_ceRxData, &s_ceRxRcvLen, RFAL_FWT_NONE);
+
+                uint16_t firstCmdLen = 0;
+                if (err == RFAL_ERR_NONE && s_ceRxData != NULL && s_ceRxRcvLen != NULL) {
+                    /* Force GetStatus to transition from ACTIVATED → DATAEXCHANGE */
+                    rfalNfcDataExchangeGetStatus();
+                    firstCmdLen = rfalConvBitsToBytes(*s_ceRxRcvLen);
+                }
+
+                if (firstCmdLen > 0) {
+                    /* Run the direct T2T CE loop — blocks until field drops */
+                    ceT2TDirectLoop(s_ceRxData, firstCmdLen);
+                }
+
+                /* Session ended (field off). Restart discovery. */
+                rfalNfcDeactivate(RFAL_NFC_DEACTIVATE_DISCOVERY);
                 state     = START_DISCOVERY;
                 s_cePhase = CE_PHASE_IDLE;
                 break;
             }
-            
-            /* Check if data was already received */
-            err = rfalNfcDataExchangeGetStatus();
-            if (err == RFAL_ERR_BUSY) {
-                /* Still in data exchange, process in next loop */
-                state     = DATAEXCHANGE;
-                s_cePhase = CE_PHASE_WAIT_RX;
-                break;
-            }
-            
-            if (err == RFAL_ERR_NONE && s_ceRxData != NULL && s_ceRxRcvLen != NULL && (*s_ceRxRcvLen > 0U)) {
-                /* First frame already received — log AFTER transition, not before processing */
-                state     = DATAEXCHANGE;
-                s_cePhase = CE_PHASE_WAIT_RX;
-                break; /* Process with CeHandleT2TCmdRx() in next loop */
-            }
-            
-            /* If no data received, arm RX (normal case) */
-            err = CeArmRx();
-            if (err != RFAL_ERR_NONE) {
-                platformLog("[CE] DataExchangeStart(RX) error=%d\r\n", err);
-                state     = START_DISCOVERY;
-                s_cePhase = CE_PHASE_IDLE;
-                break;
-            }
-            
-            state     = DATAEXCHANGE;
-            s_cePhase = CE_PHASE_WAIT_RX;
-            platformLog("[CE] DISCOVERY -> DATAEXCHANGE\r\n");
-            break;
         }
 
         case RFAL_NFC_STATE_LISTEN_SLEEP:
