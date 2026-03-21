@@ -408,20 +408,19 @@ void infrared_learn_new_remote(void)
 /*============================================================================*/
 void infrared_saved_remotes(void)
 {
+#ifdef M1_APP_FILE_IMPORT_ENABLE
+	/* Use the Universal Remote infrastructure to browse saved .ir files.
+	 * This replaces the broken inline replay that only worked if a remote
+	 * was learned in the current session. */
+	ir_universal_init();
+	ir_universal_run();
+	ir_universal_deinit();
+	return;
+#else
 	S_M1_Buttons_Status this_button_status;
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
 	uint8_t ir_tx_complete, ir_data[20];
-
-	// m1_gui_let_update_fw();
-
-	/* Graphic work starts here */
-	u8g2_FirstPage(&m1_u8g2);
-	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-	u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
-	u8g2_DrawXBMP(&m1_u8g2, 2, 2, 48, 25, remote_48x25);
-	u8g2_DrawStr(&m1_u8g2, 60, 20, "Sending...");
-	m1_u8g2_nextpage(); // Update display RAM
 
 	if (new_remote_learned)
 	{
@@ -430,11 +429,7 @@ void infrared_saved_remotes(void)
     }
 	else
 	{
-		return;
-		irmp_data.protocol = IRMP_NEC_PROTOCOL;//IRMP_RC5_PROTOCOL;//IRMP_NEC_PROTOCOL; // use NEC protocol
-		irmp_data.address  = 0xFD02; // set address to 0x00FF
-		irmp_data.command  = 0x005C; // set command to 0x0001
-		irmp_data.flags    = 1; // don't repeat frame
+		return;  /* No learned remote and no file import — nothing to replay */
     }
 
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
@@ -514,7 +509,7 @@ void infrared_saved_remotes(void)
 			}
 		} // if (ret==pdTRUE)
 	} // while (1 ) // Main loop of this task
-
+#endif /* !M1_APP_FILE_IMPORT_ENABLE */
 } // void infrared_saved_remotes(void)
 
 

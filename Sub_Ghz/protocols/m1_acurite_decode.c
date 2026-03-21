@@ -91,12 +91,18 @@ uint8_t subghz_decode_acurite(uint16_t p, uint16_t pulsecount)
     int16_t temp_f_10 = (int16_t)raw_temp - 1000;
     int16_t temp_c_10 = ((temp_f_10 - 320) * 5) / 9;
 
+    /* Acurite CRC: byte 5 = sum of bytes 0-4, byte 6 = XOR of bytes 0-5 */
+    uint8_t sum = 0, xor_val = 0;
+    for (i = 0; i < 5; i++) sum += data[i];
+    for (i = 0; i < 6; i++) xor_val ^= data[i];
+    uint8_t crc_ok = (data[5] == sum) && (data[6] == xor_val);
+
     weather_data.id = sensor_id;
     weather_data.channel = channel + 1;
     weather_data.temp_raw = temp_c_10;
     weather_data.humidity = humidity;
     weather_data.battery_low = battery;
-    weather_data.valid = 1;  /* TODO: add CRC check on data[5..6] */
+    weather_data.valid = crc_ok;
 
     /* Store raw value */
     uint64_t code = 0;
