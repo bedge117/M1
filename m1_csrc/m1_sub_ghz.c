@@ -672,12 +672,10 @@ static void sub_ghz_set_opmode(uint8_t opmode, uint8_t band, uint8_t channel, ui
 
 	if (retune_freq_hz)
 	{
-		SI446x_Set_Frequency(retune_freq_hz);
-		/* Force VCO recalibration at new frequency.
-		 * SI4463 recalibrates during SLEEP→SPI_ACTIVE→READY transitions. */
-		SI446x_Change_State(SI446X_CMD_CHANGE_STATE_ARG_NEXT_STATE1_NEW_STATE_ENUM_SLEEP);
-		SI446x_Change_State(SI446X_CMD_CHANGE_STATE_ARG_NEXT_STATE1_NEW_STATE_ENUM_SPI_ACTIVE);
+		/* Ensure READY state before changing frequency.
+		 * VCO recalibration is automatic on READY→TX/RX transition. */
 		SI446x_Change_State(SI446X_CMD_CHANGE_STATE_ARG_NEXT_STATE1_NEW_STATE_ENUM_READY);
+		SI446x_Set_Frequency(retune_freq_hz);
 	}
 
 	M1_LOG_D(M1_LOGDB_TAG, "Rx_Tx mode %d band %d channel %d\r\n", opmode, band, channel);
