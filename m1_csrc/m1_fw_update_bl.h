@@ -73,7 +73,7 @@ typedef struct {
 #define FW_VERSION_BUILD   			0
 #define FW_VERSION_RC   			0
 
-#define M1_C3_REVISION				6
+#define M1_C3_REVISION				7
 
 #define FW_CONFIG_MAGIC_NUMBER_1	((uint32_t)0x4D493235)
 #define FW_CONFIG_MAGIC_NUMBER_2    ((uint32_t)0x534A1F41)
