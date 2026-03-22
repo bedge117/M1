@@ -853,6 +853,7 @@ void sub_ghz_record(void)
 	datfile_info.file_suffix = NULL;
 
 	menu_sub_ghz_init();
+	subghz_decenc_init();
     xQueueReset(main_q_hdl); // Reset main q before start
 
 	m1_gui_submenu_update(NULL, 0, 0, X_MENU_UPDATE_INIT);
@@ -1079,8 +1080,6 @@ static int subghz_record_gui_message(void)
 		}
 		else if ( q_item.q_evt_type==Q_EVENT_SUBGHZ_RX )
 		{
-			//arrpush(subghz_rx_q, q_item);
-			//m1_buzzer_notification();
 			rcv_samples = ringbuffer_get_data_slots(&subghz_rx_rawdata_rb);
 			if ( rcv_samples >= SUBGHZ_RAW_DATA_SAMPLES_TO_RW )
 			{
@@ -1088,6 +1087,19 @@ static int subghz_record_gui_message(void)
 				sub_ghz_rx_raw_save(false, false);
 				vTaskDelay(10); // Give the system some time in case RF noise is flooding the receiver
 			} // if ( rcv_samples >= SUBGHZ_RAW_DATA_SAMPLES_TO_RW )
+
+			/* Check if the protocol decoder recognized a signal */
+			if (!subghz_record_has_decoded)
+			{
+				SubGHz_Dec_Info_t dec;
+				if (subghz_decenc_read(&dec, false) && dec.key != 0)
+				{
+					subghz_record_last_decoded = dec;
+					subghz_record_has_decoded = true;
+					m1_buzzer_notification();
+					m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_ACTIVE);
+				}
+			}
 
 		} // if ( q_item.q_evt_type==Q_EVENT_SUBGHZ_RX )
 
