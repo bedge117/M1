@@ -49,7 +49,7 @@
 
 S_M1_Menu_t menu_Sub_GHz_Record =
 {
-    "Record", sub_ghz_record, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "Read", sub_ghz_record, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Sub_GHz_Replay =
@@ -97,30 +97,30 @@ S_M1_Menu_t menu_Sub_GHz_FreqScanner =
     "Freq Scanner", sub_ghz_freq_scanner, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
-#ifdef M1_APP_FILE_IMPORT_ENABLE
-S_M1_Menu_t menu_Sub_GHz_Import =
+S_M1_Menu_t menu_Sub_GHz_Read =
 {
-    "Import .sub", sub_ghz_replay_flipper, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "Read", sub_ghz_read, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Sub_GHz_Saved =
+{
+    "Saved", sub_ghz_saved, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Sub_GHz_AddManually =
+{
+    "Add Manually", sub_ghz_add_manually, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Sub_GHz =
 {
     "Sub-GHz", NULL, NULL, NULL, 11, 0, menu_m1_icon_wave, NULL,
-    {&menu_Sub_GHz_Record, &menu_Sub_GHz_Replay, &menu_Sub_GHz_Import,
+    {&menu_Sub_GHz_Record, &menu_Sub_GHz_Saved,
+     &menu_Sub_GHz_AddManually,
      &menu_Sub_GHz_Frequency_Reader, &menu_Sub_GHz_Spectrum, &menu_Sub_GHz_RSSI,
      &menu_Sub_GHz_FreqScanner, &menu_Sub_GHz_Weather,
      &menu_Sub_GHz_BruteForce, &menu_Sub_GHz_Regional_Information, &menu_Sub_GHz_Radio_Settings}
 };
-#else
-S_M1_Menu_t menu_Sub_GHz =
-{
-    "Sub-GHz", NULL, NULL, NULL, 10, 0, menu_m1_icon_wave, NULL,
-    {&menu_Sub_GHz_Record, &menu_Sub_GHz_Replay,
-     &menu_Sub_GHz_Frequency_Reader, &menu_Sub_GHz_Spectrum, &menu_Sub_GHz_RSSI,
-     &menu_Sub_GHz_FreqScanner, &menu_Sub_GHz_Weather,
-     &menu_Sub_GHz_BruteForce, &menu_Sub_GHz_Regional_Information, &menu_Sub_GHz_Radio_Settings}
-};
-#endif
 
 /*----------------------------- > 125KHz RFID --------------------------------*/
 

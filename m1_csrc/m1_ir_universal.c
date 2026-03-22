@@ -38,7 +38,7 @@
 #define BROWSE_NAMES_MAX     16
 #define BROWSE_NAME_MAX_LEN  64
 
-#define DASHBOARD_ITEM_COUNT  4
+#define DASHBOARD_ITEM_COUNT  5
 #define DASHBOARD_ITEM_HEIGHT 9
 #define DASHBOARD_START_Y     13
 
@@ -82,12 +82,13 @@ static char s_raw_tx_filepath[IR_UNIVERSAL_PATH_MAX_LEN];
 static uint16_t s_raw_ota_buffer[IR_RAW_OTA_BUFFER_MAX];
 static flipper_ir_signal_t s_raw_tx_signal;
 
-/* Dashboard menu text */
+/* Dashboard menu text (item 4 is dynamic: Remote/Normal Mode) */
 static const char *s_dashboard_items[DASHBOARD_ITEM_COUNT] = {
 	"Browse IRDB",
 	"Learned",
 	"Favorites",
-	"Recent"
+	"Recent",
+	"Remote Mode"
 };
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
@@ -179,6 +180,9 @@ static void draw_dashboard(uint8_t selection)
 {
 	uint8_t i;
 
+	/* Update Remote Mode label to reflect current state */
+	s_dashboard_items[4] = (m1_screen_orientation == M1_ORIENT_REMOTE) ? "Normal Mode" : "Remote Mode";
+
 	u8g2_FirstPage(&m1_u8g2);
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 
@@ -187,24 +191,30 @@ static void draw_dashboard(uint8_t selection)
 	u8g2_DrawStr(&m1_u8g2, 2, 10, "Universal Remote");
 	u8g2_DrawHLine(&m1_u8g2, 0, 12, 128);
 
-	/* Menu items */
+	/* Menu items — show up to 4 visible with scrolling */
 	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
-	for (i = 0; i < DASHBOARD_ITEM_COUNT; i++)
+	uint8_t visible_start = 0;
+	uint8_t visible_count = 4; /* max items visible below header */
+	if (selection >= visible_count)
+		visible_start = selection - visible_count + 1;
+
+	for (i = 0; i < visible_count && (visible_start + i) < DASHBOARD_ITEM_COUNT; i++)
 	{
+		uint8_t idx = visible_start + i;
 		uint8_t y = DASHBOARD_START_Y + (i * DASHBOARD_ITEM_HEIGHT);
 
-		if (i == selection)
+		if (idx == selection)
 		{
 			/* Draw selection highlight */
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 			u8g2_DrawBox(&m1_u8g2, 0, y, 128, DASHBOARD_ITEM_HEIGHT);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_dashboard_items[i]);
+			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_dashboard_items[idx]);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 		}
 		else
 		{
-			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_dashboard_items[i]);
+			u8g2_DrawStr(&m1_u8g2, 4, y + 8, s_dashboard_items[idx]);
 		}
 	}
 
@@ -266,20 +276,51 @@ static void dashboard_screen(void)
 					switch (selection)
 					{
 						case 0: /* Browse IRDB */
-							strncpy(s_current_path, IR_UNIVERSAL_IRDB_ROOT, IR_UNIVERSAL_PATH_MAX_LEN - 1);
-							s_current_path[IR_UNIVERSAL_PATH_MAX_LEN - 1] = '\0';
-							browse_directory(s_current_path);
-							break;
 						case 1: /* Learned — browse user-saved remotes */
-							strncpy(s_current_path, IR_LEARNED_DIR, IR_UNIVERSAL_PATH_MAX_LEN - 1);
+						{
+							/* Temporarily switch to Normal for file browsing */
+							uint8_t saved_orient = m1_screen_orientation;
+							if (saved_orient != M1_ORIENT_NORMAL)
+							{
+								m1_screen_orientation = M1_ORIENT_NORMAL;
+								m1_southpaw_mode = 0;
+								u8g2_SetDisplayRotation(&m1_u8g2, U8G2_R2);
+							}
+							const char *root = (selection == 0) ? IR_UNIVERSAL_IRDB_ROOT : IR_LEARNED_DIR;
+							strncpy(s_current_path, root, IR_UNIVERSAL_PATH_MAX_LEN - 1);
 							s_current_path[IR_UNIVERSAL_PATH_MAX_LEN - 1] = '\0';
 							browse_directory(s_current_path);
+							/* Restore orientation */
+							if (saved_orient != M1_ORIENT_NORMAL)
+							{
+								m1_screen_orientation = saved_orient;
+								m1_southpaw_mode = (saved_orient == M1_ORIENT_SOUTHPAW) ? 1 : 0;
+								if (saved_orient == M1_ORIENT_REMOTE)
+									u8g2_SetDisplayRotation(&m1_u8g2, U8G2_R1);
+								else if (saved_orient == M1_ORIENT_SOUTHPAW)
+									u8g2_SetDisplayRotation(&m1_u8g2, U8G2_R0);
+							}
 							break;
+						}
 						case 2: /* Favorites */
 							show_favorites_screen();
 							break;
 						case 3: /* Recent */
 							show_recent_screen();
+							break;
+						case 4: /* Toggle Remote Mode */
+							if (m1_screen_orientation == M1_ORIENT_REMOTE)
+							{
+								m1_screen_orientation = M1_ORIENT_NORMAL;
+								m1_southpaw_mode = 0;
+								u8g2_SetDisplayRotation(&m1_u8g2, U8G2_R2);
+							}
+							else
+							{
+								m1_screen_orientation = M1_ORIENT_REMOTE;
+								m1_southpaw_mode = 0;
+								u8g2_SetDisplayRotation(&m1_u8g2, U8G2_R1);
+							}
 							break;
 						default:
 							break;
@@ -705,6 +746,8 @@ static uint8_t map_flipper_protocol(const char *name)
 	 * Must stay in sync with flipper_ir.c ir_proto_table[]. */
 	if (strcmp(name, "NEC") == 0 || strcmp(name, "NECext") == 0)
 		return IRMP_NEC_PROTOCOL;
+	if (strcmp(name, "Samsung48") == 0)
+		return IRMP_SAMSUNG48_PROTOCOL;
 	if (strcmp(name, "Samsung32") == 0 || strcmp(name, "Samsung") == 0)
 		return IRMP_SAMSUNG32_PROTOCOL;
 	if (strcmp(name, "RC5") == 0 || strcmp(name, "RC5X") == 0)

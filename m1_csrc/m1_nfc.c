@@ -63,13 +63,14 @@ const char *m1_nfc_more_options_file[] = {
 };
 
 /* Menu for NFC Tools (both top-level nfc_tools() and Utils view) */
-#define NFC_TOOL_OPTIONS_COUNT  5
+#define NFC_TOOL_OPTIONS_COUNT  6
 static const char *m1_nfc_tool_options[] = {
 	"Tag Info",
 	"Clone Emulate",
 	"NFC Fuzzer",
 	"Write UID",
-	"Wipe Tag"
+	"Wipe Tag",
+	"Unlock Read"
 };
 
 //************************** S T R U C T U R E S *******************************
@@ -125,6 +126,7 @@ static S_M1_file_info *f_info = NULL;
 void nfc_read(void);
 void nfc_tools(void);
 void nfc_saved(void);
+static void nfc_tool_unlock_read(void);
 static uint8_t nfc_read_more_options_save(void);
 static uint8_t nfc_read_more_options_delete(void);
 void m1_nfc_info_more_draw(void);
@@ -1519,6 +1521,11 @@ static int nfc_utils_kp_handler(void)
 					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
 					break;
 
+				case 5: /* Unlock Read */
+					nfc_tool_unlock_read();
+					m1_uiView_display_update(X_MENU_UPDATE_REFRESH);
+					break;
+
 				default:
 					break;
 			}
@@ -2622,6 +2629,134 @@ static void nfc_tool_fuzzer(void)
 
 /*============================================================================*/
 /**
+ * @brief nfc_tool_unlock_read - Read NFC tag with user-entered password
+ *
+ * Prompts the user for a 4-byte hex password via the short keyboard,
+ * stores it as the manual password, then initiates a tag read.
+ * The poller will use this password for PWD_AUTH before reading pages.
+ *
+ * @retval None
+ */
+/*============================================================================*/
+static void nfc_tool_unlock_read(void)
+{
+	S_M1_Buttons_Status bs;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	char pwd_buf[12]; /* "00 00 00 00" + null */
+	uint8_t pwd_bytes[4];
+
+	/* Check if a captured password is available and pre-fill */
+	uint8_t cap_pwd[4];
+	if (nfc_ctx_get_captured_pwd(cap_pwd)) {
+		snprintf(pwd_buf, sizeof(pwd_buf), "%02X %02X %02X %02X",
+				 cap_pwd[0], cap_pwd[1], cap_pwd[2], cap_pwd[3]);
+	} else {
+		strcpy(pwd_buf, "00 00 00 00");
+	}
+
+	/* Show hex keyboard for 4-byte password entry */
+	uint8_t len = m1_vkbs_get_data("NFC Password", pwd_buf);
+	if (len == 0) {
+		return; /* User cancelled */
+	}
+
+	/* Parse "XX XX XX XX" hex string → 4 bytes */
+	unsigned int b0, b1, b2, b3;
+	if (sscanf(pwd_buf, "%02X %02X %02X %02X", &b0, &b1, &b2, &b3) != 4) {
+		m1_message_box(&m1_u8g2, "Invalid password", NULL, " ", res_string(IDS_BACK));
+		return;
+	}
+	pwd_bytes[0] = (uint8_t)b0;
+	pwd_bytes[1] = (uint8_t)b1;
+	pwd_bytes[2] = (uint8_t)b2;
+	pwd_bytes[3] = (uint8_t)b3;
+
+	/* Store as manual password — poller will use it on next read */
+	nfc_ctx_set_manual_pwd(pwd_bytes);
+
+	/* Show "Place card" screen */
+	u8g2_FirstPage(&m1_u8g2);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawXBMP(&m1_u8g2, 0, 0, 48, 48, nfc_read_48x48);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+	u8g2_DrawStr(&m1_u8g2, 50, 15, "Unlock Read");
+	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+	u8g2_DrawStr(&m1_u8g2, 50, 26, "PWD:");
+	{
+		char pwd_disp[16];
+		snprintf(pwd_disp, sizeof(pwd_disp), "%02X %02X %02X %02X",
+				 pwd_bytes[0], pwd_bytes[1], pwd_bytes[2], pwd_bytes[3]);
+		u8g2_DrawStr(&m1_u8g2, 50, 36, pwd_disp);
+	}
+	u8g2_DrawStr(&m1_u8g2, 50, 46, "Hold card on M1");
+	m1_u8g2_nextpage();
+
+	/* Start NFC read */
+	m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+	m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_READ);
+	vTaskDelay(50);
+
+	/* Wait for read complete or BACK */
+	bool read_done = false;
+	while (!read_done)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE) continue;
+
+		if (q_item.q_evt_type == Q_EVENT_NFC_READ_COMPLETE)
+		{
+			read_done = true;
+			m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+
+			nfc_run_ctx_t *c = nfc_ctx_get();
+			if (c && c->head.uid_len > 0) {
+				/* Show result */
+				u8g2_FirstPage(&m1_u8g2);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
+				u8g2_DrawStr(&m1_u8g2, 2, 12, "Unlock Read Done");
+				u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
+				u8g2_DrawStr(&m1_u8g2, 2, 24, c->ui.title_text);
+				u8g2_DrawStr(&m1_u8g2, 2, 34, "UID:");
+				u8g2_DrawStr(&m1_u8g2, 30, 34, c->ui.uid_text);
+				if (c->dump.has_dump) {
+					char pg_str[24];
+					snprintf(pg_str, sizeof(pg_str), "Pages: %u",
+							 (unsigned)nfc_ctx_get_t2t_page_count());
+					u8g2_DrawStr(&m1_u8g2, 2, 44, pg_str);
+				}
+				m1_u8g2_nextpage();
+
+				/* Wait for BACK */
+				while (1) {
+					ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+					if (ret != pdTRUE) continue;
+					if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+					ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+					if (ret == pdTRUE && bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+						break;
+				}
+			}
+		}
+		else if (q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			ret = xQueueReceive(button_events_q_hdl, &bs, 0);
+			if (ret == pdTRUE && bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				/* User cancelled — stop reader and clear manual password */
+				m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_STOP);
+				nfc_ctx_clear_manual_pwd();
+				m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+				read_done = true;
+			}
+		}
+	}
+}
+
+
+/*============================================================================*/
+/**
  * @brief nfc_tools - NFC tools menu with Tag Info, Clone Emulate, NFC Fuzzer
  *
  * Provides a submenu of NFC utility tools accessible from the main NFC menu.
@@ -2665,9 +2800,10 @@ void nfc_tools(void)
 				uint8_t sel = m1_gui_submenu_update(NULL, 0, 0, MENU_UPDATE_NONE);
 				switch (sel)
 				{
-					case 0: nfc_tool_tag_info();  break;
-					case 1: nfc_tool_clone_emu(); break;
-					case 2: nfc_tool_fuzzer();    break;
+					case 0: nfc_tool_tag_info();     break;
+					case 1: nfc_tool_clone_emu();    break;
+					case 2: nfc_tool_fuzzer();       break;
+					case 5: nfc_tool_unlock_read();  break;
 					default: break;
 				}
 				/* Redraw submenu after returning from a tool */

@@ -24,6 +24,11 @@
 #define BUTTON_DOWN_KP_ID 		4
 #define BUTTON_BACK_KP_ID 		5
 
+/* Screen orientation modes */
+#define M1_ORIENT_NORMAL     0
+#define M1_ORIENT_SOUTHPAW   1
+#define M1_ORIENT_REMOTE     2
+
 #define NUM_BUTTONS_MAX     	6
 
 #define LONG_PRESS_1000     1000
@@ -159,8 +164,13 @@ typedef struct
 extern S_Buttons_Control 	buttons_ctl[];
 extern S_M1_Buttons_Status 	m1_buttons_status;
 extern S_M1_Device_Status_t	m1_device_stat;
-extern uint8_t              m1_southpaw_mode;  /* 0=right-handed, 1=left-handed */
+extern uint8_t              m1_southpaw_mode;  /* 0=right-handed, 1=left-handed (legacy, derived from orientation) */
 extern uint8_t              m1_esp32_auto_init; /* 0=on-demand, 1=init at boot */
+extern uint8_t              m1_screen_orientation; /* M1_ORIENT_NORMAL/SOUTHPAW/REMOTE */
+extern uint8_t              m1_brightness_level;   /* 0=Off, 1=Low, 2=Med, 3=High, 4=Max */
+extern uint8_t              m1_buzzer_on;          /* 0=Off, 1=On */
+extern uint8_t              m1_led_notify_on;      /* 0=Off, 1=On */
+extern uint8_t              m1_sleep_timeout_idx;   /* 0=30s, 1=1m, 2=5m, 3=10m, 4=15m, 5=Never */
 #ifdef M1_APP_BADBT_ENABLE
 #define BADBT_NAME_MAX_LEN 20
 extern char m1_badbt_name[BADBT_NAME_MAX_LEN + 1];

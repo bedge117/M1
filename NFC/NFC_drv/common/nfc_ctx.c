@@ -929,4 +929,77 @@ void nfc_ctx_set_t2t_page(uint16_t page, const uint8_t data[4])
 }
 
 
+/* --------- Password Auth helpers (Unlock with Password) ---------- */
+
+static uint8_t s_manual_pwd[4]   = {0};
+static bool    s_manual_pwd_set  = false;
+
+static uint8_t s_captured_pwd[4] = {0};
+static bool    s_captured_pwd_set = false;
+
+void nfc_ctx_set_manual_pwd(const uint8_t pwd[4])
+{
+    if (!pwd) return;
+    memcpy(s_manual_pwd, pwd, 4);
+    s_manual_pwd_set = true;
+    platformLog("[PWD] Manual password set: %02X %02X %02X %02X\r\n",
+                pwd[0], pwd[1], pwd[2], pwd[3]);
+}
+
+bool nfc_ctx_get_manual_pwd(uint8_t pwd_out[4])
+{
+    if (!s_manual_pwd_set || !pwd_out) return false;
+    memcpy(pwd_out, s_manual_pwd, 4);
+    return true;
+}
+
+void nfc_ctx_clear_manual_pwd(void)
+{
+    s_manual_pwd_set = false;
+    memset(s_manual_pwd, 0, 4);
+}
+
+void nfc_ctx_set_captured_pwd(const uint8_t pwd[4])
+{
+    if (!pwd) return;
+    memcpy(s_captured_pwd, pwd, 4);
+    s_captured_pwd_set = true;
+    platformLog("[PWD] Captured password from reader: %02X %02X %02X %02X\r\n",
+                pwd[0], pwd[1], pwd[2], pwd[3]);
+}
+
+bool nfc_ctx_get_captured_pwd(uint8_t pwd_out[4])
+{
+    if (!s_captured_pwd_set || !pwd_out) return false;
+    memcpy(pwd_out, s_captured_pwd, 4);
+    return true;
+}
+
+void nfc_ctx_clear_captured_pwd(void)
+{
+    s_captured_pwd_set = false;
+    memset(s_captured_pwd, 0, 4);
+}
+
+bool nfc_ctx_get_best_pwd(uint8_t pwd_out[4], nfc_pwd_source_t *source)
+{
+    if (!pwd_out) return false;
+
+    /* Manual takes priority over captured */
+    if (s_manual_pwd_set) {
+        memcpy(pwd_out, s_manual_pwd, 4);
+        if (source) *source = NFC_PWD_SRC_MANUAL;
+        return true;
+    }
+    if (s_captured_pwd_set) {
+        memcpy(pwd_out, s_captured_pwd, 4);
+        if (source) *source = NFC_PWD_SRC_CAPTURED;
+        return true;
+    }
+
+    if (source) *source = NFC_PWD_SRC_NONE;
+    return false;
+}
+
+
 /* --------- Mifare Classic helpers ---------- */

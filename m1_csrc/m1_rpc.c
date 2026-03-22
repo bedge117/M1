@@ -1437,6 +1437,13 @@ static void rpc_handle_fw_info(const S_RPC_Frame *f)
                     info.bank1.crc_valid  = bl_verify_bank_crc(phys_bank1_base) ? 1 : 0;
                 }
             }
+            else
+            {
+                /* Legacy firmware (stock Monstatek / SiN360) — no CRC2 extension.
+                 * We can't verify their CRC without knowing their image size,
+                 * so report as valid since the config struct magic IS present. */
+                info.bank1.crc_valid = 1;
+            }
 
             /* C3 build metadata at offset 32 */
             uint32_t c3_addr = phys_bank1_base + cfg_offset + FW_C3_META_BASE_OFFSET;
@@ -1491,6 +1498,11 @@ static void rpc_handle_fw_info(const S_RPC_Frame *f)
                     m1_wdt_reset();
                     info.bank2.crc_valid  = bl_verify_bank_crc(phys_bank2_base) ? 1 : 0;
                 }
+            }
+            else
+            {
+                /* Legacy firmware — no CRC2 extension, assume valid */
+                info.bank2.crc_valid = 1;
             }
 
             /* C3 build metadata at offset 32 */

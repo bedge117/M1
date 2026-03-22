@@ -49,19 +49,17 @@ bool nfc_profile_load(const S_M1_file_info *f, const char* ext)
 {
 	char file_path[128];
 	nfc_storage_result_t nfc_ret;
-	//BaseType_t ret;
 
+	/* Try .nfc text format first */
 	if(IsValidFileSpec(f, ext))
 	{
 		fu_path_combine(file_path, sizeof(file_path), f->dir_name, f->file_name);
 
-		// Load file using nfc_storage_load_file
 		nfc_ret = nfc_storage_load_file(file_path, g_nfc_dump_buf, sizeof(g_nfc_dump_buf),
 										g_nfc_valid_bits, sizeof(g_nfc_valid_bits));
 
 		if (nfc_ret == NFC_STORAGE_OK)
 		{
-			// Save file path to context
 			nfc_run_ctx_t* c = nfc_ctx_get();
 			if (c) {
 				strncpy(c->file.path, file_path, sizeof(c->file.path) - 1);
@@ -72,6 +70,29 @@ bool nfc_profile_load(const S_M1_file_info *f, const char* ext)
 		else
 		{
 			platformLog("nfc_storage_load_file('%s') failed: %d\r\n", file_path, nfc_ret);
+		}
+	}
+
+	/* Try .bin raw NTAG dump (Amiibo) */
+	if(IsValidFileSpec(f, "bin"))
+	{
+		fu_path_combine(file_path, sizeof(file_path), f->dir_name, f->file_name);
+
+		nfc_ret = nfc_storage_load_bin(file_path, g_nfc_dump_buf, sizeof(g_nfc_dump_buf),
+									   g_nfc_valid_bits, sizeof(g_nfc_valid_bits));
+
+		if (nfc_ret == NFC_STORAGE_OK)
+		{
+			nfc_run_ctx_t* c = nfc_ctx_get();
+			if (c) {
+				strncpy(c->file.path, file_path, sizeof(c->file.path) - 1);
+				c->file.path[sizeof(c->file.path) - 1] = '\0';
+			}
+			return true;
+		}
+		else
+		{
+			platformLog("nfc_storage_load_bin('%s') failed: %d\r\n", file_path, nfc_ret);
 		}
 	}
 
