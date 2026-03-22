@@ -1857,7 +1857,7 @@ void sub_ghz_replay(void)
 uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 {
 #define FLIPPER_SUB_TMP_SGH   "/SUBGHZ/_flipper_tmp.sgh"
-#define FLIPPER_SUB_LINE_MAX  512
+#define FLIPPER_SUB_LINE_MAX  4096
 #define FLIPPER_SUB_OUT_MAX   256
 
 	FIL f_sub, f_sgh;
@@ -1871,6 +1871,12 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 	bool has_data = false;
 	bool in_raw_continuation = false;
 	float freq_mhz;
+
+	/* Leftover partial number from a truncated f_gets read.
+	 * When a long RAW_Data line exceeds the buffer, f_gets can split a
+	 * number at the boundary (e.g. "12345" → "123" + "45").  We save
+	 * any trailing digits here and prepend them to the next read. */
+	char leftover[16] = {0};
 
 	/* KEY file fields */
 	char key_protocol[32] = {0};
@@ -1919,6 +1925,29 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 			const char *p = line_buf;
 			int pos = snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "%s",
 			                   SUB_GHZ_DATAFILE_DATA_KEYWORD);
+
+			/* If we have leftover digits from previous buffer boundary,
+			 * prepend them to the first token of this buffer. */
+			if (leftover[0] != '\0')
+			{
+				/* Find end of first numeric token */
+				const char *tok_end = p;
+				while (*tok_end && *tok_end != ' ' && *tok_end != '\r' && *tok_end != '\n')
+					tok_end++;
+				/* Build combined number: leftover + start of this buffer */
+				char combined[32];
+				snprintf(combined, sizeof(combined), "%s%.*s", leftover,
+				         (int)(tok_end - p), p);
+				leftover[0] = '\0';
+				long val = strtol(combined, NULL, 10);
+				if (val < 0) val = -val;
+				if (val != 0)
+					pos += snprintf(&out_buf[pos],
+					                (size_t)(FLIPPER_SUB_OUT_MAX - pos),
+					                " %lu", (unsigned long)val);
+				p = tok_end;
+			}
+
 			while (*p)
 			{
 				while (*p == ' ') p++;
@@ -1928,7 +1957,14 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 				if (endp == p) break;
 				p = endp;
 				if (val < 0) val = -val;
-				if (val == 0) continue; /* skip zero (truncated number at boundary) */
+				if (val == 0) continue;
+				/* If we're at end of buffer and line is truncated,
+				 * this number might be incomplete — save it as leftover */
+				if (!line_complete && *p == '\0')
+				{
+					snprintf(leftover, sizeof(leftover), "%lu", (unsigned long)val);
+					break;
+				}
 				pos += snprintf(&out_buf[pos],
 				                (size_t)(FLIPPER_SUB_OUT_MAX - pos),
 				                " %lu", (unsigned long)val);
@@ -2017,6 +2053,7 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 			 * f_gets may split them across multiple reads.
 			 * Flush output when buffer fills, start new Data: line. */
 			const char *p = line_buf + 9;
+			leftover[0] = '\0';
 			int pos = snprintf(out_buf, FLIPPER_SUB_OUT_MAX, "%s",
 			                   SUB_GHZ_DATAFILE_DATA_KEYWORD);
 			while (*p)
@@ -2029,6 +2066,13 @@ uint8_t sub_ghz_replay_flipper_file(const char *sub_path)
 				p = endp;
 				if (val < 0) val = -val;
 				if (val == 0) continue; /* skip zero */
+				/* If we're at end of buffer and line is truncated,
+				 * this number might be incomplete — save as leftover */
+				if (!line_complete && *p == '\0')
+				{
+					snprintf(leftover, sizeof(leftover), "%lu", (unsigned long)val);
+					break;
+				}
 				pos += snprintf(&out_buf[pos],
 				                (size_t)(FLIPPER_SUB_OUT_MAX - pos),
 				                " %lu", (unsigned long)val);
@@ -2764,41 +2808,100 @@ static void sub_ghz_saved_action_menu(const char *filepath, const char *filename
 				}
 				else
 				{
-					/* Native .sgh — load into replay engine */
+					/* Native .sgh — load into replay engine with full TX screen */
 					strncpy((char *)datfile_info.dat_filename, filepath,
 					        sizeof(datfile_info.dat_filename) - 1);
 					if (!sub_ghz_file_load())
 					{
 						menu_sub_ghz_init();
+						subghz_replay_play_gui_update(SUBGHZ_REPLAY_DISPLAY_PARAM_ACTIVE);
+
 						subghz_replay_ret_code = sub_ghz_replay_start(false, subghz_replay_band,
 						    subghz_replay_channel, 255);
+
 						if (subghz_replay_ret_code)
 						{
 							double_buffer_ptr_id = 1;
 							m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
-							/* Wait for BACK to stop */
-							while (1)
+							subghz_replay_play_gui_update(SUBGHZ_REPLAY_DISPLAY_PARAM_PLAY);
+						}
+						else
+						{
+							m1_message_box(&m1_u8g2, "Replay failed!", "", "", "BACK to return");
+							menu_sub_ghz_exit();
+							return;
+						}
+
+						/* Event loop — same as .sub replay: BACK to stop, OK to re-transmit */
+						{
+							bool running = true;
+							while (running)
 							{
 								ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
-								if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
+								if (ret != pdTRUE)
+									continue;
+
+								if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 								{
 									xQueueReceive(button_events_q_hdl, &btn, 0);
 									if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 									{
-										sub_ghz_raw_tx_stop();
+										m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
 										sub_ghz_raw_samples_deinit(false);
 										sub_ghz_ring_buffers_deinit();
 										sub_ghz_tx_raw_deinit();
-										m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
-										break;
+										running = false;
+									}
+									else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+									{
+										if (subghz_replay_ret_code == SUB_GHZ_RAW_DATA_PARSER_IDLE)
+										{
+											sub_ghz_set_opmode(SUB_GHZ_OPMODE_TX,
+											    subghz_replay_band, subghz_replay_channel,
+											    tx_power_values[subghz_tx_power_idx]);
+											subghz_replay_ret_code = sub_ghz_raw_replay_init();
+											if (subghz_replay_ret_code != 1)
+											{
+												double_buffer_ptr_id = 1;
+												subghz_decenc_ctl.ntx_raw_repeat = SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT;
+												m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+											}
+											else
+											{
+												sub_ghz_raw_tx_stop();
+												sub_ghz_raw_samples_deinit(false);
+												sub_ghz_set_opmode(SUB_GHZ_OPMODE_ISOLATED, SUB_GHZ_BAND_EOL, 0, 0);
+												subghz_replay_play_gui_update(SUBGHZ_REPLAY_DISPLAY_PARAM_SYS_ERROR);
+											}
+										}
 									}
 								}
 								else if (q_item.q_evt_type == Q_EVENT_SUBGHZ_TX)
 								{
 									subghz_replay_ret_code = sub_ghz_replay_continue(subghz_replay_ret_code);
+									if (subghz_replay_ret_code == SUB_GHZ_RAW_DATA_PARSER_IDLE)
+									{
+										/* Auto-restart: loop until BACK */
+										sub_ghz_set_opmode(SUB_GHZ_OPMODE_TX,
+										    subghz_replay_band, subghz_replay_channel,
+										    tx_power_values[subghz_tx_power_idx]);
+										subghz_replay_ret_code = sub_ghz_raw_replay_init();
+										if (subghz_replay_ret_code != 1)
+										{
+											double_buffer_ptr_id = 1;
+											subghz_decenc_ctl.ntx_raw_repeat = SUBGHZ_TX_RAW_REPLAY_REPEAT_DEFAULT;
+										}
+										else
+										{
+											m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+											subghz_replay_ret_code = SUB_GHZ_RAW_DATA_PARSER_IDLE;
+										}
+									}
 								}
 							}
 						}
+
+						xQueueReset(main_q_hdl);
 						menu_sub_ghz_exit();
 					}
 					else
@@ -3719,8 +3822,8 @@ static void sub_ghz_tx_raw_init(void)
 	/*  Clock Configuration for TIMER */
 	SUBGHZ_TX_TIMER_CLK();
 
-	/* Timer Clock: 75MHz / 150 = 500kHz = 2us per tick */
-	tim_prescaler_val = SUBGHZ_TX_TIM_PRESCALER;
+	/* Timer Clock: 1MHz (1us per tick) — matches sample durations in .sgh files */
+	tim_prescaler_val = (uint32_t) (HAL_RCC_GetPCLK2Freq() / 1000000) - 1;
 
 	timerhdl_subghz_tx.Instance = SUBGHZ_TX_CARRIER_TIMER;
 	timerhdl_subghz_tx.Init.Prescaler = tim_prescaler_val;
@@ -3728,8 +3831,8 @@ static void sub_ghz_tx_raw_init(void)
 	timerhdl_subghz_tx.Init.Period = 0; // temporary value
 	timerhdl_subghz_tx.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	timerhdl_subghz_tx.Init.RepetitionCounter = 0;
-	timerhdl_subghz_tx.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-	if (HAL_TIM_OC_Init(&timerhdl_subghz_tx) != HAL_OK)
+	timerhdl_subghz_tx.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+	if (HAL_TIM_PWM_Init(&timerhdl_subghz_tx) != HAL_OK)
 	{
 		Error_Handler();
 	}
@@ -3748,11 +3851,12 @@ static void sub_ghz_tx_raw_init(void)
 		Error_Handler();
 	}
 
-	sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
-	sConfigOC.OCNPolarity = TIM_OCNPOLARITY_LOW;  // CH4N = OC4REF (no complement inversion)
+	sConfigOC.OCMode = TIM_OCMODE_PWM1;
+	sConfigOC.OCNPolarity = TIM_OCPOLARITY_HIGH;
 	sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+	sConfigOC.Pulse = 0; // temporary value
 	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-	if ( HAL_TIM_OC_ConfigChannel(&timerhdl_subghz_tx, &sConfigOC, SUBGHZ_TX_TIMER_TX_CHANNEL) != HAL_OK)
+	if ( HAL_TIM_PWM_ConfigChannel(&timerhdl_subghz_tx, &sConfigOC, SUBGHZ_TX_TIMER_TX_CHANNEL) != HAL_OK)
 	{
 	    Error_Handler();
 	}
@@ -3791,7 +3895,7 @@ static void sub_ghz_tx_raw_init(void)
     hdma_subghz_tx.Init.DestInc = DMA_DINC_FIXED;
     hdma_subghz_tx.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_HALFWORD;
     hdma_subghz_tx.Init.DestDataWidth = DMA_DEST_DATAWIDTH_HALFWORD;
-    hdma_subghz_tx.Init.Priority = DMA_HIGH_PRIORITY;
+    hdma_subghz_tx.Init.Priority = DMA_LOW_PRIORITY_LOW_WEIGHT;
     hdma_subghz_tx.Init.SrcBurstLength = 1;
     hdma_subghz_tx.Init.DestBurstLength = 1;
     hdma_subghz_tx.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
@@ -3813,13 +3917,15 @@ static void sub_ghz_tx_raw_init(void)
 	/* Clear all interrupt flags */
 	__HAL_DMA_CLEAR_FLAG(&hdma_subghz_tx, DMA_FLAG_TC | DMA_FLAG_HT | DMA_FLAG_DTE
 						| DMA_FLAG_ULE | DMA_FLAG_USE | DMA_FLAG_SUSP | DMA_FLAG_TO);
-    HAL_NVIC_SetPriority(GPDMA1_Channel0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 0);
+	// IRQ priority should be lower than that of the Timer
+    HAL_NVIC_SetPriority(GPDMA1_Channel0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 5);
     HAL_NVIC_EnableIRQ(GPDMA1_Channel0_IRQn);
 
 	__HAL_TIM_ENABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
-	/* TIM1_UP interrupt is NOT enabled here — only enabled briefly after DMA TC */
+	/* Enable TIM Update Event Interrupt Request */
+	__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_FLAG_UPDATE);
 
-	/* Peripheral interrupt init (TIM1_UP used only for end-of-buffer detection) */
+	/* Peripheral interrupt init */
 	HAL_NVIC_SetPriority(SUBGHZ_TX_TIMER_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 0);
 	HAL_NVIC_EnableIRQ(SUBGHZ_TX_TIMER_IRQn);
 } // static void sub_ghz_tx_raw_init(void)
@@ -3886,7 +3992,7 @@ static void sub_ghz_tx_raw_deinit(void)
 
 	if ( timerhdl_subghz_tx.Instance != NULL )
 	{
-		HAL_TIMEx_OCN_Stop(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
+		HAL_TIMEx_PWMN_Stop(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
 		__HAL_TIM_DISABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
 		__HAL_TIM_DISABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
 	} // if ( timerhdl_subghz_tx.Instance != NULL )
@@ -4132,8 +4238,6 @@ static uint8_t sub_ghz_parse_raw_data(uint8_t buffer_ptr_id)
 							number = strtol((char *)sdcard_buffer_run_ptr, &endptr, 10);
 							if ( number!=0 ) // Valid number?
 							{
-								number = (number + 1) >> 1; // Convert to 2us ticks
-								if ( number == 0 ) number = 1;
 								double_buffer_ptr[buffer_ptr_id][raw_samples_count++] = number;
 							}
 						} // if ( sdcard_dat_buffer_end_pos )
@@ -4204,8 +4308,6 @@ static uint8_t sub_ghz_parse_raw_data(uint8_t buffer_ptr_id)
 		{
 			rd_samples_count = 0; // reset
 		}
-		number = (number + 1) >> 1; // Convert from 1us to 2us ticks (round up)
-		if ( number == 0 ) number = 1; // Minimum 1 tick (2us)
 		double_buffer_ptr[buffer_ptr_id][raw_samples_count++] = number;
 		if ( raw_samples_count >= raw_samples_buffer_size )
 		{
@@ -4230,55 +4332,36 @@ static uint8_t sub_ghz_parse_raw_data(uint8_t buffer_ptr_id)
 /*============================================================================*/
 static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, uint8_t repeat)
 {
-	if ( source==0 || dest==0 || len==0 )
+	if ( source==0 )
+		return;
+
+	if ( dest==0 )
+		return;
+
+	if ( len==0 )
 		return;
 
 	// Save these data for repeat
+	subghz_decenc_ctl.ntx_raw_len = (len<<1); // Convert length to byte
+	subghz_decenc_ctl.ntx_raw_src = source;
+	subghz_decenc_ctl.ntx_raw_dest = dest;
 	subghz_decenc_ctl.ntx_raw_repeat = repeat;
 	subghz_tx_tc_flag = 0;
-	subghz_tx_start_high = 1; // First buffer always starts with mark (HIGH)
 
-	// Load first sample directly into ARR (avoids GenerateEvent which would toggle OC4REF)
-	timerhdl_subghz_tx.Instance->ARR = ((uint16_t *)source)[0];
-	timerhdl_subghz_tx.Instance->CNT = 0;
+	/* Enable the DMA channel */
+	HAL_StatusTypeDef ret = TIM_DMA_Start_IT(timerhdl_subghz_tx.hdma[TIM_DMA_ID_UPDATE], source, dest, subghz_decenc_ctl.ntx_raw_len);
+	if ( ret != HAL_OK)
+		return;
 
-	// Force OC4REF to correct initial state for first sample (mark = HIGH)
-	{
-		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		ccmr2 |= (0x5UL << 12); // FORCED_ACTIVE (OC4REF = HIGH)
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		ccmr2 |= (0x3UL << 12); // Switch back to TOGGLE mode
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-	}
+	timerhdl_subghz_tx.Instance->CCR4 = 0; // initial value
 
-	// Start DMA from second sample onward (first was loaded into ARR manually)
-	if ( len > 1 )
-	{
-		uint32_t dma_src = source + sizeof(uint16_t); // Skip first sample
-		uint32_t dma_len = (len - 1) << 1;            // Remaining samples in bytes
-		subghz_decenc_ctl.ntx_raw_len = dma_len;
-		subghz_decenc_ctl.ntx_raw_src = dma_src;
-		subghz_decenc_ctl.ntx_raw_dest = dest;
+	// Generate Update Event (set UG bit) to reload the DMA source data[0] to the ARR register
+	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
+	// Do it again to reload the DMA source data[1] to the ARR register, and reload the DMA source data[0] to the ARR shadow register
+	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
 
-		HAL_StatusTypeDef ret = TIM_DMA_Start_IT(timerhdl_subghz_tx.hdma[TIM_DMA_ID_UPDATE], dma_src, dest, dma_len);
-		if ( ret != HAL_OK)
-			return;
-	}
-	else
-	{
-		// Single sample: no DMA needed, just play one period
-		subghz_decenc_ctl.ntx_raw_len = 0;
-		subghz_tx_tc_flag = 1; // Will stop after this one period
-		__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
-	}
-
-	// Start the timer — TOGGLE mode on complementary output CH4N
-	HAL_TIMEx_OCN_Start(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
-
-	// Update polarity tracking for next buffer
-	subghz_tx_start_high ^= (len & 1);
+	// Start the timer
+	HAL_TIMEx_PWMN_Start(&timerhdl_subghz_tx, SUBGHZ_TX_TIMER_TX_CHANNEL);
 } // static void sub_ghz_transmit_raw(uint32_t source, uint32_t dest, uint32_t len, uint8_t repeat)
 
 
@@ -4294,57 +4377,34 @@ static void sub_ghz_transmit_raw_restart(uint32_t source, uint32_t len)
 {
 	sub_ghz_raw_tx_stop();
 
-	if ( source==0 || len==0 )
-		return;
-
-	subghz_tx_tc_flag = 0;
-
-	// Load first sample directly into ARR
-	timerhdl_subghz_tx.Instance->ARR = ((uint16_t *)source)[0];
-	timerhdl_subghz_tx.Instance->CNT = 0;
-
-	// Force OC4REF to correct initial state based on polarity tracking
+	if ( (source!=0) && (len!=0) ) // New data source and length?
 	{
-		uint32_t ccmr2 = timerhdl_subghz_tx.Instance->CCMR2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		if (subghz_tx_start_high)
-			ccmr2 |= (0x5UL << 12); // FORCED_ACTIVE (HIGH)
-		else
-			ccmr2 |= (0x4UL << 12); // FORCED_INACTIVE (LOW)
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-		ccmr2 &= ~(TIM_CCMR2_OC4M);
-		ccmr2 |= (0x3UL << 12); // Switch back to TOGGLE mode
-		timerhdl_subghz_tx.Instance->CCMR2 = ccmr2;
-	}
+		subghz_decenc_ctl.ntx_raw_len = (len<<1); // Convert length to byte
+		subghz_decenc_ctl.ntx_raw_src = source;
+	} // if ( (source!=0) && (len!=0) )
 
-	// Start DMA from second sample onward
-	if ( len > 1 )
-	{
-		uint32_t dma_src = source + sizeof(uint16_t);
-		uint32_t dma_len = (len - 1) << 1;
-		subghz_decenc_ctl.ntx_raw_len = dma_len;
-		subghz_decenc_ctl.ntx_raw_src = dma_src;
+	__HAL_TIM_ENABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
 
-		__HAL_TIM_ENABLE_DMA(&timerhdl_subghz_tx, TIM_DMA_UPDATE);
-		__HAL_DMA_CLEAR_FLAG(&hdma_subghz_tx, DMA_FLAG_TC | DMA_FLAG_HT | DMA_FLAG_DTE
-							| DMA_FLAG_ULE | DMA_FLAG_USE | DMA_FLAG_SUSP | DMA_FLAG_TO);
-		hdma_subghz_tx.Instance->CSAR = dma_src;
-		hdma_subghz_tx.Instance->CDAR = (uint32_t)&timerhdl_subghz_tx.Instance->ARR;
-		MODIFY_REG(hdma_subghz_tx.Instance->CBR1, DMA_CBR1_BNDT, (dma_len & DMA_CBR1_BNDT));
-		__HAL_DMA_ENABLE(&hdma_subghz_tx);
-	}
-	else
-	{
-		subghz_decenc_ctl.ntx_raw_len = 0;
-		subghz_tx_tc_flag = 1;
-		__HAL_TIM_ENABLE_IT(&timerhdl_subghz_tx, TIM_IT_UPDATE);
-	}
+	MODIFY_REG(hdma_subghz_tx.Instance->CBR1, DMA_CBR1_BNDT, (subghz_decenc_ctl.ntx_raw_len & DMA_CBR1_BNDT));
+	/* Clear all interrupt flags */
+	__HAL_DMA_CLEAR_FLAG(&hdma_subghz_tx, DMA_FLAG_TC | DMA_FLAG_HT | DMA_FLAG_DTE
+						| DMA_FLAG_ULE | DMA_FLAG_USE | DMA_FLAG_SUSP | DMA_FLAG_TO);
+	// Configure DMA channel source address
+	hdma_subghz_tx.Instance->CSAR = subghz_decenc_ctl.ntx_raw_src;
+	// Configure DMA channel destination address
+	hdma_subghz_tx.Instance->CDAR = subghz_decenc_ctl.ntx_raw_dest;
 
-	// Update polarity tracking for next buffer
-	subghz_tx_start_high ^= (len & 1);
+	/* Enable common interrupts: Transfer Complete and Transfer Errors ITs */
+	__HAL_DMA_ENABLE(&hdma_subghz_tx);
 
-	// Restart the timer
-	__HAL_TIM_MOE_ENABLE(&timerhdl_subghz_tx);
+	timerhdl_subghz_tx.Instance->CCR4 = 0; // initial value
+
+	// Generate Update Event (set UG bit) to reload the DMA source data[0] to the ARR register
+	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
+	// Do it again to reload the DMA source data[1] to the ARR register, and reload the DMA source data[0] to the ARR shadow register
+	HAL_TIM_GenerateEvent(&timerhdl_subghz_tx, TIM_EVENTSOURCE_UPDATE);
+
+	// Start the timer
 	__HAL_TIM_ENABLE(&timerhdl_subghz_tx);
 } // static void sub_ghz_transmit_raw_restart(uint32_t source, uint32_t len)
 
@@ -4447,7 +4507,6 @@ static uint8_t sub_ghz_raw_replay_init(void)
 			ret_code = 1; // Change to common error code
 			break;
 		}
-		subghz_tx_start_high = 1; // Each replay starts with mark (HIGH)
 		sub_ghz_transmit_raw_restart((uint32_t)double_buffer_ptr[0], raw_samples_count);
 		if ( ret_code==SUB_GHZ_RAW_DATA_PARSER_READY ) // There're more samples to read?
 			ret_code = sub_ghz_parse_raw_data(1);

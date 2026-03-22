@@ -213,6 +213,55 @@ bool nfc_profile_save(const char *fp, PCNFC_RUN_CTX ctx)
 		}
 	}
 
+	// Save MIFARE Classic block dumps if available
+	if ((ctx->head.tech == NFC_TX_A) && (ctx->head.family == M1NFC_FAM_CLASSIC) &&
+		ctx->dump.has_dump && ctx->dump.data != NULL &&
+		ctx->dump.unit_size == 16 && ctx->dump.unit_count > 0)
+	{
+		uint32_t block_cnt = ctx->dump.unit_count;
+		const uint8_t *dump = ctx->dump.data;
+		const uint8_t *valid = ctx->dump.valid_bits;
+
+		/* Determine Classic type from block count */
+		const char *mfc_type = (block_cnt > 64) ? "4K" : "1K";
+		snprintf(line, sizeof(line), "Mifare Classic type: %s\r\n", mfc_type);
+		m1_fb_write_to_file(&nfc_file, line, strlen(line));
+		strcpy(line, "Data format version: 2\r\n");
+		m1_fb_write_to_file(&nfc_file, line, strlen(line));
+
+		for (uint32_t i = 0; i < block_cnt; i++)
+		{
+			uint8_t is_valid = 1;
+			if (valid != NULL)
+			{
+				uint32_t byte_idx = (i >> 3);
+				uint8_t  mask     = (1u << (i & 0x07));
+				if ((valid[byte_idx] & mask) == 0)
+					is_valid = 0;
+			}
+
+			const uint8_t *blk = &dump[i * 16];
+
+			if (is_valid)
+			{
+				int p = snprintf(line, sizeof(line), "Block %lu:", (unsigned long)i);
+				for (uint8_t b = 0; b < 16; b++)
+					p += snprintf(line + p, sizeof(line) - p, " %02X", blk[b]);
+				p += snprintf(line + p, sizeof(line) - p, "\r\n");
+				m1_fb_write_to_file(&nfc_file, line, strlen(line));
+			}
+			else
+			{
+				/* Write zeroed block for unreadable sectors (keep block numbering intact) */
+				int p = snprintf(line, sizeof(line), "Block %lu:", (unsigned long)i);
+				for (uint8_t b = 0; b < 16; b++)
+					p += snprintf(line + p, sizeof(line) - p, " 00");
+				p += snprintf(line + p, sizeof(line) - p, "\r\n");
+				m1_fb_write_to_file(&nfc_file, line, strlen(line));
+			}
+		}
+	}
+
 	m1_fb_close_file(&nfc_file);
 	return true;
 }
@@ -220,7 +269,7 @@ bool nfc_profile_save(const char *fp, PCNFC_RUN_CTX ctx)
 /*============================================================================*/
 /**
  * @brief Get filename from user and create full file path
- * 
+ *
  * Prompts user for filename using virtual keyboard, validates
  * SD card space, creates directory if needed, and checks for
  * duplicate filenames.

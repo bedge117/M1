@@ -206,6 +206,8 @@ static void rpc_handle_file_write_data(const S_RPC_Frame *f);
 static void rpc_handle_file_write_finish(const S_RPC_Frame *f);
 static void rpc_handle_file_delete(const S_RPC_Frame *f);
 static void rpc_handle_file_mkdir(const S_RPC_Frame *f);
+static void rpc_handle_sd_unmount(const S_RPC_Frame *f);
+static void rpc_handle_sd_mount(const S_RPC_Frame *f);
 static void rpc_handle_fw_info(const S_RPC_Frame *f);
 static void rpc_handle_fw_update_start(const S_RPC_Frame *f);
 static void rpc_handle_fw_update_data(const S_RPC_Frame *f);
@@ -556,6 +558,8 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
     case RPC_CMD_FILE_WRITE_FINISH:
     case RPC_CMD_FILE_DELETE:
     case RPC_CMD_FILE_MKDIR:
+    case RPC_CMD_SD_UNMOUNT:
+    case RPC_CMD_SD_MOUNT:
         if (s_deferred_pending)
         {
             m1_rpc_send_nack(frame->seq, RPC_ERR_BUSY);
@@ -1366,6 +1370,42 @@ static void rpc_handle_file_mkdir(const S_RPC_Frame *f)
     }
 
     m1_rpc_send_ack(f->seq);
+}
+
+
+/**
+ * @brief  Handle SD_UNMOUNT — unmount SD card from FatFs so USB MSC can access it.
+ */
+static void rpc_handle_sd_unmount(const S_RPC_Frame *f)
+{
+    S_M1_SDCard_Access_Status st = m1_sdcard_get_status();
+    if (st != SD_access_OK && st != SD_access_NoFS)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_SD_NOT_READY);
+        return;
+    }
+
+    m1_sdcard_unmount();
+    m1_rpc_send_ack(f->seq);
+}
+
+
+/**
+ * @brief  Handle SD_MOUNT — re-mount SD card to FatFs for device use.
+ */
+static void rpc_handle_sd_mount(const S_RPC_Frame *f)
+{
+    m1_sdcard_mount();
+
+    S_M1_SDCard_Access_Status st = m1_sdcard_get_status();
+    if (st == SD_access_OK || st == SD_access_NoFS)
+    {
+        m1_rpc_send_ack(f->seq);
+    }
+    else
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_SD_NOT_READY);
+    }
 }
 
 
@@ -2335,6 +2375,8 @@ void m1_rpc_task(void *param)
             case RPC_CMD_FILE_WRITE_FINISH: rpc_handle_file_write_finish(&frame); break;
             case RPC_CMD_FILE_DELETE:       rpc_handle_file_delete(&frame);       break;
             case RPC_CMD_FILE_MKDIR:        rpc_handle_file_mkdir(&frame);        break;
+            case RPC_CMD_SD_UNMOUNT:        rpc_handle_sd_unmount(&frame);        break;
+            case RPC_CMD_SD_MOUNT:          rpc_handle_sd_mount(&frame);          break;
             case RPC_CMD_CLI_EXEC:          rpc_handle_cli_exec(&frame);          break;
             case RPC_CMD_ESP_UPDATE_START:  rpc_handle_esp_update_start(&frame);  break;
             case RPC_CMD_ESP_UPDATE_FINISH: rpc_handle_esp_update_finish(&frame); break;

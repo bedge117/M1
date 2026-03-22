@@ -171,9 +171,24 @@ S_M1_Menu_t menu_NFC_Read =
     "Read", nfc_read, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
+S_M1_Menu_t menu_NFC_Detect_Reader =
+{
+    "Detect Reader", nfc_detect_reader, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 S_M1_Menu_t menu_NFC_Saved =
 {
     "Saved", nfc_saved, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_NFC_Extra_Actions =
+{
+    "Extra Actions", nfc_extra_actions, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_NFC_Add_Manually =
+{
+    "Add Manually", nfc_add_manually, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_NFC_Tools =
@@ -181,24 +196,11 @@ S_M1_Menu_t menu_NFC_Tools =
     "Tools", nfc_tools, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
-#ifdef M1_APP_FILE_IMPORT_ENABLE
-S_M1_Menu_t menu_NFC_Import =
-{
-    "Import .nfc", nfc_import_flipper, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
 S_M1_Menu_t menu_NFC =
 {
-    "NFC", &menu_nfc_init, menu_nfc_deinit, NULL, 4, 0, menu_m1_icon_nfc, NULL,
-    {&menu_NFC_Read, &menu_NFC_Saved, &menu_NFC_Import, &menu_NFC_Tools }
+    "NFC", &menu_nfc_init, menu_nfc_deinit, NULL, 6, 0, menu_m1_icon_nfc, NULL,
+    {&menu_NFC_Read, &menu_NFC_Detect_Reader, &menu_NFC_Saved, &menu_NFC_Extra_Actions, &menu_NFC_Add_Manually, &menu_NFC_Tools }
 };
-#else
-S_M1_Menu_t menu_NFC =
-{
-    "NFC", &menu_nfc_init, menu_nfc_deinit, NULL, 3, 0, menu_m1_icon_nfc, NULL,
-    {&menu_NFC_Read, &menu_NFC_Saved, &menu_NFC_Tools }
-};
-#endif
 
 /*----------------------------- > Infrared -----------------------------------*/
 

@@ -69,8 +69,26 @@ void ListenerRequestStop(void);
 
 /**
  * @brief ListenerGetLastRx - Get last received data
- * 
+ *
  * @param[out] lenBits Pointer to store received length in bits
  * @retval Pointer to last received data buffer, or NULL if no data
  */
 const uint8_t* ListenerGetLastRx(uint16_t *lenBits);
+
+
+/* --- MFKey32 nonce capture for Detect Reader feature --- */
+
+#define MFKEY_MAX_SAMPLES 8
+
+typedef struct {
+    uint32_t uid;
+    uint32_t nt;
+    uint32_t nr;       /* encrypted nR */
+    uint32_t ar;       /* encrypted aR */
+    uint8_t  keyType;  /* 0x60 = Key A, 0x61 = Key B */
+    uint8_t  sector;
+} mfkey_sample_t;
+
+extern volatile uint8_t  mfkey_sample_count;
+extern mfkey_sample_t    mfkey_samples[MFKEY_MAX_SAMPLES];
+extern volatile bool     mfkey_capture_enabled;

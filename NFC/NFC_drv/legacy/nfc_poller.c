@@ -1475,3 +1475,33 @@ static void m1_st25tb_read(const rfalNfcDevice *dev)
         platformLog("[ST25TB] dump done: %u blocks\r\n", maxSeen + 1);
     }
 }
+
+
+/*============================================================================*/
+/* Extern wrapper functions — expose static helpers for use by m1_nfc.c       */
+/*============================================================================*/
+
+bool nfc_poller_is_classic_sak(uint8_t sak)
+{
+    return mfc_is_classic_sak(sak);
+}
+
+void nfc_poller_read_mfc(const rfalNfcDevice *dev)
+{
+    m1_read_mifareclassic(dev);
+}
+
+void nfc_poller_read_t2t(const rfalNfcDevice *dev)
+{
+    m1_t2t_read_ntag(dev);
+}
+
+ReturnCode nfc_poller_pwd_auth(const uint8_t pwd[4], uint8_t pack[2])
+{
+    return PwdAuth_Ntag(pwd, pack);
+}
+
+ReturnCode nfc_poller_get_version(uint8_t *rxBuf, uint16_t rxBufLen, uint16_t *rcvLen)
+{
+    return GetVersion_Ntag(rxBuf, rxBufLen, rcvLen);
+}

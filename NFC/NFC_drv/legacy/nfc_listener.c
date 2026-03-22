@@ -78,6 +78,11 @@
 
 uint8_t g_T2tCmd;
 
+/* --- MFKey32 nonce capture globals --- */
+volatile uint8_t  mfkey_sample_count   = 0;
+mfkey_sample_t    mfkey_samples[MFKEY_MAX_SAMPLES];
+volatile bool     mfkey_capture_enabled = false;
+
 /*
  ******************************************************************************
  * LOCAL VARIABLES
@@ -428,7 +433,10 @@ static void ceT2TDirectLoop(const uint8_t *firstCmd, uint16_t firstCmdLen)
                 break;
             }
 
-            case 0x1B: {  /* PWD_AUTH → return PACK */
+            case 0x1B: {  /* PWD_AUTH → capture password, return PACK */
+                if (cmdLen >= 5) { /* cmd(1) + pwd(4) */
+                    nfc_ctx_set_captured_pwd(&cmd[1]);
+                }
                 uint8_t pg[4];
                 g_ceTxBuf[0] = 0x00;
                 g_ceTxBuf[1] = 0x00;
@@ -545,6 +553,10 @@ static uint16_t ceMfc_CrcA(const uint8_t *buf, uint16_t len)
     return crc;
 }
 
+/* Tracking variables for mfkey capture (last AUTH cmd and block) */
+static uint8_t s_mfcLastAuthCmd  = 0;
+static uint8_t s_mfcLastAuthBlk  = 0;
+
 /*============================================================================*/
 /* CeHandleMfcCmdRx — Handle MIFARE Classic command in CE mode               */
 /*                                                                            */
@@ -604,6 +616,8 @@ static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
             return false;
         }
 
+        s_mfcLastAuthCmd = cmd;
+        s_mfcLastAuthBlk = blockNo;
         s_mfcCe.phase = MFC_CE_SENT_NT;
 
         /* RX re-arm happens in ceDirectRx when listener loop calls us next,
@@ -625,15 +639,30 @@ static bool CeHandleMfcCmdRx(const uint8_t *rx, uint16_t rxBits)
             return false;
         }
 
-        /* Decrypt nR: keystream = crypto1_word(enR, is_encrypted=1) */
+        /* Extract encrypted {nR, aR} before cipher processes them */
         uint32_t enR = ((uint32_t)rx[0] << 24) | ((uint32_t)rx[1] << 16) |
                        ((uint32_t)rx[2] << 8)  | (uint32_t)rx[3];
+        uint32_t eaR = ((uint32_t)rx[4] << 24) | ((uint32_t)rx[5] << 16) |
+                       ((uint32_t)rx[6] << 8)  | (uint32_t)rx[7];
+
+        /* --- MFKey32 nonce capture (before cipher state is modified) --- */
+        if (mfkey_capture_enabled && mfkey_sample_count < MFKEY_MAX_SAMPLES) {
+            mfkey_samples[mfkey_sample_count].uid     = s_mfcCe.uid32;
+            mfkey_samples[mfkey_sample_count].nt      = s_mfcCe.nT;
+            mfkey_samples[mfkey_sample_count].nr      = enR;
+            mfkey_samples[mfkey_sample_count].ar      = eaR;
+            mfkey_samples[mfkey_sample_count].keyType  = s_mfcLastAuthCmd;
+            mfkey_samples[mfkey_sample_count].sector   = ceMfc_SectorOfBlock(s_mfcLastAuthBlk);
+            mfkey_sample_count++;
+            platformLog("[MFKEY] captured nonce #%u: sector=%u keyType=%02X\r\n",
+                        mfkey_sample_count, ceMfc_SectorOfBlock(s_mfcLastAuthBlk), s_mfcLastAuthCmd);
+        }
+
+        /* Decrypt nR: keystream = crypto1_word(enR, is_encrypted=1) */
         uint32_t ks1 = crypto1_word(&s_mfcCe.cs, enR, 1);
         (void)ks1; /* nR = enR ^ ks1, but we don't need nR itself */
 
         /* Decrypt aR */
-        uint32_t eaR = ((uint32_t)rx[4] << 24) | ((uint32_t)rx[5] << 16) |
-                       ((uint32_t)rx[6] << 8)  | (uint32_t)rx[7];
         uint32_t ks2 = crypto1_word(&s_mfcCe.cs, 0, 0);
         uint32_t aR  = eaR ^ ks2;
 
@@ -1045,7 +1074,11 @@ static bool CeHandleT2TCmdRx(const uint8_t *rx, uint16_t rxBits)
         }
 
         case 0x1B: {
-            /* PWD_AUTH: return 2-byte PACK from page 134 */
+            /* PWD_AUTH: reader sends 4-byte password, we return 2-byte PACK */
+            /* Capture the password the reader sent us */
+            if (rxBytes >= 6) { /* cmd(1) + addr/pad(1) + pwd(4) */
+                nfc_ctx_set_captured_pwd(&rx[1]);
+            }
             uint8_t pageBuf[4];
             g_ceTxBuf[0] = 0x00;
             g_ceTxBuf[1] = 0x00;
