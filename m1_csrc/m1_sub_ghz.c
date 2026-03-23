@@ -397,6 +397,7 @@ static uint32_t sdcard_dat_file_size, sdcard_dat_buffer_end_pos;
 uint8_t subghz_tx_tc_flag;
 static uint8_t subghz_tx_start_high = 1; // 1 = next buffer starts HIGH (mark), 0 = LOW (space)
 uint8_t subghz_record_mode_flag = 0;
+static uint32_t subghz_record_total_samples = 0;  /* Total samples saved to file during recording */
 static uint8_t subghz_uiview_gui_latest_param;
 static uint8_t subghz_replay_ret_code;
 static uint8_t subghz_replay_mod;
@@ -954,28 +955,34 @@ static void subghz_record_gui_update(uint8_t param)
 		}
 
 		case SUBGHZ_RECORD_DISPLAY_PARAM_ACTIVE:
+		{
+			char status_str[40];
+
 			// Clear the CHANGE option at the top right
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
 			u8g2_DrawBox(&m1_u8g2, 65, 0, 63, 10); // Clear existing content
+
+			// Clear middle area for fresh content
+			u8g2_DrawBox(&m1_u8g2, 0, 18, 128, 32);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+			u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
 
 			/* Show decoded protocol info if available */
 			if (subghz_record_has_decoded)
 			{
-				char dec_str[40];
-				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
-				u8g2_DrawBox(&m1_u8g2, 0, 18, 128, 32); // Clear middle area
-				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-				u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
 				u8g2_DrawStr(&m1_u8g2, 2, 28, protocol_text[subghz_record_last_decoded.protocol]);
-				snprintf(dec_str, sizeof(dec_str), "0x%lX %dbit",
+				snprintf(status_str, sizeof(status_str), "0x%lX %dbit",
 				         (uint32_t)subghz_record_last_decoded.key,
 				         subghz_record_last_decoded.bit_len);
-				u8g2_DrawStr(&m1_u8g2, 2, 38, dec_str);
-				snprintf(dec_str, sizeof(dec_str), "%ddBm TE:%d",
+				u8g2_DrawStr(&m1_u8g2, 2, 38, status_str);
+				snprintf(status_str, sizeof(status_str), "%ddBm TE:%d",
 				         subghz_record_last_decoded.rssi,
 				         subghz_record_last_decoded.te);
-				u8g2_DrawStr(&m1_u8g2, 2, 48, dec_str);
+				u8g2_DrawStr(&m1_u8g2, 2, 48, status_str);
+			}
+			else
+			{
+				u8g2_DrawStr(&m1_u8g2, 2, 34, "Recording...");
 			}
 
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
@@ -985,27 +992,39 @@ static void subghz_record_gui_update(uint8_t param)
 			u8g2_DrawXBMP(&m1_u8g2, 84, 52, 10, 10, target_10x10); // draw TARGET icon
 			u8g2_DrawStr(&m1_u8g2, 96, 61, "Stop ");
 			break;
+		}
 
 		case SUBGHZ_RECORD_DISPLAY_PARAM_COMPLETE:
+			/* Clear middle area — remove stale "Recording..." text */
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+			u8g2_DrawBox(&m1_u8g2, 0, 18, 128, 32);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-			u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12); // Draw an inverted bar at the bottom to display options
-			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // Write text in inverted color
-			u8g2_DrawXBMP(&m1_u8g2, 84, 52, 10, 10, target_10x10); // draw TARGET icon
+			u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+			u8g2_DrawStr(&m1_u8g2, 2, 34, "Recording complete");
+
+			u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+			u8g2_DrawXBMP(&m1_u8g2, 84, 52, 10, 10, target_10x10);
 			u8g2_DrawStr(&m1_u8g2, 96, 61, "Play ");
 
-			u8g2_DrawXBMP(&m1_u8g2, 1, 53, 8, 8, arrowleft_8x8); // draw arrowleft icon
+			u8g2_DrawXBMP(&m1_u8g2, 1, 53, 8, 8, arrowleft_8x8);
 			u8g2_DrawStr(&m1_u8g2, 11, 61, "Reset");
 
-			u8g2_DrawXBMP(&m1_u8g2, 48, 53, 8, 8, arrowdown_8x8); // draw arrowdown icon
+			u8g2_DrawXBMP(&m1_u8g2, 48, 53, 8, 8, arrowdown_8x8);
 			u8g2_DrawStr(&m1_u8g2, 58, 61, "Save");
 			break;
 
 		case SUBGHZ_RECORD_DISPLAY_PARAM_PLAY:
+			/* Clear middle area */
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+			u8g2_DrawBox(&m1_u8g2, 0, 18, 128, 32);
 			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-			u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12); // Draw an inverted bar at the bottom to display options
+			u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+			u8g2_DrawStr(&m1_u8g2, 2, 34, "Transmitting...");
 
-			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // Write text in inverted color
-			u8g2_DrawXBMP(&m1_u8g2, 2, 52, 10, 10, target_10x10); // draw TARGET icon
+			u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12);
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+			u8g2_DrawXBMP(&m1_u8g2, 2, 52, 10, 10, target_10x10);
 			u8g2_DrawStr(&m1_u8g2, 14, 61, "Press OK to replay");
 			break;
 
@@ -1084,8 +1103,12 @@ static int subghz_record_gui_message(void)
 			if ( rcv_samples >= SUBGHZ_RAW_DATA_SAMPLES_TO_RW )
 			{
 				M1_LOG_N(M1_LOGDB_TAG, "Raw samples %d\r\n", rcv_samples);
+				subghz_record_total_samples += rcv_samples;
 				sub_ghz_rx_raw_save(false, false);
 				vTaskDelay(10); // Give the system some time in case RF noise is flooding the receiver
+
+				/* Update display only when real data is flushed to file */
+				m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_ACTIVE);
 			} // if ( rcv_samples >= SUBGHZ_RAW_DATA_SAMPLES_TO_RW )
 
 			/* Check if the protocol decoder recognized a signal */
@@ -1097,6 +1120,7 @@ static int subghz_record_gui_message(void)
 					subghz_record_last_decoded = dec;
 					subghz_record_has_decoded = true;
 					m1_buzzer_notification();
+					/* Only refresh display when protocol is actually decoded */
 					m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_ACTIVE);
 				}
 			}
@@ -1198,6 +1222,7 @@ static int subghz_record_kp_handler(void)
 				{
 					last_data_saved = false;
 					subghz_record_has_decoded = false;
+					subghz_record_total_samples = 0;
 					m1_sdm_task_init();
 					m1_sdm_task_start();
 					sub_ghz_rx_raw_save(true, false);
@@ -1364,6 +1389,7 @@ static int subghz_record_kp_handler(void)
 				}
 
 				subghz_record_has_decoded = false;
+				subghz_record_total_samples = 0;
 				m1_uiView_display_update(SUBGHZ_RECORD_DISPLAY_PARAM_READY);
 			} // if ( subghz_uiview_gui_latest_param==SUBGHZ_RECORD_DISPLAY_PARAM_COMPLETE )
 		} // else if(this_button_status.event[BUTTON_DOWN_KP_ID]==BUTTON_EVENT_CLICK )

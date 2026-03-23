@@ -21,10 +21,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME M1_v0800_C3.8)
+set(CMAKE_PROJECT_NAME M1_v0800_C3.9)
 
 # C3 fork revision — must match M1_C3_REVISION in m1_fw_update_bl.h
-set(M1_C3_REVISION 8)
+set(M1_C3_REVISION 9)
 
 # Include toolchain file
 include("cmake/gcc-arm-none-eabi.cmake")

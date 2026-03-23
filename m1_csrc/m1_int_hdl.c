@@ -726,10 +726,6 @@ void TIM1_CC_IRQHandler(void)
 		q_item.q_data.ir_rx_data.ir_edge_dir = PULSE_DET_RISING; // edge: '1' for Rising  or '0' for falling edge
 	} // else
 
-	/* Feed pulse to protocol decoder */
-	if (subghz_decenc_ctl.subghz_pulse_handler)
-		subghz_decenc_ctl.subghz_pulse_handler(cap_val);
-
 	send_to_q = 1;
 	if ( subghz_record_mode_flag )
 	{
