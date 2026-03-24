@@ -39,4 +39,17 @@ uint32_t m1_crypto_encrypt(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_si
  * Returns plaintext length, or 0 on error */
 uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len);
 
+/* Encrypt data in-place with AES-256-CBC + PKCS7 padding using a provided key
+ * Input: plaintext in buf, plaintext_len bytes, and 32-byte key
+ * Output: [IV (16 bytes)] + [ciphertext with PKCS7 padding] in buf
+ * buf must have room for: 16 + ((plaintext_len / 16) + 1) * 16 bytes
+ * Returns total output length, or 0 on error */
+uint32_t m1_crypto_encrypt_with_key(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_size, const uint8_t *key);
+
+/* Decrypt data in-place using a provided key
+ * Input: [IV (16 bytes)] + [ciphertext] in buf, total_len bytes, and 32-byte key
+ * Output: plaintext in buf (overwriting IV area)
+ * Returns plaintext length, or 0 on error */
+uint32_t m1_crypto_decrypt_with_key(uint8_t *buf, uint32_t total_len, const uint8_t *key);
+
 #endif /* M1_CRYPTO_H_ */

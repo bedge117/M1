@@ -167,6 +167,7 @@ void m1_info_box_display_init(bool high_box);
 void m1_info_box_display_clear(void);
 void m1_info_box_display_draw(uint8_t box_row, const uint8_t *ptext);
 uint8_t m1_message_box(u8g2_t *u8g2, const char *title1, const char *title2, const char *title3, const char *buttons);
+uint8_t m1_message_box_choice(u8g2_t *u8g2, const char *title1, const char *title2, const char *title3, const char *buttons);
 void m1_draw_bottom_bar(u8g2_t *u8g2, const uint8_t *lbitmap, const char *ltext, const char *rtext, const uint8_t *rbitmap);
 void m1_draw_icon(uint8_t color, u8g2_uint_t x, u8g2_uint_t y, u8g2_uint_t w, u8g2_uint_t h, const uint8_t *bitmap);
 void m1_draw_text(u8g2_t *u8g2,

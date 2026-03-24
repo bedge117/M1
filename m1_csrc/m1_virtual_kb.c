@@ -355,6 +355,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 	S_M1_VKB_Func_Key_ID x_key_id;
 	char key[2], filename[M1_VIRTUAL_KB_FILENAME_MAX + 1];
 
+	memset(filename, 0, sizeof(filename));
 	key[1] = 0x00;
     /* Graphic work starts here */
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
@@ -363,15 +364,9 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
     {
 		u8g2_SetFont(&m1_u8g2, M1_VIRTUAL_KB_FONT_N);
 		// Display the description if not null
-		len = strlen(description);
-		if ( len )
+		if ( strlen(description) )
 		{
-			strncpy(filename, description, M1_VIRTUAL_KB_FILENAME_MAX);
-			if ( len >= M1_VIRTUAL_KB_FILENAME_MAX )
-			{
-				filename[M1_VIRTUAL_KB_FILENAME_MAX] = 0x00;
-			}
-			u8g2_DrawStr(&m1_u8g2, M1_VKB_DESCRIPTION_POS_X, M1_VKB_DESCRIPTION_POS_Y, filename);
+			u8g2_DrawStr(&m1_u8g2, M1_VKB_DESCRIPTION_POS_X, M1_VKB_DESCRIPTION_POS_Y, description);
 		} // if ( len )
 
 		// Draw frame for the filename
