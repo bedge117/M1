@@ -226,6 +226,13 @@ void m1_app_api_init(void)
         { "HAL_GetTick",       (void *)HAL_GetTick },
         { "m1_hard_delay",     (void *)m1_hard_delay },
 
+        /* ===== Real-Time Clock (RTC) ===== */
+        { "m1_get_datetime",   (void *)m1_get_datetime },
+        { "m1_get_localtime",  (void *)m1_get_localtime },
+        { "m1_set_datetime",   (void *)m1_set_datetime },
+        { "wifi_sync_rtc",     (void *)wifi_sync_rtc },
+        { "wifi_scan_ap",      (void *)wifi_scan_ap },
+
         /* ===== Memory management ===== */
         { "m1app_malloc",      (void *)m1app_malloc },
         { "m1app_free",        (void *)m1app_free },
