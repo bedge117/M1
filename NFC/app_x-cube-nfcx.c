@@ -29,6 +29,7 @@
 #include "m1_nfc.h"
 #include "NFC_drv/legacy/nfc_poller.h"
 #include "NFC_drv/legacy/nfc_listener.h"
+#include "NFC_drv/legacy/picopass/picopass_listener.h"
 #include "uiView.h"                    // ← 추가: m1_app_send_q_message() 선언
 #include "st25r3916.h"                 // ← 추가: st25r3916Deinitialize() 선언
 #include "rfal_platform.h"
@@ -149,6 +150,38 @@ void NFC_Polling_DeInit(void)
 void NFC_Listening_DeInit(void)
 {
   //platformLog("NFC Listening DeInit\r\n");
+}
+
+/* ─── PicoPass Listener (NFC-V transparent mode emulation) ─── */
+
+void NFC_PicoPass_Listening_Init(void)
+{
+  platformLog("PicoPass Listening Init\r\n");
+
+  USR_INT_LINE.Line = USR_INT_LINE_NUM;
+  USR_INT_LINE.RisingCallback = st25r3916Isr;
+  (void)HAL_EXTI_GetHandle(&USR_INT_LINE, USR_INT_LINE.Line);
+  (void)HAL_EXTI_RegisterCallback(&USR_INT_LINE, HAL_EXTI_COMMON_CB_ID, USR_INT_LINE.RisingCallback);
+
+  HAL_GPIO_WritePin(EN_EXT_5V_GPIO_Port, EN_EXT_5V_Pin, GPIO_PIN_SET);
+
+  if (!picopass_listener_init()) {
+    platformLog("PicoPass Listener init failed\r\n");
+    isNFCDeviceOk = false;
+  } else {
+    isNFCDeviceOk = true;
+  }
+}
+
+void NFC_PicoPass_Listening_Process(void)
+{
+  picopass_listener_process();
+}
+
+void NFC_PicoPass_Listening_DeInit(void)
+{
+  picopass_listener_stop();
+  rfalNfcDeactivate(RFAL_NFC_DEACTIVATE_IDLE);
 }
 
 /**

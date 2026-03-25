@@ -123,7 +123,10 @@ bool nfc_profile_save(const char *fp, PCNFC_RUN_CTX ctx)
 		break;
 	case NFC_TX_B:  devtype = "ISO14443B";   break;
 	case NFC_TX_F:  devtype = "Felica";      break;
-	case NFC_TX_V:  devtype = "ISO15693";    break;
+	case NFC_TX_V:
+		if (ctx->head.family == M1NFC_FAM_ICLASS) devtype = "PicoPass";
+		else devtype = "ISO15693";
+		break;
 	default:        devtype = "NFC";         break;
 	}
 	snprintf(line, sizeof(line), "Device type: %s\r\n", devtype);

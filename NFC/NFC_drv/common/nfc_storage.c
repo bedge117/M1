@@ -229,6 +229,15 @@ static int parse_device_type(const char* s, nfc_family_info_t* out)
     }
 #endif
 
+#ifdef M1NFC_FAM_ICLASS
+    if (strncmp(s, "PicoPass", 8) == 0) {
+        out->tech      = M1NFC_TECH_V;
+        out->family    = M1NFC_FAM_ICLASS;
+        out->unit_size = 8;   /* PicoPass block = 8 bytes */
+        return 0;
+    }
+#endif
+
     return -1;
 }
 

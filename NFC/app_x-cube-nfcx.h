@@ -43,6 +43,10 @@ void NFC_Listening_Process(void);
 void NFC_Polling_DeInit(void);
 void NFC_Listening_DeInit(void);
 
+void NFC_PicoPass_Listening_Init(void);
+void NFC_PicoPass_Listening_Process(void);
+void NFC_PicoPass_Listening_DeInit(void);
+
 
 #ifdef __cplusplus
 }

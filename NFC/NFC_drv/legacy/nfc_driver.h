@@ -29,7 +29,8 @@ typedef struct S_M1_NfcFunc
 
 typedef enum {
     NFC_ROLE_POLLER = 0,
-    NFC_ROLE_LISTENER
+    NFC_ROLE_LISTENER,
+    NFC_ROLE_PICOPASS_LISTENER
 } NfcRole_e;
 
 

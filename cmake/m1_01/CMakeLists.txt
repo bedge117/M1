@@ -52,6 +52,7 @@ target_include_directories(m1_01 INTERFACE
     ../../NFC/NFC_drv
     ../../NFC/NFC_drv/common
     ../../NFC/NFC_drv/legacy
+    ../../NFC/NFC_drv/legacy/picopass
     ../../Battery
     ../../lfrfid
     ../../USB
@@ -307,6 +308,9 @@ target_sources(m1_01 INTERFACE
     ../../NFC/NFC_drv/legacy/nfc_listener.c
     ../../NFC/NFC_drv/legacy/nfc_poller.c
     ../../NFC/NFC_drv/legacy/mfc_crypto1.c
+    ../../NFC/NFC_drv/legacy/picopass/picopass_cipher.c
+    ../../NFC/NFC_drv/legacy/picopass/picopass_poller.c
+    ../../NFC/NFC_drv/legacy/picopass/picopass_listener.c
     ../../NFC/app_x-cube-nfcx.c
     ../../Sub_Ghz/datatypes_utils.c
     ../../Sub_Ghz/m1_sub_ghz_api.c

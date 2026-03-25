@@ -66,7 +66,8 @@
 #include "common/nfc_fileio.h"
 #include "logger.h"
 #include "mfc_crypto1.h"
-#include <stdio.h>  
+#include "picopass/picopass_poller.h"
+#include <stdio.h>
 
 #define NOTINIT              0     /*!< Demo State:  Not initialized        */
 #define START_DISCOVERY      1     /*!< Demo State:  Start Discovery        */
@@ -460,16 +461,57 @@ void ReadCycle(void)
                     break;
 
                 /*******************************************************************************/
-                case RFAL_NFC_LISTEN_TYPE_NFCV:   /* ISO15693 / NFC-V */
+                case RFAL_NFC_LISTEN_TYPE_NFCV:   /* ISO15693 / NFC-V — includes PicoPass/iCLASS */
                 {
                     uint8_t devUID[RFAL_NFCV_UID_LEN];
                     ST_MEMCPY(devUID, nfcDevice->nfcid, nfcDevice->nfcidLen);
                     REVERSE_BYTES(devUID, RFAL_NFCV_UID_LEN);  /* Reverse for display */
                     platformLog("ISO15693/NFC-V TAG found. UID=%s\r\n",
                                 hex2Str(devUID, RFAL_NFCV_UID_LEN));
+                    nfc_tx_type = NFC_TX_V;
+
+                    /* Try PicoPass / iCLASS first — it rides on ISO15693 PHY */
+                    {
+                        static PicopassData pp_data;
+                        PicopassReadResult pp_res = picopass_poller_read(nfcDevice, &pp_data);
+                        if (pp_res == PICOPASS_READ_OK || pp_res == PICOPASS_READ_ERR_AUTH) {
+                            /* It IS a PicoPass card */
+                            strcpy(NFC_Type, "PicoPass/iCLASS");
+                            SET_FAMILY("PicoPass");
+                            isNFCCardFound = true;
+
+                            /* Fill context for save/display */
+                            nfc_run_ctx_t *c = nfc_ctx_get();
+                            c->head.tech     = M1NFC_TECH_V;
+                            c->head.family   = M1NFC_FAM_ICLASS;
+                            c->head.uid_len  = 8;
+                            memcpy(c->head.uid, pp_data.csn, 8);
+
+                            /* Copy block data into dump buffer */
+                            memset(g_nfc_dump_buf, 0, NFC_DUMP_BUF_SIZE);
+                            memset(g_nfc_valid_bits, 0, NFC_VALID_BITS_SIZE);
+                            uint8_t num_blocks = pp_data.block_count;
+                            if (num_blocks > PICOPASS_MAX_APP_LIMIT)
+                                num_blocks = PICOPASS_MAX_APP_LIMIT;
+                            for (uint8_t i = 0; i < num_blocks; i++) {
+                                memcpy(&g_nfc_dump_buf[i * 8], pp_data.blocks[i].data, 8);
+                                g_nfc_valid_bits[i >> 3] |= (uint8_t)(1u << (i & 7));
+                            }
+                            nfc_ctx_set_dump(8, num_blocks, 0,
+                                             g_nfc_dump_buf, g_nfc_valid_bits,
+                                             (num_blocks > 0) ? num_blocks - 1 : 0, true);
+
+                            if (pp_res == PICOPASS_READ_ERR_AUTH) {
+                                platformLog("[PP] Card detected but auth failed — partial read\r\n");
+                            }
+                            notifyRead = true;
+                            break;
+                        }
+                    }
+
+                    /* Not PicoPass — fall through to standard NFC-V read */
                     strcpy(NFC_Type, "ISO15693/NFC-V");
                     SET_FAMILY("ISO15693");
-                    nfc_tx_type = NFC_TX_V;
 
                     /* Read NFC-V blocks */
                     m1_nfcv_read(nfcDevice);

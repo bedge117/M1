@@ -41,6 +41,8 @@
 #define M1NFC_FAM_CLASSIC        0
 #define M1NFC_FAM_ULTRALIGHT     1
 #define M1NFC_FAM_DESFIRE        2
+#define M1NFC_FAM_ICLASS         3
+#define M1NFC_FAM_15693          4
 
 #define M1NFC_TECH_A    0
 #define M1NFC_TECH_B    1

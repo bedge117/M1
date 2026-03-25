@@ -1002,10 +1002,20 @@ static void nfc_emulate_gui_create(uint8_t param)
 {
 	if(param==0)
 	{
-        nfc_ctx_sync_emu();//Current nfc_ctx.head content reflected in emulator context (g_emuA)
-        m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
-		m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_EMULATE);
-		osDelay(50);
+        nfc_run_ctx_t *pp_ctx = nfc_ctx_get();
+        if (pp_ctx && pp_ctx->head.family == M1NFC_FAM_ICLASS) {
+            /* PicoPass card — use NFC-V transparent mode listener */
+            m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+            (void)NFC_SwitchRole(NFC_ROLE_PICOPASS_LISTENER);
+            m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_EMULATE);
+            osDelay(50);
+        } else {
+            /* NFC-A card — standard listener */
+            nfc_ctx_sync_emu();
+            m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_M, LED_FASTBLINK_ONTIME_M);
+            m1_app_send_q_message(nfc_worker_q_hdl, Q_EVENT_NFC_START_EMULATE);
+            osDelay(50);
+        }
 	}
 
     m1_uiView_display_update(param);

@@ -70,6 +70,9 @@ static const char* family_to_title(uint8_t family)
 #ifdef M1NFC_FAM_15693
     if (family == M1NFC_FAM_15693)      return "ISO15693";
 #endif
+#ifdef M1NFC_FAM_ICLASS
+    if (family == M1NFC_FAM_ICLASS)     return "PicoPass";
+#endif
     return "NFC";
 }
 

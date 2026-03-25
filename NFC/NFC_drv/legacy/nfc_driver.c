@@ -178,6 +178,15 @@ static inline void apply_listener_role(void)
     s_currentRole            = NFC_ROLE_LISTENER;
 }
 
+static inline void apply_picopass_listener_role(void)
+{
+    NfcRole.nfc_init_func    = NFC_PicoPass_Listening_Init;
+    NfcRole.nfc_process_func = NFC_PicoPass_Listening_Process;
+    NfcRole.nfc_deinit_func  = NFC_PicoPass_Listening_DeInit;
+    NfcRole.tick_ms          = 0;
+    s_currentRole            = NFC_ROLE_PICOPASS_LISTENER;
+}
+
 /*============================================================================*/
 /**
  * @brief NFC_SetRole - Set NFC role (simple pointer replacement)
@@ -193,8 +202,9 @@ static inline void apply_listener_role(void)
 bool NFC_SetRole(NfcRole_e role)
 {
     switch (role) {
-        case NFC_ROLE_POLLER:   apply_poller_role();   return true;
-        case NFC_ROLE_LISTENER: apply_listener_role(); return true;
+        case NFC_ROLE_POLLER:              apply_poller_role();              return true;
+        case NFC_ROLE_LISTENER:            apply_listener_role();            return true;
+        case NFC_ROLE_PICOPASS_LISTENER:   apply_picopass_listener_role();   return true;
         default: return false;
     }
 }
