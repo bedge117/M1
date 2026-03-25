@@ -251,7 +251,8 @@ void infrared_universal_remotes(void)
 			if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 			{
 				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+				if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+				 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 				{
 					xQueueReset(main_q_hdl);
 					break;
@@ -290,7 +291,7 @@ void infrared_learn_new_remote(void)
 	u8g2_DrawXBMP(&m1_u8g2, 2, 2, 48, 25, remote_48x25);
 	u8g2_DrawStr(&m1_u8g2, 60, 20, "Reading...");
 	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
-	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", NULL, arrowleft_8x8);
+	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
 	m1_u8g2_nextpage();
 
 	while (1)
@@ -326,7 +327,7 @@ void infrared_learn_new_remote(void)
 #ifdef M1_APP_FILE_IMPORT_ENABLE
 				m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Save", arrowright_8x8);
 #else
-				m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", NULL, arrowleft_8x8);
+				m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
 #endif
 				m1_u8g2_nextpage();
 			}
@@ -335,17 +336,18 @@ void infrared_learn_new_remote(void)
 		{
 			ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
 
-			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
 				m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
 				infrared_decode_sys_deinit();
 				xQueueReset(main_q_hdl);
 				break;
 			}
-#ifdef M1_APP_FILE_IMPORT_ENABLE
 			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK ||
 			         this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
+#ifdef M1_APP_FILE_IMPORT_ENABLE
 				if (new_remote_learned)
 				{
 					/* Save the learned signal as a .ir file */
@@ -378,11 +380,19 @@ void infrared_learn_new_remote(void)
 					u8g2_DrawXBMP(&m1_u8g2, 2, 2, 48, 25, remote_48x25);
 					u8g2_DrawStr(&m1_u8g2, 60, 20, "Reading...");
 					u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
-					m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", NULL, arrowleft_8x8);
+					m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
 					m1_u8g2_nextpage();
 				}
-			}
+				else
 #endif /* M1_APP_FILE_IMPORT_ENABLE */
+				{
+					/* No signal captured — OK exits like Back */
+					m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
+					infrared_decode_sys_deinit();
+					xQueueReset(main_q_hdl);
+					break;
+				}
+			}
 		}
 	}
 } // void infrared_learn_new_remote(void)
@@ -398,20 +408,19 @@ void infrared_learn_new_remote(void)
 /*============================================================================*/
 void infrared_saved_remotes(void)
 {
+#ifdef M1_APP_FILE_IMPORT_ENABLE
+	/* Use the Universal Remote infrastructure to browse saved .ir files.
+	 * This replaces the broken inline replay that only worked if a remote
+	 * was learned in the current session. */
+	ir_universal_init();
+	ir_universal_run();
+	ir_universal_deinit();
+	return;
+#else
 	S_M1_Buttons_Status this_button_status;
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
 	uint8_t ir_tx_complete, ir_data[20];
-
-	// m1_gui_let_update_fw();
-
-	/* Graphic work starts here */
-	u8g2_FirstPage(&m1_u8g2);
-	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-	u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
-	u8g2_DrawXBMP(&m1_u8g2, 2, 2, 48, 25, remote_48x25);
-	u8g2_DrawStr(&m1_u8g2, 60, 20, "Sending...");
-	m1_u8g2_nextpage(); // Update display RAM
 
 	if (new_remote_learned)
 	{
@@ -420,11 +429,7 @@ void infrared_saved_remotes(void)
     }
 	else
 	{
-		return;
-		irmp_data.protocol = IRMP_NEC_PROTOCOL;//IRMP_RC5_PROTOCOL;//IRMP_NEC_PROTOCOL; // use NEC protocol
-		irmp_data.address  = 0xFD02; // set address to 0x00FF
-		irmp_data.command  = 0x005C; // set command to 0x0001
-		irmp_data.flags    = 1; // don't repeat frame
+		return;  /* No learned remote and no file import — nothing to replay */
     }
 
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
@@ -462,7 +467,8 @@ void infrared_saved_remotes(void)
 				// Notification is only sent to this task when there's any button activity,
 				// so it doesn't need to wait when reading the event from the queue
 				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK ) // user wants to exit?
+				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK
+				  || this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK ) // user wants to exit?
 				{
 					m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF); // Turn off
 
@@ -477,7 +483,8 @@ void infrared_saved_remotes(void)
 					xQueueReset(main_q_hdl); // Reset main q before return
 					break; // Exit and return to the calling task (subfunc_handler_task)
 				} // if ( m1_buttons_status[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
-				else if (this_button_status.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK)
+				else if (this_button_status.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK
+				      || this_button_status.event[BUTTON_RIGHT_KP_ID]==BUTTON_EVENT_CLICK)
 				{
 					; // Re-Send
 					if ( !ir_tx_complete )
@@ -502,7 +509,7 @@ void infrared_saved_remotes(void)
 			}
 		} // if (ret==pdTRUE)
 	} // while (1 ) // Main loop of this task
-
+#endif /* !M1_APP_FILE_IMPORT_ENABLE */
 } // void infrared_saved_remotes(void)
 
 

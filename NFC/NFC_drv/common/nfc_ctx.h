@@ -326,4 +326,58 @@ uint8_t nfc_ctx_get_t2t_version(uint8_t out[8]);
 void nfc_ctx_set_t2t_page(uint16_t page, const uint8_t data[4]);
 
 
+/* --------- Password Auth helpers (Unlock with Password) ---------- */
+
+/** Password source */
+typedef enum {
+    NFC_PWD_SRC_NONE = 0,
+    NFC_PWD_SRC_MANUAL,     /**< User-entered via keyboard */
+    NFC_PWD_SRC_CAPTURED    /**< Captured from reader during emulation */
+} nfc_pwd_source_t;
+
+/**
+ * @brief Set manual password for next tag read
+ * @param[in] pwd 4-byte password
+ */
+void nfc_ctx_set_manual_pwd(const uint8_t pwd[4]);
+
+/**
+ * @brief Get manual password if set
+ * @param[out] pwd_out 4-byte output buffer
+ * @retval true Password available
+ */
+bool nfc_ctx_get_manual_pwd(uint8_t pwd_out[4]);
+
+/**
+ * @brief Clear manual password
+ */
+void nfc_ctx_clear_manual_pwd(void);
+
+/**
+ * @brief Set captured password (from reader during emulation)
+ * @param[in] pwd 4-byte password
+ */
+void nfc_ctx_set_captured_pwd(const uint8_t pwd[4]);
+
+/**
+ * @brief Get captured password if available
+ * @param[out] pwd_out 4-byte output buffer
+ * @retval true Password available
+ */
+bool nfc_ctx_get_captured_pwd(uint8_t pwd_out[4]);
+
+/**
+ * @brief Clear captured password
+ */
+void nfc_ctx_clear_captured_pwd(void);
+
+/**
+ * @brief Check if any password is available (manual or captured)
+ * @param[out] pwd_out 4-byte output buffer (manual takes priority)
+ * @param[out] source  Source of the password (optional, NULL ok)
+ * @retval true Password available
+ */
+bool nfc_ctx_get_best_pwd(uint8_t pwd_out[4], nfc_pwd_source_t *source);
+
+
 #endif /* NFC_DRV_NFC_CTX_H_ */

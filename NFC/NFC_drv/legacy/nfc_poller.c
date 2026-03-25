@@ -146,6 +146,8 @@ static void PollerNotif( rfalNfcState st );
 static void m1_t2t_read_ntag(const rfalNfcDevice *dev);
 static ReturnCode GetVersion_Ntag(uint8_t *rxBuf, uint16_t rxBufLen, uint16_t *rcvLen);
 static uint16_t LogParsedNtagVersion(const uint8_t *version, uint16_t len);
+static ReturnCode PwdAuth_Ntag(const uint8_t pwd[4], uint8_t pack[2]);
+static bool ntag_generate_amiibo_pwd(const uint8_t *uid, uint8_t uid_len, uint8_t pwd_out[4], uint8_t pack_out[2]);
 
 /*------------------------------------------------------------------------------------------*/
 #define SET_FAMILY(fmt, ...)  do { snprintf(NFC_Family, sizeof(NFC_Family), fmt, ##__VA_ARGS__); } while(0)
@@ -757,6 +759,86 @@ static ReturnCode GetVersion_Ntag(uint8_t *rxBuf, uint16_t rxBufLen, uint16_t *r
     return rfalTransceiveBlockingTxRx(&cmd, 1U, rxBuf, rxBufLen, rcvLen, RFAL_TXRX_FLAGS_DEFAULT, rfalConvMsTo1fc(5U));
 }
 
+/*============================================================================*/
+/**
+ * @brief PwdAuth_Ntag - Send PWD_AUTH (0x1B) command to NTAG/Ultralight
+ *
+ * Sends a 4-byte password to authenticate with a password-protected NTAG.
+ * On success, the tag returns a 2-byte PACK (Password ACKnowledge).
+ * After successful auth, protected pages become readable.
+ *
+ * @param[in]  pwd   4-byte password to send
+ * @param[out] pack  2-byte PACK response from tag (valid on success)
+ * @retval RFAL_ERR_NONE  Authentication successful
+ * @retval Other          RFAL error (NAK = wrong password, timeout, etc.)
+ */
+/*============================================================================*/
+static ReturnCode PwdAuth_Ntag(const uint8_t pwd[4], uint8_t pack[2])
+{
+    uint8_t  txBuf[5];
+    uint8_t  rxBuf[2];
+    uint16_t rcvLen = 0;
+
+    txBuf[0] = 0x1B;  /* PWD_AUTH command */
+    txBuf[1] = pwd[0];
+    txBuf[2] = pwd[1];
+    txBuf[3] = pwd[2];
+    txBuf[4] = pwd[3];
+
+    ReturnCode err = rfalTransceiveBlockingTxRx(
+        txBuf, sizeof(txBuf),
+        rxBuf, sizeof(rxBuf),
+        &rcvLen,
+        RFAL_TXRX_FLAGS_DEFAULT,
+        rfalConvMsTo1fc(20U));
+
+    if (err == RFAL_ERR_NONE && rcvLen >= 2 && pack != NULL) {
+        pack[0] = rxBuf[0];
+        pack[1] = rxBuf[1];
+    }
+
+    return err;
+}
+
+/*============================================================================*/
+/**
+ * @brief ntag_generate_amiibo_pwd - Generate Amiibo PWD_AUTH password from UID
+ *
+ * Derives the 4-byte password and 2-byte PACK for Amiibo (NTAG215) tags
+ * using the well-known XOR algorithm. Requires a 7-byte UID.
+ *
+ * Algorithm:
+ *   PWD[0] = 0xAA ^ UID[1] ^ UID[3]
+ *   PWD[1] = 0x55 ^ UID[2] ^ UID[4]
+ *   PWD[2] = 0xAA ^ UID[3] ^ UID[5]
+ *   PWD[3] = 0x55 ^ UID[4] ^ UID[6]
+ *   PACK   = 0x80, 0x80
+ *
+ * @param[in]  uid       7-byte UID from NTAG215
+ * @param[in]  uid_len   UID length (must be 7)
+ * @param[out] pwd_out   4-byte generated password
+ * @param[out] pack_out  2-byte expected PACK
+ * @retval true   Success
+ * @retval false  Invalid UID length
+ */
+/*============================================================================*/
+static bool ntag_generate_amiibo_pwd(const uint8_t *uid, uint8_t uid_len,
+                                     uint8_t pwd_out[4], uint8_t pack_out[2])
+{
+    if (!uid || uid_len != 7 || !pwd_out || !pack_out)
+        return false;
+
+    pwd_out[0] = 0xAA ^ uid[1] ^ uid[3];
+    pwd_out[1] = 0x55 ^ uid[2] ^ uid[4];
+    pwd_out[2] = 0xAA ^ uid[3] ^ uid[5];
+    pwd_out[3] = 0x55 ^ uid[4] ^ uid[6];
+
+    pack_out[0] = 0x80;
+    pack_out[1] = 0x80;
+
+    return true;
+}
+
 
 /*============================================================================*/
 /**
@@ -892,6 +974,50 @@ static void m1_t2t_read_ntag(const rfalNfcDevice *dev)
     }
 
 
+
+    /* --- PWD_AUTH: Unlock password-protected pages --- */
+    /* Priority: 1) Manual password (user-entered)
+     *           2) Captured password (sniffed from reader during emulation)
+     *           3) Auto-generated (Amiibo XOR derivation for NTAG215) */
+    {
+        uint8_t pwd[4], pack_rx[2] = {0, 0};
+        nfc_pwd_source_t pwd_src = NFC_PWD_SRC_NONE;
+        bool auth_attempted = false;
+
+        /* Try manual or captured password first */
+        if (nfc_ctx_get_best_pwd(pwd, &pwd_src)) {
+            const char *src_str = (pwd_src == NFC_PWD_SRC_MANUAL) ? "manual" : "captured";
+            platformLog("[T2T] PWD_AUTH (%s): pwd=%s\r\n", src_str, hex2Str(pwd, 4));
+            ReturnCode auth_err = PwdAuth_Ntag(pwd, pack_rx);
+            if (auth_err == RFAL_ERR_NONE) {
+                platformLog("[T2T] PWD_AUTH OK (%s): PACK=%02X %02X\r\n",
+                            src_str, pack_rx[0], pack_rx[1]);
+            } else {
+                platformLog("[T2T] PWD_AUTH failed (%s, err=%d)\r\n", src_str, auth_err);
+            }
+            auth_attempted = true;
+            /* Clear manual password after use (one-shot) */
+            if (pwd_src == NFC_PWD_SRC_MANUAL)
+                nfc_ctx_clear_manual_pwd();
+        }
+
+        /* If no manual/captured password, try Amiibo auto-auth for NTAG215 */
+        if (!auth_attempted && max_page == 135U && ver_ok && version[6] == 0x11) {
+            nfc_run_ctx_t* ctx = nfc_ctx_get();
+            if (ctx && ctx->head.uid_len == 7) {
+                uint8_t pack[2];
+                if (ntag_generate_amiibo_pwd(ctx->head.uid, ctx->head.uid_len, pwd, pack)) {
+                    platformLog("[T2T] Amiibo PWD_AUTH: pwd=%s\r\n", hex2Str(pwd, 4));
+                    ReturnCode auth_err = PwdAuth_Ntag(pwd, pack_rx);
+                    if (auth_err == RFAL_ERR_NONE) {
+                        platformLog("[T2T] PWD_AUTH OK: PACK=%02X %02X\r\n", pack_rx[0], pack_rx[1]);
+                    } else {
+                        platformLog("[T2T] PWD_AUTH failed (err=%d) — non-Amiibo or locked tag\r\n", auth_err);
+                    }
+                }
+            }
+        }
+    }
 
     // Read blocks 0 ~ N (T2T READ reads 4 blocks at a time, so increment by 4)
     for (uint8_t blk = 0; blk < max_page; blk += 4) {  // Read 4 blocks at a time
@@ -1390,4 +1516,34 @@ static void m1_st25tb_read(const rfalNfcDevice *dev)
                          maxSeen, true);
         platformLog("[ST25TB] dump done: %u blocks\r\n", maxSeen + 1);
     }
+}
+
+
+/*============================================================================*/
+/* Extern wrapper functions — expose static helpers for use by m1_nfc.c       */
+/*============================================================================*/
+
+bool nfc_poller_is_classic_sak(uint8_t sak)
+{
+    return mfc_is_classic_sak(sak);
+}
+
+void nfc_poller_read_mfc(const rfalNfcDevice *dev)
+{
+    m1_read_mifareclassic(dev);
+}
+
+void nfc_poller_read_t2t(const rfalNfcDevice *dev)
+{
+    m1_t2t_read_ntag(dev);
+}
+
+ReturnCode nfc_poller_pwd_auth(const uint8_t pwd[4], uint8_t pack[2])
+{
+    return PwdAuth_Ntag(pwd, pack);
+}
+
+ReturnCode nfc_poller_get_version(uint8_t *rxBuf, uint16_t rxBufLen, uint16_t *rcvLen)
+{
+    return GetVersion_Ntag(rxBuf, rxBufLen, rcvLen);
 }

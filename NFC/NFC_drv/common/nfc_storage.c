@@ -179,17 +179,42 @@ static int parse_device_type(const char* s, nfc_family_info_t* out)
         return 0;
     }
 
-    //if (strncmp(s, "Mifare Classic", 14) == 0) {
-    //    out->tech      = M1NFC_TECH_A;
-    //    out->family    = M1NFC_FAM_CLASSIC;
-    //    out->unit_size = 16;
-    //    return 0;
-    //}
+    /* Flipper format: "Mifare Classic 1K", "Mifare Classic 4K" */
+    if (strncmp(s, "Mifare Classic", 14) == 0) {
+        out->tech      = M1NFC_TECH_A;
+        out->family    = M1NFC_FAM_CLASSIC;
+        out->unit_size = 16;
+        return 0;
+    }
 
     if (strncmp(s, "Ultralight/NTAG", 15) == 0) {
         out->tech      = M1NFC_TECH_A;
         out->family    = M1NFC_FAM_ULTRALIGHT;
         out->unit_size = 4;   /* Type2 page */
+        return 0;
+    }
+
+    /* Flipper format: "NTAG215", "NTAG213", "NTAG216", "NTAG203" */
+    if (strncmp(s, "NTAG", 4) == 0) {
+        out->tech      = M1NFC_TECH_A;
+        out->family    = M1NFC_FAM_ULTRALIGHT;
+        out->unit_size = 4;
+        return 0;
+    }
+
+    /* Flipper format: "Mifare Ultralight", "Mifare Ultralight EV1 ..." */
+    if (strncmp(s, "Mifare Ultralight", 17) == 0) {
+        out->tech      = M1NFC_TECH_A;
+        out->family    = M1NFC_FAM_ULTRALIGHT;
+        out->unit_size = 4;
+        return 0;
+    }
+
+    /* Flipper format: "ISO14443-3A" — generic NFC-A, default to Ultralight */
+    if (strncmp(s, "ISO14443-3A", 11) == 0) {
+        out->tech      = M1NFC_TECH_A;
+        out->family    = M1NFC_FAM_ULTRALIGHT;
+        out->unit_size = 4;
         return 0;
     }
 
@@ -266,11 +291,25 @@ static nfc_storage_result_t nfc_storage_parse_header_ini(
 
     memset(faminfo, 0, sizeof(*faminfo));
 
-    /* 1) Validate Filetype and Version */
+    /* 1) Validate Filetype: accept both M1 and Flipper formats */
     data.buf = buf;
     data.max_len = sizeof(buf);
-    if (!isValidHeaderField(&data, "M1 NFC device", "4", file_path)) {
-        platformLog("Filetype/Version Parsing Fail\r\n");
+    data.type = VALUE_TYPE_STRING;
+    if (!GetPrivateProfileString(&data, "Filetype", file_path)) {
+        platformLog("Filetype not found\r\n");
+        return NFC_STORAGE_ERR_FORMAT;
+    }
+    if (strcmp(data.buf, "M1 NFC device") != 0 &&
+        strcmp(data.buf, "Flipper NFC device") != 0) {
+        platformLog("Unsupported Filetype: %s\r\n", (char*)data.buf);
+        return NFC_STORAGE_ERR_FORMAT;
+    }
+    /* Validate Version — accept any numeric version (2, 3, 4, ...) */
+    data.buf = buf;
+    data.max_len = sizeof(buf);
+    data.type = VALUE_TYPE_STRING;
+    if (!GetPrivateProfileString(&data, "Version", file_path)) {
+        platformLog("Version not found\r\n");
         return NFC_STORAGE_ERR_FORMAT;
     }
     saw_filetype = true;
@@ -284,7 +323,7 @@ static nfc_storage_result_t nfc_storage_parse_header_ini(
         return NFC_STORAGE_ERR_FORMAT;
     }
     if (parse_device_type(data.buf, faminfo) != 0) {
-        platformLog("Unsupported Device type: %s\r\n", data.buf);
+        platformLog("Unsupported Device type: %s\r\n", (char*)data.buf);
         return NFC_STORAGE_ERR_UNSUP;
     }
     c->head.tech   = faminfo->tech;
@@ -350,6 +389,18 @@ static nfc_storage_result_t nfc_storage_parse_header_ini(
         data.type = VALUE_TYPE_HEX_ARRAY;
         if (GetPrivateProfileHex(&data, "ATS", file_path) && data.v.hex.out_len > 0) {
             c->head.a.ats_len = (uint8_t)data.v.hex.out_len;
+        }
+    }
+
+    /* 7) Parse "Mifare version" (Flipper v2/v3 format: GET_VERSION bytes) */
+    if (faminfo->family == M1NFC_FAM_ULTRALIGHT) {
+        uint8_t ver_buf[8];
+        data.buf = ver_buf;
+        data.max_len = sizeof(ver_buf);
+        data.type = VALUE_TYPE_HEX_ARRAY;
+        if (GetPrivateProfileHex(&data, "Mifare version", file_path) && data.v.hex.out_len == 8) {
+            nfc_ctx_set_t2t_version(ver_buf, 8);
+            platformLog("[NFC] Mifare version from file: %s\r\n", hex2Str(ver_buf, 8));
         }
     }
 
@@ -580,6 +631,17 @@ nfc_storage_result_t nfc_storage_load_file(
     nfcfio_close(&c->parser.io);
 
     if (ret == NFC_STORAGE_OK) {
+        /* Fix PACK for NTAG215 amiibo: page 134 bytes 0-1 must be 0x80 0x80 */
+        if (c->head.family == M1NFC_FAM_ULTRALIGHT &&
+            c->dump.unit_size == 4 && c->dump.max_seen_unit >= 134 &&
+            dump_buf_bytes >= 135 * 4) {
+            uint8_t *pack_page = &dump_buf[134 * 4];
+            if (pack_page[0] == 0x00 && pack_page[1] == 0x00) {
+                pack_page[0] = 0x80;
+                pack_page[1] = 0x80;
+                platformLog("[NFC] Fixed PACK at page 134: 80 80\r\n");
+            }
+        }
         nfc_ctx_refresh_ui();
         c->file.sys_error = 0;
     } else {
@@ -587,4 +649,155 @@ nfc_storage_result_t nfc_storage_load_file(
     }
 
     return ret;
-}        
+}
+
+
+/*============================================================================*/
+/**
+ * @brief Load raw binary NTAG dump (.bin) into nfc_ctx
+ *
+ * Reads a raw binary file (e.g., 540-byte Amiibo / NTAG215 dump) from SD card,
+ * extracts the 7-byte UID from the NTAG page layout, sets up the NFC context
+ * for NTAG215 emulation (ATQA, SAK, GET_VERSION), and populates the dump buffer.
+ *
+ * NTAG215 memory layout (135 pages × 4 bytes = 540 bytes):
+ *   Page 0:   UID[0], UID[1], UID[2], BCC0
+ *   Page 1:   UID[3], UID[4], UID[5], UID[6]
+ *   Page 2:   BCC1, Internal, Lock0, Lock1
+ *   Page 3:   Capability Container (4 bytes)
+ *   Page 4-129: User data (504 bytes)
+ *   Page 130:  Dynamic lock bytes
+ *   Page 131-132: Configuration
+ *   Page 133:  PWD (4 bytes)
+ *   Page 134:  PACK (2 bytes) + RFUI (2 bytes)
+ *
+ * @param path             Full path on SD card (e.g., "0:/NFC/amiibo.bin")
+ * @param dump_buf         Workspace buffer for page data
+ * @param dump_buf_bytes   Size of dump_buf in bytes
+ * @param valid_bits       Validity bitmap (optional)
+ * @param valid_bits_bytes Size of valid_bits buffer
+ * @return NFC_STORAGE_OK on success, error code on failure
+ */
+/*============================================================================*/
+nfc_storage_result_t nfc_storage_load_bin(
+        const char* path,
+        uint8_t*    dump_buf,
+        uint32_t    dump_buf_bytes,
+        uint8_t*    valid_bits,
+        uint32_t    valid_bits_bytes)
+{
+    FIL fil;
+    FRESULT fres;
+    UINT bytes_read;
+
+    if (!path || !dump_buf || dump_buf_bytes == 0)
+        return NFC_STORAGE_ERR_NO_BUFFER;
+
+    nfc_run_ctx_t* c = nfc_ctx_get();
+
+    /* Start file session */
+    nfc_ctx_begin_file(path);
+    memset(&c->head, 0, sizeof(c->head));
+    nfc_ctx_clear_dump();
+
+    /* Open binary file */
+    fres = f_open(&fil, path, FA_READ);
+    if (fres != FR_OK) {
+        platformLog("[BIN] f_open('%s') failed: %d\r\n", path, fres);
+        c->file.sys_error = 1;
+        return NFC_STORAGE_ERR_IO;
+    }
+
+    /* Read raw data into dump buffer */
+    UINT file_size = f_size(&fil);
+    if (file_size == 0) {
+        f_close(&fil);
+        c->file.sys_error = 1;
+        return NFC_STORAGE_ERR_FORMAT;
+    }
+
+    /* Clamp to buffer capacity */
+    uint32_t read_size = file_size;
+    if (read_size > dump_buf_bytes)
+        read_size = dump_buf_bytes;
+
+    memset(dump_buf, 0, dump_buf_bytes);
+    fres = f_read(&fil, dump_buf, read_size, &bytes_read);
+    f_close(&fil);
+
+    if (fres != FR_OK || bytes_read == 0) {
+        platformLog("[BIN] f_read failed: fres=%d, read=%u\r\n", fres, bytes_read);
+        c->file.sys_error = 1;
+        return NFC_STORAGE_ERR_IO;
+    }
+
+    /* Calculate page count (4 bytes per page) */
+    uint32_t page_count = bytes_read / 4;
+    if (page_count == 0) {
+        c->file.sys_error = 1;
+        return NFC_STORAGE_ERR_FORMAT;
+    }
+
+    /* Extract 7-byte UID from NTAG layout */
+    if (bytes_read >= 8) {
+        c->head.uid[0] = dump_buf[0];   /* Page 0, byte 0 */
+        c->head.uid[1] = dump_buf[1];   /* Page 0, byte 1 */
+        c->head.uid[2] = dump_buf[2];   /* Page 0, byte 2 */
+        /* dump_buf[3] = BCC0, skip */
+        c->head.uid[3] = dump_buf[4];   /* Page 1, byte 0 */
+        c->head.uid[4] = dump_buf[5];   /* Page 1, byte 1 */
+        c->head.uid[5] = dump_buf[6];   /* Page 1, byte 2 */
+        c->head.uid[6] = dump_buf[7];   /* Page 1, byte 3 */
+        c->head.uid_len = 7;
+    } else {
+        c->file.sys_error = 1;
+        return NFC_STORAGE_ERR_FORMAT;
+    }
+
+    /* Set NFC-A identity for NTAG215 */
+    c->head.tech         = M1NFC_TECH_A;
+    c->head.family       = M1NFC_FAM_ULTRALIGHT;
+    c->head.a.atqa[0]    = 0x44;
+    c->head.a.atqa[1]    = 0x00;
+    c->head.a.has_atqa   = true;
+    c->head.a.sak        = 0x00;
+    c->head.a.has_sak    = true;
+
+    /* Set GET_VERSION for NTAG215 */
+    uint8_t ntag215_ver[8] = { 0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x11, 0x03 };
+    nfc_ctx_set_t2t_version(ntag215_ver, 8);
+
+    /* Fix PACK for amiibo: page 134 bytes 0-1 must be 0x80 0x80.
+     * Many dump tools write 0x00 because PWD/PACK are write-only on real tags.
+     * The Switch sends PWD_AUTH and checks the 2-byte PACK response. */
+    if (page_count >= 135 && bytes_read >= 135 * 4) {
+        uint8_t *pack_page = &dump_buf[134 * 4];
+        if (pack_page[0] == 0x00 && pack_page[1] == 0x00) {
+            pack_page[0] = 0x80;
+            pack_page[1] = 0x80;
+            platformLog("[BIN] Fixed PACK at page 134: 80 80\r\n");
+        }
+    }
+
+    /* Mark all read pages as valid */
+    if (valid_bits && valid_bits_bytes > 0)
+        memset(valid_bits, 0, valid_bits_bytes);
+
+    for (uint32_t i = 0; i < page_count; i++) {
+        mark_unit_valid(valid_bits, valid_bits_bytes, i);
+    }
+
+    /* Set dump metadata */
+    nfc_ctx_set_dump(4, page_count, 0, dump_buf, valid_bits,
+                     page_count - 1, true);
+
+    /* Update UI */
+    nfc_ctx_refresh_ui();
+    c->file.sys_error = 0;
+
+    platformLog("[BIN] Loaded %lu pages from '%s', UID=%s\r\n",
+                (unsigned long)page_count, path,
+                hex2Str(c->head.uid, c->head.uid_len));
+
+    return NFC_STORAGE_OK;
+}

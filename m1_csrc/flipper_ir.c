@@ -63,6 +63,8 @@ static const ir_proto_map_t ir_proto_table[] = {
 	{ "Apple",      IRMP_APPLE_PROTOCOL },         /* 11 */
 	{ "Nokia",      IRMP_NOKIA_PROTOCOL },         /* 16 */
 	{ "Bose",       IRMP_BOSE_PROTOCOL },          /* 31 */
+	{ "Samsung48",  IRMP_SAMSUNG48_PROTOCOL },    /* 41 */
+	{ "RCMM",       IRMP_RCMM32_PROTOCOL },       /* 36 */
 	{ NULL,         IRMP_UNKNOWN_PROTOCOL }
 };
 

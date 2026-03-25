@@ -227,6 +227,7 @@ static void spi_trans_control_task(void* arg)
         {
             if (plan_send_len == 0) {
                 M1_LOG_E(TAG, "master want send data but length is 0\r\n");
+                spi_mutex_unlock();
                 continue;
             }
 
@@ -1408,6 +1409,250 @@ uint8_t ble_advertise(ctrl_cmd_t *app_req)
 } // uint8_t ble_advertise(ctrl_cmd_t *app_req)
 
 
+
+
+#ifdef M1_APP_BADBT_ENABLE
+
+uint8_t ble_hid_init(ctrl_cmd_t *app_req, const char *device_name)
+{
+	uint8_t ret;
+	uint8_t fail_step = 0;
+
+	esp_queue_reset(ctrl_msg_Q);
+
+	// Step 1: Init BLE in server mode
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_SER));
+	vTaskDelay(200);
+
+	// Step 2: Set GAP device name (shown after BLE connection)
+	{
+		char name_cmd[64];
+		const char *gap_name = (device_name && device_name[0] != '\0') ? device_name : "M1-BadBT";
+		snprintf(name_cmd, sizeof(name_cmd), "%s\"%s\"\r\n", ESP32C6_AT_REQ_BLE_NAME, gap_name);
+		esp_at_send_wait_ok(app_req, name_cmd);
+	}
+
+	// Step 3: Register HID GATT service/appearance on ESP32
+	ret = esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_HID_INIT, "1"));
+	if (ret != SUCCESS) { fail_step = 3; goto cleanup; }
+
+	// Step 4: Set security parameters for HID pairing
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_SEC_PARAM, ""));
+
+	// Step 5: Set advertising parameters & raw data with keyboard appearance
+	{
+		char adv_cmd[196];
+		const char *name = (device_name && device_name[0] != '\0') ? device_name : "M1-BadBT";
+		uint8_t name_len = strlen(name);
+		if (name_len > 20) name_len = 20; /* cap to fit 31-byte adv limit */
+
+		/* AT+BLEADVPARAM: min=32(20ms),max=64(40ms),type=0(connectable),addr=0,ch=7,filter=0 */
+		esp_at_send_wait_ok(app_req, "AT+BLEADVPARAM=32,64,0,0,7,0\r\n");
+		vTaskDelay(50);
+
+		/* Build raw advertising data hex string:
+		 *   02 01 06               - Flags: LE General Discoverable + BR/EDR Not Supported
+		 *   03 03 12 18            - Complete 16-bit UUID: 0x1812 (HID)
+		 *   03 19 C1 03            - Appearance: 0x03C1 (Keyboard)
+		 *   XX 09 <name bytes>     - Complete Local Name
+		 */
+		char hex[128];
+		int pos = 0;
+		/* Flags */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "020106");
+		/* UUID 0x1812 (little-endian) */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "03031218");
+		/* Appearance 0x03C1 = Keyboard (little-endian: C1 03) */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "0319C103");
+		/* Complete Local Name */
+		pos += snprintf(hex + pos, sizeof(hex) - pos, "%02X09", name_len + 1);
+		for (uint8_t i = 0; i < name_len; i++)
+			pos += snprintf(hex + pos, sizeof(hex) - pos, "%02X", (uint8_t)name[i]);
+
+		snprintf(adv_cmd, sizeof(adv_cmd),
+		         "AT+BLEADVDATA=\"%s\"\r\n", hex);
+		ret = esp_at_send_wait_ok(app_req, adv_cmd);
+	}
+	if (ret != SUCCESS) { fail_step = 5; goto cleanup; }
+
+	// Step 6: Start advertising
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_START, ""));
+
+	app_req->msg_type = CTRL_RESP;
+	app_req->resp_event_status = SUCCESS;
+	return SUCCESS;
+
+cleanup:
+	// Deinit BLE so stock BT/WiFi works after failure
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_STOP, ""));
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_NULL));
+	return fail_step;
+}
+
+
+uint8_t ble_hid_deinit(ctrl_cmd_t *app_req)
+{
+	esp_queue_reset(ctrl_msg_Q);
+
+	// Stop advertising
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ADV_STOP, ""));
+
+	// Reset HID registration state so next init re-registers GATT services
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_HID_INIT, "0"));
+
+	// Deinit BLE entirely
+	esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_MODE, ESP32C6_BLE_MODE_NULL));
+
+	return SUCCESS;
+}
+
+
+uint8_t ble_hid_send_kb(ctrl_cmd_t *app_req, uint8_t modifier, uint8_t key1)
+{
+	char cmd[48];
+	uint8_t ret;
+
+	// Format: AT+BLEHIDKB=<mod>,<k1>,<k2>,<k3>,<k4>,<k5>,<k6>\r\n
+	snprintf(cmd, sizeof(cmd), "%s%d,%d,0,0,0,0,0\r\n",
+			ESP32C6_AT_REQ_BLE_HID_KB, modifier, key1);
+
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	app_req->at_cmd = strdup(cmd);
+	app_req->cmd_resp = strdup(ESP32C6_AT_RES_OK);
+	app_req->cmd_len = strlen(app_req->at_cmd);
+
+	ret = spi_AT_app_send_command(app_req);
+	if ( ret==SUCCESS )
+	{
+		// Brief wait for OK — don't block long for keystroke throughput
+		char *rx_buf = NULL;
+		char *resp_buf = NULL;
+		int rx_buf_len = 0;
+		uint32_t rx_uid;
+		uint32_t tick_t0 = HAL_GetTick();
+
+		ret = ERROR;
+		while (true)
+		{
+			uint32_t tick_pass = (HAL_GetTick() - tick_t0) / MILLISEC_TO_SEC;
+			if ( tick_pass >= 2 ) // 2-sec timeout
+				break;
+			esp_free_mem(&resp_buf);
+			vTaskDelay(10); // Short delay for keystroke speed
+			rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, 2);
+			resp_buf = rx_buf;
+			rx_buf = m1_resp_string_strip(rx_buf, CR_LF);
+			if ( !rx_buf ) continue;
+			if ( rx_uid != current_uid ) continue;
+			if ( strcmp(rx_buf, app_req->cmd_resp) ) continue;
+			ret = SUCCESS;
+			break;
+		}
+		esp_free_mem(&resp_buf);
+	}
+
+	esp_free_mem(&app_req->at_cmd);
+	esp_free_mem(&app_req->cmd_resp);
+	return ret;
+}
+
+
+// Wait for BLE HID connection + security handshake to complete.
+// Handles: +BLECONN: → +BLESECREQ: → AT+BLEENC → +BLEAUTHCMPL:
+// Also handles +BLESECNTFYNUM: (numeric comparison) → AT+BLECONFREPLY
+// Returns SUCCESS when connection + pairing are both done.
+uint8_t ble_hid_wait_connect(ctrl_cmd_t *app_req, uint8_t timeout_sec)
+{
+	char *rx_buf = NULL;
+	char *resp_buf = NULL;
+	int rx_buf_len = 0;
+	uint32_t rx_uid;
+	uint8_t ret = ERROR;
+	uint8_t got_conn = 0;
+	uint8_t got_auth = 0;
+	uint32_t tick_t0 = HAL_GetTick();
+
+	while (true)
+	{
+		uint32_t tick_pass = (HAL_GetTick() - tick_t0) / MILLISEC_TO_SEC;
+		if ( tick_pass >= timeout_sec )
+			break;
+
+		esp_free_mem(&resp_buf);
+		vTaskDelay(100);
+		rx_buf = spi_AT_app_get_response(&rx_buf_len, &rx_uid, timeout_sec);
+		resp_buf = rx_buf;
+		if ( !rx_buf || !rx_buf_len )
+			continue;
+
+		M1_LOG_I(TAG, "BLE evt: %s\r\n", rx_buf);
+
+		// Check for connection event
+		if ( strstr(rx_buf, "+BLECONN:") || strstr(rx_buf, "+BLEHIDCONN:") )
+		{
+			got_conn = 1;
+			M1_LOG_I(TAG, "BLE HID connected\r\n");
+			// Reset timeout — give security handshake time to complete
+			tick_t0 = HAL_GetTick();
+			if ( timeout_sec < 15 )
+				timeout_sec = 15;
+			continue;
+		}
+
+		// Security request from remote device — initiate encryption
+		if ( strstr(rx_buf, "+BLESECREQ:") )
+		{
+			M1_LOG_I(TAG, "Security request — starting encryption\r\n");
+			// AT+BLEENC=0,3  (conn_index=0, sec_act=3)
+			esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_ENC, "0,3"));
+			continue;
+		}
+
+		// Numeric comparison — auto-confirm (Just Works with NoInputNoOutput)
+		if ( strstr(rx_buf, "+BLESECNTFYNUM:") )
+		{
+			M1_LOG_I(TAG, "Numeric comparison — auto-confirming\r\n");
+			// AT+BLECONFREPLY=0,1  (conn_index=0, confirm=1)
+			esp_at_send_wait_ok(app_req, CONCAT_CMD_PARAM(ESP32C6_AT_REQ_BLE_CONF_REPLY, "0,1"));
+			continue;
+		}
+
+		// Authentication complete — pairing done
+		if ( strstr(rx_buf, "+BLEAUTHCMPL:") )
+		{
+			got_auth = 1;
+			M1_LOG_I(TAG, "BLE auth complete\r\n");
+			break; // Connection + auth done
+		}
+
+		// Disconnection during handshake
+		if ( strstr(rx_buf, "+BLEDISCONN:") )
+		{
+			M1_LOG_W(TAG, "Disconnected during pairing\r\n");
+			got_conn = 0;
+			break;
+		}
+	}
+
+	esp_free_mem(&resp_buf);
+
+	if ( got_conn && got_auth )
+	{
+		ret = SUCCESS;
+	}
+	else if ( got_conn && !got_auth )
+	{
+		// Connected but auth didn't complete — some devices don't trigger BLEAUTHCMPL
+		// Give it a shot anyway, the connection may still be usable
+		M1_LOG_W(TAG, "Connected but no auth event — proceeding anyway\r\n");
+		ret = SUCCESS;
+	}
+
+	return ret;
+}
+
+#endif /* M1_APP_BADBT_ENABLE */
 
 
 uint8_t esp_dev_reset(ctrl_cmd_t *app_req)

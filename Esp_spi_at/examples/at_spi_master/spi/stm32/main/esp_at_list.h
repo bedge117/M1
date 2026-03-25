@@ -63,6 +63,7 @@
 // Required because CONFIG_BT_NIMBLE_EXT_ADV=y in ESP32 build causes AT firmware
 // to default to extended advertising which some hosts can't see
 #define ESP32C6_AT_REQ_BLE_ADV_PARAM	"AT+BLEADVPARAM=32,64,0,0,7,0"
+#define ESP32C6_AT_REQ_BLE_ADV_DATA		"AT+BLEADVDATA="
 #define ESP32C6_AT_REQ_BLE_ADV_START	"AT+BLEADVSTART"
 #define ESP32C6_AT_REQ_BLE_ADV_STOP		"AT+BLEADVSTOP"
 
@@ -80,6 +81,12 @@
 
 // BLE device name
 #define ESP32C6_AT_REQ_BLE_NAME		"AT+BLENAME="
+
+// BLE HID (keyboard emulation)
+// AT+HIDKBINIT=<enable>  1=configure HID appearance/security
+#define ESP32C6_AT_REQ_BLE_HID_INIT	"AT+HIDKBINIT="
+// AT+HIDKBSEND=<modifier>,<key1>,<key2>,<key3>,<key4>,<key5>,<key6>
+#define ESP32C6_AT_REQ_BLE_HID_KB		"AT+HIDKBSEND="
 
 // BLE Connect/Disconnect
 // AT+BLECONN=<conn_index>,<remote_BLE_address>[,<addr_type>][,<timeout>]

@@ -337,6 +337,40 @@ target_sources(m1_01 INTERFACE
     ../../Sub_Ghz/protocols/m1_ansonic_decode.c
     ../../Sub_Ghz/protocols/m1_infactory_decode.c
     ../../Sub_Ghz/protocols/m1_schrader_decode.c
+    ../../Sub_Ghz/protocols/m1_generic_decode.c
+    ../../Sub_Ghz/protocols/m1_chamberlain_decode.c
+    ../../Sub_Ghz/protocols/m1_clemsa_decode.c
+    ../../Sub_Ghz/protocols/m1_doitrand_decode.c
+    ../../Sub_Ghz/protocols/m1_bett_decode.c
+    ../../Sub_Ghz/protocols/m1_nero_decode.c
+    ../../Sub_Ghz/protocols/m1_firefly_decode.c
+    ../../Sub_Ghz/protocols/m1_came_twee_decode.c
+    ../../Sub_Ghz/protocols/m1_came_atomo_decode.c
+    ../../Sub_Ghz/protocols/m1_nice_flor_s_decode.c
+    ../../Sub_Ghz/protocols/m1_alutech_decode.c
+    ../../Sub_Ghz/protocols/m1_centurion_decode.c
+    ../../Sub_Ghz/protocols/m1_kinggates_decode.c
+    ../../Sub_Ghz/protocols/m1_megacode_decode.c
+    ../../Sub_Ghz/protocols/m1_mastercode_decode.c
+    ../../Sub_Ghz/protocols/m1_chamberlain_7bit_decode.c
+    ../../Sub_Ghz/protocols/m1_chamberlain_8bit_decode.c
+    ../../Sub_Ghz/protocols/m1_chamberlain_9bit_decode.c
+    ../../Sub_Ghz/protocols/m1_liftmaster_decode.c
+    ../../Sub_Ghz/protocols/m1_dooya_decode.c
+    ../../Sub_Ghz/protocols/m1_honeywell_decode.c
+    ../../Sub_Ghz/protocols/m1_intertechno_decode.c
+    ../../Sub_Ghz/protocols/m1_elro_decode.c
+    ../../Sub_Ghz/protocols/m1_ambient_weather_decode.c
+    ../../Sub_Ghz/protocols/m1_bresser_3ch_decode.c
+    ../../Sub_Ghz/protocols/m1_bresser_5in1_decode.c
+    ../../Sub_Ghz/protocols/m1_bresser_6in1_decode.c
+    ../../Sub_Ghz/protocols/m1_tfa_dostmann_decode.c
+    ../../Sub_Ghz/protocols/m1_nexus_th_decode.c
+    ../../Sub_Ghz/protocols/m1_thermopro_tx2_decode.c
+    ../../Sub_Ghz/protocols/m1_gt_wt03_decode.c
+    ../../Sub_Ghz/protocols/m1_scher_khan_magicar_decode.c
+    ../../Sub_Ghz/protocols/m1_scher_khan_logicar_decode.c
+    ../../Sub_Ghz/protocols/m1_toyota_decode.c
     ../../Sub_Ghz/protocols/m1_bin_raw_decode.c
     ../../USB/Class/CDC/Src/usbd_cdc.c
     ../../USB/Class/CDC/Src/usbd_cdc_if.c
@@ -385,6 +419,7 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_bq25896.c
     ../../m1_csrc/m1_bq27421.c
     ../../m1_csrc/m1_bt.c
+    ../../m1_csrc/m1_802154.c
     ../../m1_csrc/m1_buzzer.c
     ../../m1_csrc/m1_cli.c
     ../../m1_csrc/m1_cli_help.c
@@ -446,7 +481,8 @@ target_sources(m1_01 INTERFACE
     # === Enhanced firmware: BadUSB (Phase 7) ===
     ../../USB/Class/HID/Src/usbd_hid.c
     ../../m1_csrc/m1_badusb.c
-    # === Bad-BT moved to feature/bad-bt branch ===
+    # === Enhanced firmware: Bad-BT (Phase 8) ===
+    ../../m1_csrc/m1_badbt.c
     # === Enhanced firmware: Built-in Games (Phase 9) ===
     ../../m1_csrc/m1_games.c
     ../../m1_csrc/game_snake.c

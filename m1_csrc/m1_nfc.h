@@ -14,8 +14,11 @@
 #define M1_NFC_H_
 
 void nfc_read(void);
-void nfc_tools(void);
+void nfc_detect_reader(void);
 void nfc_saved(void);
+void nfc_extra_actions(void);
+void nfc_add_manually(void);
+void nfc_tools(void);
 
 void menu_nfc_init(void);
 void menu_nfc_deinit(void);

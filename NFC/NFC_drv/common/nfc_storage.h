@@ -47,6 +47,27 @@ nfc_storage_result_t nfc_storage_load_file(
         uint8_t*    valid_bits,
         uint32_t    valid_bits_bytes);
 
+/**
+ * @brief Load raw binary NTAG dump (.bin) into nfc_ctx
+ *
+ * Reads a raw binary file (e.g., Amiibo / NTAG215 dump) from SD card,
+ * extracts UID from the NTAG page layout, sets up NFC context for
+ * NTAG215 emulation, and populates the dump buffer.
+ *
+ * @param path             Full path on SD card (e.g., "0:/NFC/amiibo.bin")
+ * @param dump_buf         Workspace buffer for page data
+ * @param dump_buf_bytes   Size of dump_buf in bytes
+ * @param valid_bits       Validity bitmap (optional)
+ * @param valid_bits_bytes Size of valid_bits buffer
+ * @return NFC_STORAGE_OK on success, error code on failure
+ */
+nfc_storage_result_t nfc_storage_load_bin(
+        const char* path,
+        uint8_t*    dump_buf,
+        uint32_t    dump_buf_bytes,
+        uint8_t*    valid_bits,
+        uint32_t    valid_bits_bytes);
+
 
 
 /*  Storage file text line format (M1 NFC device)

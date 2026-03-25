@@ -53,6 +53,40 @@ const SubGHz_protocol_t subghz_protocols_list[] =
 	{555, 1110, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Ansonic
 	{500, 1500, PACKET_PULSE_TIME_TOLERANCE25, 4, 40},  // Infactory (weather)
 	{120, 240, PACKET_PULSE_TIME_TOLERANCE25, 8, 40},   // Schrader TPMS (Manchester)
+	/* --- New protocols --- */
+	{1000, 3000, PACKET_PULSE_TIME_TOLERANCE20, 0, 40}, // Chamberlain Security+ 1.0
+	{385, 1155, PACKET_PULSE_TIME_TOLERANCE20, 0, 18},  // Clemsa
+	{450, 900, PACKET_PULSE_TIME_TOLERANCE20, 0, 37},   // Doitrand
+	{340, 680, PACKET_PULSE_TIME_TOLERANCE20, 0, 18},   // BETT
+	{330, 990, PACKET_PULSE_TIME_TOLERANCE20, 0, 36},   // Nero Sketch/Radio
+	{300, 900, PACKET_PULSE_TIME_TOLERANCE20, 0, 10},   // FireFly
+	{260, 520, PACKET_PULSE_TIME_TOLERANCE20, 0, 54},   // CAME Twee
+	{200, 400, PACKET_PULSE_TIME_TOLERANCE20, 0, 62},   // CAME Atomo (rolling code)
+	{500, 1000, PACKET_PULSE_TIME_TOLERANCE20, 0, 52},  // Nice Flor S
+	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 72},   // Alutech AT-4N
+	{336, 672, PACKET_PULSE_TIME_TOLERANCE20, 0, 24},   // Centurion
+	{400, 1200, PACKET_PULSE_TIME_TOLERANCE20, 0, 60},  // Kinggates Stylo 4K
+	{1000, 2000, PACKET_PULSE_TIME_TOLERANCE20, 0, 24}, // Megacode
+	{500, 1500, PACKET_PULSE_TIME_TOLERANCE20, 0, 36},  // Mastercode
+	{2000, 6000, PACKET_PULSE_TIME_TOLERANCE25, 0, 7},  // Chamberlain 7-bit
+	{2000, 6000, PACKET_PULSE_TIME_TOLERANCE25, 0, 8},  // Chamberlain 8-bit
+	{2000, 6000, PACKET_PULSE_TIME_TOLERANCE25, 0, 9},  // Chamberlain 9-bit
+	{1000, 3000, PACKET_PULSE_TIME_TOLERANCE25, 0, 10}, // Liftmaster 10-bit
+	{400, 1200, PACKET_PULSE_TIME_TOLERANCE20, 0, 40},  // Dooya
+	{250, 750, PACKET_PULSE_TIME_TOLERANCE25, 0, 48},   // Honeywell
+	{250, 750, PACKET_PULSE_TIME_TOLERANCE25, 0, 32},   // Intertechno
+	{330, 990, PACKET_PULSE_TIME_TOLERANCE25, 0, 32},   // Elro
+	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 40},  // Ambient Weather (Manchester)
+	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 40},   // Bresser 3ch
+	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 56},   // Bresser 5in1
+	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 104},  // Bresser 6in1
+	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 48},  // TFA Dostmann
+	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 36},  // Nexus-TH
+	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 37},   // ThermoPro TX-2
+	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 40},  // GT-WT03
+	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},   // Scher-Khan Magicar
+	{400, 1200, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},  // Scher-Khan Logicar
+	{250, 750, PACKET_PULSE_TIME_TOLERANCE20, 0, 56},   // Toyota
 	{100, 300, PACKET_PULSE_TIME_TOLERANCE30, 0, 64},   // BinRAW (generic fallback)
 };
 
@@ -80,6 +114,40 @@ const char *protocol_text[] =
 	"Ansonic",
 	"Infactory",
 	"Schrader TPMS",
+	/* --- New protocols --- */
+	"Chamberlain",
+	"Clemsa",
+	"Doitrand",
+	"BETT",
+	"Nero Radio",
+	"FireFly",
+	"CAME Twee",
+	"CAME Atomo",
+	"Nice Flor S",
+	"Alutech AT-4N",
+	"Centurion",
+	"Kinggates Stylo",
+	"Megacode",
+	"Mastercode",
+	"Chamberlain 7",
+	"Chamberlain 8",
+	"Chamberlain 9",
+	"Liftmaster",
+	"Dooya",
+	"Honeywell",
+	"Intertechno",
+	"Elro",
+	"Ambient Weather",
+	"Bresser 3ch",
+	"Bresser 5in1",
+	"Bresser 6in1",
+	"TFA Dostmann",
+	"Nexus-TH",
+	"ThermoPro TX-2",
+	"GT-WT03",
+	"Scher-Khan Magicar",
+	"Scher-Khan Logicar",
+	"Toyota",
 	"BinRAW"
 };
 
@@ -343,6 +411,139 @@ bool subghz_decode_protocol(uint16_t p, uint16_t pulsecount)
 
     	case SCHRADER_TPMS:
     		ret = subghz_decode_schrader(p, pulsecount);
+    		break;
+
+    	/* --- New protocols --- */
+    	case CHAMBERLAIN:
+    		ret = subghz_decode_chamberlain(p, pulsecount);
+    		break;
+
+    	case CLEMSA:
+    		ret = subghz_decode_clemsa(p, pulsecount);
+    		break;
+
+    	case DOITRAND:
+    		ret = subghz_decode_doitrand(p, pulsecount);
+    		break;
+
+    	case BETT:
+    		ret = subghz_decode_bett(p, pulsecount);
+    		break;
+
+    	case NERO_RADIO:
+    		ret = subghz_decode_nero(p, pulsecount);
+    		break;
+
+    	case FIREFLY:
+    		ret = subghz_decode_firefly(p, pulsecount);
+    		break;
+
+    	case CAME_TWEE:
+    		ret = subghz_decode_came_twee(p, pulsecount);
+    		break;
+
+    	case CAME_ATOMO:
+    		ret = subghz_decode_came_atomo(p, pulsecount);
+    		break;
+
+    	case NICE_FLOR_S:
+    		ret = subghz_decode_nice_flor_s(p, pulsecount);
+    		break;
+
+    	case ALUTECH_AT4N:
+    		ret = subghz_decode_alutech(p, pulsecount);
+    		break;
+
+    	case CENTURION:
+    		ret = subghz_decode_centurion(p, pulsecount);
+    		break;
+
+    	case KINGGATES_STYLO:
+    		ret = subghz_decode_kinggates(p, pulsecount);
+    		break;
+
+    	case MEGACODE:
+    		ret = subghz_decode_megacode(p, pulsecount);
+    		break;
+
+    	case MASTERCODE:
+    		ret = subghz_decode_mastercode(p, pulsecount);
+    		break;
+
+    	case CHAMBERLAIN_7BIT:
+    		ret = subghz_decode_chamberlain_7bit(p, pulsecount);
+    		break;
+
+    	case CHAMBERLAIN_8BIT:
+    		ret = subghz_decode_chamberlain_8bit(p, pulsecount);
+    		break;
+
+    	case CHAMBERLAIN_9BIT:
+    		ret = subghz_decode_chamberlain_9bit(p, pulsecount);
+    		break;
+
+    	case LIFTMASTER_10BIT:
+    		ret = subghz_decode_liftmaster(p, pulsecount);
+    		break;
+
+    	case DOOYA:
+    		ret = subghz_decode_dooya(p, pulsecount);
+    		break;
+
+    	case HONEYWELL:
+    		ret = subghz_decode_honeywell(p, pulsecount);
+    		break;
+
+    	case INTERTECHNO:
+    		ret = subghz_decode_intertechno(p, pulsecount);
+    		break;
+
+    	case ELRO:
+    		ret = subghz_decode_elro(p, pulsecount);
+    		break;
+
+    	case AMBIENT_WEATHER:
+    		ret = subghz_decode_ambient_weather(p, pulsecount);
+    		break;
+
+    	case BRESSER_3CH:
+    		ret = subghz_decode_bresser_3ch(p, pulsecount);
+    		break;
+
+    	case BRESSER_5IN1:
+    		ret = subghz_decode_bresser_5in1(p, pulsecount);
+    		break;
+
+    	case BRESSER_6IN1:
+    		ret = subghz_decode_bresser_6in1(p, pulsecount);
+    		break;
+
+    	case TFA_DOSTMANN:
+    		ret = subghz_decode_tfa_dostmann(p, pulsecount);
+    		break;
+
+    	case NEXUS_TH:
+    		ret = subghz_decode_nexus_th(p, pulsecount);
+    		break;
+
+    	case THERMOPRO_TX2:
+    		ret = subghz_decode_thermopro_tx2(p, pulsecount);
+    		break;
+
+    	case GT_WT03:
+    		ret = subghz_decode_gt_wt03(p, pulsecount);
+    		break;
+
+    	case SCHER_KHAN_MAGICAR:
+    		ret = subghz_decode_scher_khan_magicar(p, pulsecount);
+    		break;
+
+    	case SCHER_KHAN_LOGICAR:
+    		ret = subghz_decode_scher_khan_logicar(p, pulsecount);
+    		break;
+
+    	case TOYOTA:
+    		ret = subghz_decode_toyota(p, pulsecount);
     		break;
 
     	case BIN_RAW:

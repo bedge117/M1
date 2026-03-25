@@ -619,7 +619,7 @@ static void badusb_show_progress(const char *filename)
     else
         m1_draw_text(&m1_u8g2, 2, 52, 124, "Done", TEXT_ALIGN_CENTER);
 
-    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Stop", NULL, arrowleft_8x8);
+    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Stop", "OK", arrowright_8x8);
 
     m1_u8g2_nextpage();
 }
@@ -643,7 +643,10 @@ static bool badusb_check_abort(void)
         {
             if (xQueueReceive(button_events_q_hdl, &btn, 0) == pdTRUE)
             {
-                if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+                if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+                 || btn.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK
+                 || btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+                 || btn.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
                 {
                     return true;
                 }

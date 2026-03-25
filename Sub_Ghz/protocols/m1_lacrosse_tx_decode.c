@@ -97,10 +97,19 @@ uint8_t subghz_decode_lacrosse_tx(uint16_t p, uint16_t pulsecount)
         return 1; /* Unknown sensor type */
     }
 
+    /* LaCrosse TX CRC: nibble sum of nibbles 1-8, masked to 4 bits,
+     * compared against nibble 9 (bits 7-4) and nibble 10 (bits 3-0) */
+    uint8_t nib_sum = 0;
+    for (i = 1; i <= 8; i++) {
+        nib_sum += (uint8_t)((code >> (40 - i * 4)) & 0x0F);
+    }
+    uint8_t crc_nib = (uint8_t)(code & 0xFF);
+    uint8_t crc_ok = ((nib_sum & 0xFF) == crc_nib);
+
     weather_data.id = sensor_id;
     weather_data.channel = 1; /* LaCrosse TX doesn't have channel */
     weather_data.battery_low = new_batt ? 0 : 1; /* new_batt=1 means good */
-    weather_data.valid = 1;  /* TODO: add CRC-8 verification */
+    weather_data.valid = crc_ok;
 
     subghz_decenc_ctl.n64_decodedvalue = code;
     subghz_decenc_ctl.ndecodedbitlength = bit_count;

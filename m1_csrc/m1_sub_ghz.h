@@ -50,7 +50,7 @@
 #define SUBGHZ_MODULATION_LIST					3
 
 // Defines for ISM bands regions
-#define SUBGHZ_ISM_BAND_REGIONS_LIST			3
+#define SUBGHZ_ISM_BAND_REGIONS_LIST			4
 
 #define SUBGHZ_ISM_BAND_REGION_NORTH_AMERICA	0
 #define SUBGHZ_ISM_BAND_REGION_EUROPE_REGION_1	1
@@ -150,6 +150,9 @@ void sub_ghz_weather_station(void);
 void sub_ghz_brute_force(void);
 void sub_ghz_rssi_meter(void);
 void sub_ghz_freq_scanner(void);
+void sub_ghz_read(void);
+void sub_ghz_saved(void);
+void sub_ghz_add_manually(void);
 uint8_t sub_ghz_replay_flipper_file(const char *sub_path);
 
 extern EXTI_HandleTypeDef 	si4463_exti_hdl;

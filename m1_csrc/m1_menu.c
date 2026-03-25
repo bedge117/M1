@@ -30,6 +30,7 @@
 #include "m1_storage.h"
 #include "m1_wifi.h"
 #include "m1_bt.h"
+#include "m1_802154.h"
 #include "m1_esp32_hal.h"
 #include "esp_app_main.h"
 #include "m1_compile_cfg.h"
@@ -48,7 +49,7 @@
 
 S_M1_Menu_t menu_Sub_GHz_Record =
 {
-    "Record", sub_ghz_record, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "Read", sub_ghz_record, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Sub_GHz_Replay =
@@ -96,30 +97,30 @@ S_M1_Menu_t menu_Sub_GHz_FreqScanner =
     "Freq Scanner", sub_ghz_freq_scanner, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
-#ifdef M1_APP_FILE_IMPORT_ENABLE
-S_M1_Menu_t menu_Sub_GHz_Import =
+S_M1_Menu_t menu_Sub_GHz_Read =
 {
-    "Import .sub", sub_ghz_replay_flipper, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "Read", sub_ghz_read, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Sub_GHz_Saved =
+{
+    "Saved", sub_ghz_saved, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Sub_GHz_AddManually =
+{
+    "Add Manually", sub_ghz_add_manually, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Sub_GHz =
 {
     "Sub-GHz", NULL, NULL, NULL, 11, 0, menu_m1_icon_wave, NULL,
-    {&menu_Sub_GHz_Record, &menu_Sub_GHz_Replay, &menu_Sub_GHz_Import,
+    {&menu_Sub_GHz_Record, &menu_Sub_GHz_Saved,
+     &menu_Sub_GHz_AddManually,
      &menu_Sub_GHz_Frequency_Reader, &menu_Sub_GHz_Spectrum, &menu_Sub_GHz_RSSI,
      &menu_Sub_GHz_FreqScanner, &menu_Sub_GHz_Weather,
      &menu_Sub_GHz_BruteForce, &menu_Sub_GHz_Regional_Information, &menu_Sub_GHz_Radio_Settings}
 };
-#else
-S_M1_Menu_t menu_Sub_GHz =
-{
-    "Sub-GHz", NULL, NULL, NULL, 10, 0, menu_m1_icon_wave, NULL,
-    {&menu_Sub_GHz_Record, &menu_Sub_GHz_Replay,
-     &menu_Sub_GHz_Frequency_Reader, &menu_Sub_GHz_Spectrum, &menu_Sub_GHz_RSSI,
-     &menu_Sub_GHz_FreqScanner, &menu_Sub_GHz_Weather,
-     &menu_Sub_GHz_BruteForce, &menu_Sub_GHz_Regional_Information, &menu_Sub_GHz_Radio_Settings}
-};
-#endif
 
 /*----------------------------- > 125KHz RFID --------------------------------*/
 
@@ -170,9 +171,24 @@ S_M1_Menu_t menu_NFC_Read =
     "Read", nfc_read, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
+S_M1_Menu_t menu_NFC_Detect_Reader =
+{
+    "Detect Reader", nfc_detect_reader, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 S_M1_Menu_t menu_NFC_Saved =
 {
     "Saved", nfc_saved, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_NFC_Extra_Actions =
+{
+    "Extra Actions", nfc_extra_actions, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_NFC_Add_Manually =
+{
+    "Add Manually", nfc_add_manually, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_NFC_Tools =
@@ -180,24 +196,11 @@ S_M1_Menu_t menu_NFC_Tools =
     "Tools", nfc_tools, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
-#ifdef M1_APP_FILE_IMPORT_ENABLE
-S_M1_Menu_t menu_NFC_Import =
-{
-    "Import .nfc", nfc_import_flipper, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
 S_M1_Menu_t menu_NFC =
 {
-    "NFC", &menu_nfc_init, menu_nfc_deinit, NULL, 4, 0, menu_m1_icon_nfc, NULL,
-    {&menu_NFC_Read, &menu_NFC_Saved, &menu_NFC_Import, &menu_NFC_Tools }
+    "NFC", &menu_nfc_init, menu_nfc_deinit, NULL, 6, 0, menu_m1_icon_nfc, NULL,
+    {&menu_NFC_Read, &menu_NFC_Detect_Reader, &menu_NFC_Saved, &menu_NFC_Extra_Actions, &menu_NFC_Add_Manually, &menu_NFC_Tools }
 };
-#else
-S_M1_Menu_t menu_NFC =
-{
-    "NFC", &menu_nfc_init, menu_nfc_deinit, NULL, 3, 0, menu_m1_icon_nfc, NULL,
-    {&menu_NFC_Read, &menu_NFC_Saved, &menu_NFC_Tools }
-};
-#endif
 
 /*----------------------------- > Infrared -----------------------------------*/
 
@@ -382,11 +385,23 @@ S_M1_Menu_t menu_Settings =
     {&menu_Settings_LCD_and_Notifications, &menu_Settings_Storage, &menu_Settings_Power, &menu_Settings_System, &menu_Setting_Firmware_Update, &menu_Setting_ESP32, &menu_Settings_About}
 };
 
+/*------------------------------ > 802.15.4 ----------------------------------*/
+
+S_M1_Menu_t menu_802154_Zigbee =
+{
+    "Zigbee Scan", zigbee_scan, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_802154_Thread =
+{
+    "Thread Scan", thread_scan, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 /*--------------------------------- > Wifi -----------------------------------*/
 
 S_M1_Menu_t menu_Wifi_Scan_AP =
 {
-    "Scan & Connect", wifi_scan_ap, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "WiFi Scan+Connect", wifi_scan_ap, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Wifi_Config =
@@ -407,14 +422,14 @@ S_M1_Menu_t menu_Wifi_Disconnect =
 
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 4, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
+    "Wifi", menu_wifi_init, NULL, NULL, 6, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_802154_Zigbee, &menu_802154_Thread, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
 };
 #else
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 2, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_Wifi_Config}
+    "Wifi", menu_wifi_init, NULL, NULL, 4, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_802154_Zigbee, &menu_802154_Thread, &menu_Wifi_Config}
 };
 #endif
 

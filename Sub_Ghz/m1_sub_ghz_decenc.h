@@ -105,6 +105,40 @@ enum {
 	ANSONIC,
 	INFACTORY,
 	SCHRADER_TPMS,
+	/* --- New protocols (added after original 23) --- */
+	CHAMBERLAIN,
+	CLEMSA,
+	DOITRAND,
+	BETT,
+	NERO_RADIO,
+	FIREFLY,
+	CAME_TWEE,
+	CAME_ATOMO,
+	NICE_FLOR_S,
+	ALUTECH_AT4N,
+	CENTURION,
+	KINGGATES_STYLO,
+	MEGACODE,
+	MASTERCODE,
+	CHAMBERLAIN_7BIT,
+	CHAMBERLAIN_8BIT,
+	CHAMBERLAIN_9BIT,
+	LIFTMASTER_10BIT,
+	DOOYA,
+	HONEYWELL,
+	INTERTECHNO,
+	ELRO,
+	AMBIENT_WEATHER,
+	BRESSER_3CH,
+	BRESSER_5IN1,
+	BRESSER_6IN1,
+	TFA_DOSTMANN,
+	NEXUS_TH,
+	THERMOPRO_TX2,
+	GT_WT03,
+	SCHER_KHAN_MAGICAR,
+	SCHER_KHAN_LOGICAR,
+	TOYOTA,
 	BIN_RAW
 };
 
@@ -154,6 +188,45 @@ uint8_t subghz_decode_ansonic(uint16_t p, uint16_t pulsecount);
 uint8_t subghz_decode_infactory(uint16_t p, uint16_t pulsecount);
 uint8_t subghz_decode_schrader(uint16_t p, uint16_t pulsecount);
 uint8_t subghz_decode_bin_raw(uint16_t p, uint16_t pulsecount);
+
+/* Generic decoders */
+uint8_t subghz_decode_generic_pwm(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_generic_manchester(uint16_t p, uint16_t pulsecount);
+
+/* New protocol decoders */
+uint8_t subghz_decode_chamberlain(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_clemsa(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_doitrand(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_bett(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_nero(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_firefly(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_came_twee(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_came_atomo(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_nice_flor_s(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_alutech(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_centurion(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_kinggates(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_megacode(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_mastercode(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_chamberlain_7bit(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_chamberlain_8bit(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_chamberlain_9bit(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_liftmaster(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_dooya(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_honeywell(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_intertechno(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_elro(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_ambient_weather(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_bresser_3ch(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_bresser_5in1(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_bresser_6in1(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_tfa_dostmann(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_nexus_th(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_thermopro_tx2(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_gt_wt03(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_scher_khan_magicar(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_scher_khan_logicar(uint16_t p, uint16_t pulsecount);
+uint8_t subghz_decode_toyota(uint16_t p, uint16_t pulsecount);
 
 /* Weather data access */
 const SubGHz_Weather_Data_t* subghz_get_weather_data(void);

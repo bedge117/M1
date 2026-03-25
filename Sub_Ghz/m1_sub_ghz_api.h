@@ -100,6 +100,7 @@ void SI446x_Set_Tx_Power(uint8_t power);
 void SI446x_Select_Frontend(S_M1_SubGHz_Band network);
 void SI446x_Start_Tx_CW(uint16_t channel, uint8_t radio_mod_type);
 void SI446x_Set_Frequency(uint32_t freq_hz);
+void SI446x_GPIO2_Set_Input(void);
 struct si446x_reply_PART_INFO_map *SI446x_PartInfo(void);
 struct si446x_reply_REQUEST_DEVICE_STATE_map *SI446x_Request_DeviceState(void);
 struct si446x_reply_GET_MODEM_STATUS_map *SI446x_Get_ModemStatus( uint8_t MODEM_CLR_PEND);

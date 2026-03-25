@@ -64,6 +64,8 @@
 #define RPC_CMD_FILE_WRITE_FINISH 0x36
 #define RPC_CMD_FILE_DELETE     0x37
 #define RPC_CMD_FILE_MKDIR      0x38
+#define RPC_CMD_SD_UNMOUNT      0x3B
+#define RPC_CMD_SD_MOUNT        0x3C
 
 /* ── Firmware Commands (0x40–0x4F) ── */
 #define RPC_CMD_FW_INFO         0x40

@@ -53,7 +53,7 @@
 #define SI446X_FREQ_CONTROL_CHANNEL_STEP_SIZE_0     0x05
 
 /* Crystal frequency — 30 MHz for M1 board */
-#define SI4463_XTAL_FREQ    30000000UL
+#define SI4463_XTAL_FREQ    32000000UL
 
 #define RADIO_COMM_BUFFER_MAX          30
 
@@ -735,6 +735,19 @@ void SI446x_GPIO_ConfigFast(void)
 } // void SI446x_GPIO_Config(uint8_t GPIO0, uint8_t GPIO1, uint8_t GPIO2, uint8_t GPIO3, uint8_t NIRQ, uint8_t SDO, uint8_t GEN_CONFIG)
 
 
+/******************************************************************************/
+/*
+ * Force GPIO2 to INPUT mode (0x04) for direct mode TX.
+ * Reads current GPIO config, changes only GPIO2, writes back.
+ */
+/******************************************************************************/
+void SI446x_GPIO2_Set_Input(void)
+{
+    /* Set GPIO2=INPUT for direct mode TX. 0x00 = don't change other pins.
+     * Matches the approach used by SI446x_Start_Tx_CW. */
+    SI446x_GPIO_Config(0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00);
+}
+
 
 /******************************************************************************/
 /*
@@ -1144,33 +1157,36 @@ void radio_set_antenna_mode(tRadioAntennaMode mode)
 /******************************************************************************/
 void SI446x_Set_Frequency(uint32_t freq_hz)
 {
-    uint8_t outdiv, band;
+    uint8_t outdiv, clkgen_band;
     uint32_t inte;
     uint32_t frac;
     double f_pfd;
 
-    /* Select output divider based on frequency */
-    if (freq_hz < 284000000UL) {
-        outdiv = 24; band = 5;  /* 142-284 MHz */
-    } else if (freq_hz < 525000000UL) {
-        outdiv = 12; band = 3;  /* 284-525 MHz */
+    /* Select output divider and MODEM_CLKGEN_BAND based on frequency.
+     * XTAL = 32 MHz. BAND→outdiv: 0→4, 1→10, 2→8, 3→12.
+     * VCO range is 3.4–4.2 GHz. */
+    if (freq_hz >= 850000000UL) {
+        outdiv = 4;  clkgen_band = 0x08;  /* BAND=0, SY_SEL=1 */
+    } else if (freq_hz >= 420000000UL) {
+        outdiv = 8;  clkgen_band = 0x0A;  /* BAND=2, SY_SEL=1 */
+    } else if (freq_hz >= 340000000UL) {
+        outdiv = 10; clkgen_band = 0x09;  /* BAND=1, SY_SEL=1 */
     } else {
-        outdiv = 4;  band = 2;  /* 525-960 MHz */
+        outdiv = 12; clkgen_band = 0x0B;  /* BAND=3, SY_SEL=1 */
     }
 
-    /* f_pfd = 2 * f_xtal / outdiv */
+    /* f_pfd = 2 * XTAL / outdiv (phase-frequency detector rate) */
     f_pfd = (2.0 * SI4463_XTAL_FREQ) / outdiv;
 
-    /* INTE = floor(f / f_pfd) - 1 */
+    /* fc = (INTE + FRAC/2^19) * f_pfd
+     * Pick INTE = floor(fc/f_pfd) - 1 so FRAC > 2^19 (WDS convention) */
     inte = (uint32_t)((double)freq_hz / f_pfd) - 1;
+    frac = (uint32_t)(((double)freq_hz / f_pfd - (double)inte) * 524288.0 + 0.5);
 
-    /* FRAC = ((f / f_pfd) - INTE - 1) * 2^19 */
-    frac = (uint32_t)(((double)freq_hz / f_pfd - (double)(inte + 1)) * 524288.0 + 0.5);
-
-    /* Set FREQ_CONTROL group: INTE, FRAC[2:0] (4 properties starting at 0x00) */
+    /* Write FREQ_CONTROL: INTE, FRAC[2:0] */
     si446x_cmd_buffer[0] = SI446X_CMD_ID_SET_PROPERTY;
     si446x_cmd_buffer[1] = SI446X_GROUP_FREQ_CONTROL;
-    si446x_cmd_buffer[2] = 4;   /* num properties */
+    si446x_cmd_buffer[2] = 4;
     si446x_cmd_buffer[3] = SI446X_FREQ_CONTROL_INTE;
     si446x_cmd_buffer[4] = (uint8_t)inte;
     si446x_cmd_buffer[5] = (uint8_t)((frac >> 16) & 0xFF);
@@ -1178,11 +1194,11 @@ void SI446x_Set_Frequency(uint32_t freq_hz)
     si446x_cmd_buffer[7] = (uint8_t)(frac & 0xFF);
     SI446x_Send_Cmd(8, si446x_cmd_buffer);
 
-    /* Also need to set MODEM_CLKGEN_BAND (group 0x20, property 0x51) to match outdiv */
+    /* Write MODEM_CLKGEN_BAND to match the output divider */
     si446x_cmd_buffer[0] = SI446X_CMD_ID_SET_PROPERTY;
     si446x_cmd_buffer[1] = SI446X_GROUP_MODEM;
     si446x_cmd_buffer[2] = 1;
     si446x_cmd_buffer[3] = 0x51; /* MODEM_CLKGEN_BAND */
-    si446x_cmd_buffer[4] = 0x08 | band; /* SY_SEL=1 (high-perf), BAND=band */
+    si446x_cmd_buffer[4] = clkgen_band;
     SI446x_Send_Cmd(5, si446x_cmd_buffer);
 }
