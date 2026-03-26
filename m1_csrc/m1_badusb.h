@@ -34,4 +34,10 @@ void badusb_run(void);
 bool badusb_execute_file(const char *filepath);
 void badusb_stop(void);
 
+/* Keyboard emulation API for external apps */
+void badusb_send_key(uint8_t modifier, uint8_t keycode);
+void badusb_type_char(char c);
+void badusb_type_string(const char *str);
+void badusb_type_string_forced(const char *str);
+
 #endif /* M1_BADUSB_H_ */

@@ -52,13 +52,15 @@
 #include "flipper_subghz.h"
 #include "m1_wifi.h"
 #include "m1_field_detect.h"
+#include "m1_usb_cdc_msc.h"
+#include "m1_badusb.h"
 
 /*************************** D E F I N E S ************************************/
 
 #define TAG "API"
 
 /* Maximum number of exported API symbols */
-#define API_MAX_SYMBOLS  200
+#define API_MAX_SYMBOLS  256
 
 /********************* T Y P E S *********************************************/
 
@@ -94,6 +96,14 @@ static void api_sort_table(void);
 static uint8_t m1app_display_flush(void)
 {
     return m1_u8g2_nextpage();
+}
+
+/*
+ * Wrapper for m1_usb_get_state
+ */
+static uint8_t m1_usb_get_state(void)
+{
+    return hUsbDeviceFS.dev_state;
 }
 
 /*
@@ -211,6 +221,7 @@ void m1_app_api_init(void)
 
         /* ===== Display — M1 UI helpers ===== */
         { "m1_message_box",       (void *)m1_message_box },
+        { "m1_message_box_choice",(void *)m1_message_box_choice },
         { "m1_draw_bottom_bar",   (void *)m1_draw_bottom_bar },
         { "m1_draw_icon",         (void *)m1_draw_icon },
         { "m1_draw_text",         (void *)m1_draw_text },
@@ -225,6 +236,13 @@ void m1_app_api_init(void)
         { "vTaskDelay",        (void *)vTaskDelay },
         { "HAL_GetTick",       (void *)HAL_GetTick },
         { "m1_hard_delay",     (void *)m1_hard_delay },
+
+        /* ===== Real-Time Clock (RTC) ===== */
+        { "m1_get_datetime",   (void *)m1_get_datetime },
+        { "m1_get_localtime",  (void *)m1_get_localtime },
+        { "m1_set_datetime",   (void *)m1_set_datetime },
+        { "wifi_sync_rtc",     (void *)wifi_sync_rtc },
+        { "wifi_scan_ap",      (void *)wifi_scan_ap },
 
         /* ===== Memory management ===== */
         { "m1app_malloc",      (void *)m1app_malloc },
@@ -361,6 +379,8 @@ void m1_app_api_init(void)
         { "m1_crypto_generate_iv", (void *)m1_crypto_generate_iv },
         { "m1_crypto_encrypt",     (void *)m1_crypto_encrypt },
         { "m1_crypto_decrypt",     (void *)m1_crypto_decrypt },
+        { "m1_crypto_encrypt_with_key", (void *)m1_crypto_encrypt_with_key },
+        { "m1_crypto_decrypt_with_key", (void *)m1_crypto_decrypt_with_key },
 
         /* ===== String utilities ===== */
         { "m1_strtolower",      (void *)m1_strtolower },
@@ -398,6 +418,14 @@ void m1_app_api_init(void)
         { "m1_field_detect_rfid_raw", (void *)m1_field_detect_rfid_raw },
         { "m1_field_detect_nfc_raw",  (void *)m1_field_detect_nfc_raw },
         { "m1_field_detect_nfc_opctl",(void *)m1_field_detect_nfc_opctl },
+
+        /* ===== USB HID (BadUSB) ===== */
+        { "m1_usb_switch_to_hid",    (void *)m1_usb_switch_to_hid },
+        { "m1_usb_switch_to_normal", (void *)m1_usb_switch_to_normal },
+        { "m1_usb_get_state",        (void *)m1_usb_get_state },
+        { "badusb_send_key",         (void *)badusb_send_key },
+        { "badusb_type_char",        (void *)badusb_type_char },
+        { "badusb_type_string",      (void *)badusb_type_string_forced },
 
         /* ===== C library ===== */
         { "memset",    (void *)memset },

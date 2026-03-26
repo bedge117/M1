@@ -867,6 +867,77 @@ void wifi_disconnect(void)
 	}
 } // void wifi_disconnect(void)
 
+
+/*============================================================================*/
+/**
+  * @brief Sync system RTC with WiFi NTP
+  * @retval 1 on success, 0 on failure
+  */
+/*============================================================================*/
+uint8_t wifi_sync_rtc(void)
+{
+	char resp[128];
+	char month_str[4];
+	char day_name[4];
+	int day, year, hour, min, sec;
+	m1_time_t dt;
+	const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+	                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+	const char *days_names[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+
+	if ( !wifi_ensure_esp32_ready() ) return 0;
+
+	/* Configure SNTP: enable, timezone 0, server */
+	spi_AT_send_recv("AT+CIPSNTPCFG=1,0,\"pool.ntp.org\"\r\n", resp, sizeof(resp), 2);
+
+	/* Wait for sync (up to 5 seconds) */
+	for (int i = 0; i < 5; i++)
+	{
+		vTaskDelay(pdMS_TO_TICKS(1000));
+		memset(resp, 0, sizeof(resp));
+		spi_AT_send_recv("AT+CIPSNTPTIME?\r\n", resp, sizeof(resp), 2);
+
+		/* Expecting: +CIPSNTPTIME:Mon Mar 23 12:34:56 2026 */
+		char *p = strstr(resp, "+CIPSNTPTIME:");
+		if ( p )
+		{
+			p += 13;
+			if ( sscanf(p, "%3s %3s %d %d:%d:%d %d", 
+			            day_name, month_str, &day, &hour, &min, &sec, &year) == 7 )
+			{
+				dt.year = (uint16_t)year;
+				dt.day = (uint8_t)day;
+				dt.hour = (uint8_t)hour;
+				dt.minute = (uint8_t)min;
+				dt.second = (uint8_t)sec;
+				
+				dt.month = 0;
+				for (int m = 0; m < 12; m++) {
+					if (strcmp(month_str, months[m]) == 0) {
+						dt.month = m + 1;
+						break;
+					}
+				}
+
+				dt.weekday = 0;
+				for (int d = 0; d < 7; d++) {
+					if (strcmp(day_name, days_names[d]) == 0) {
+						dt.weekday = d + 1;
+						break;
+					}
+				}
+
+				if (dt.month > 0 && dt.weekday > 0) {
+					m1_set_datetime(&dt);
+					return 1;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+
 #else /* M1_APP_WIFI_CONNECT_ENABLE not defined */
 
 /*============================================================================*/

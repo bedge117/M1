@@ -26,6 +26,7 @@ void wifi_config(void);
 void wifi_saved_networks(void);
 void wifi_show_status(void);
 void wifi_disconnect(void);
+uint8_t wifi_sync_rtc(void);
 #endif
 
 #endif /* M1_WIFI_H_ */
