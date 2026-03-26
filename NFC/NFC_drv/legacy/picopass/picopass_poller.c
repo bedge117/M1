@@ -22,67 +22,82 @@
 #include <string.h>
 
 /* ═══════════════════════════════════════════════════════════════════
- * Raw transceive helpers — PicoPass needs manual CRC
+ * Raw transceive — PicoPass over ISO15693 PHY
+ *
+ * PicoPass frame format differs from standard ISO15693:
+ *   - No FLAGS byte (RFAL_TXRX_FLAGS_NFCV_FLAG_MANUAL required)
+ *   - CRC uses init=0xE012, no final inversion (not standard 0xFFFF)
+ *   - CRC covers payload bytes AFTER the command byte, not the cmd itself
+ *   - Some commands (ACTALL, READCHECK, CHECK) have no CRC at all
+ *
+ * Reference: bettse/picopass (Flipper Zero), Proxmark3 RRG iclass.c
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Max frame: cmd(1) + data(8) + CRC(2) + margin */
-#define PP_TX_BUF_SIZE  16U
-#define PP_RX_BUF_SIZE  34U  /* READ4 returns 32 data + 2 CRC */
+#define PP_TX_BUF_SIZE  20U
+#define PP_RX_BUF_SIZE  40U
 
-/* FWT for PicoPass: ~4.8ms (generous timeout) */
-#define PP_FWT_FC       rfalConvMsTo1fc(5)
+/* FWT: 100000 fc (~7.4ms) — matches bettse's PICOPASS_POLLER_FWT_FC */
+#define PP_FWT_FC       (100000U)
+
+/* Flags for all PicoPass transceive: bypass ISO15693 FLAGS byte auto-adapt,
+ * disable hardware CRC (we handle it in software with PicoPass init value),
+ * keep CRC in RX buffer so we can verify it ourselves. */
+#define PP_TRX_FLAGS    ( (uint32_t)RFAL_TXRX_FLAGS_CRC_TX_MANUAL    \
+                        | (uint32_t)RFAL_TXRX_FLAGS_CRC_RX_KEEP      \
+                        | (uint32_t)RFAL_TXRX_FLAGS_CRC_RX_MANUAL    \
+                        | (uint32_t)RFAL_TXRX_FLAGS_NFCV_FLAG_MANUAL \
+                        | (uint32_t)RFAL_TXRX_FLAGS_AGC_ON )
 
 /**
- * Send a PicoPass frame with auto-appended PicoPass CRC (0xE012 init).
- * Uses RFAL_TXRX_FLAGS_CRC_TX_MANUAL to bypass the standard ISO15693 CRC.
+ * Raw PicoPass transceive. Sends tx_buf as-is (caller must include
+ * any CRC bytes). Returns raw response including any CRC.
  */
-static ReturnCode pp_trx(const uint8_t *tx, uint16_t tx_len,
-                         uint8_t *rx, uint16_t rx_size, uint16_t *rx_len,
-                         bool append_crc)
+static ReturnCode pp_raw_trx(const uint8_t *tx, uint16_t tx_len,
+                             uint8_t *rx, uint16_t rx_size, uint16_t *rx_len)
 {
-    uint8_t frame[PP_TX_BUF_SIZE];
-    uint16_t frame_len = tx_len;
-
-    if (tx_len > PP_TX_BUF_SIZE - 2) return RFAL_ERR_PARAM;
-
-    memcpy(frame, tx, tx_len);
-
-    if (append_crc) {
-        uint8_t crc[2];
-        picopass_crc(frame, frame_len, crc);
-        frame[frame_len++] = crc[0];
-        frame[frame_len++] = crc[1];
-    }
-
-    /* Send with manual CRC (we already appended it) and keep RX CRC
-     * so we can verify it ourselves. Also disable auto CRC check. */
-    uint32_t flags = RFAL_TXRX_FLAGS_CRC_TX_MANUAL
-                   | RFAL_TXRX_FLAGS_CRC_RX_KEEP
-                   | RFAL_TXRX_FLAGS_CRC_RX_MANUAL;
-
     *rx_len = 0;
-    ReturnCode err = rfalTransceiveBlockingTxRx(
-        frame, frame_len, rx, rx_size, rx_len, flags, PP_FWT_FC);
-
-    return err;
+    return rfalTransceiveBlockingTxRx(
+        (uint8_t *)tx, tx_len, rx, rx_size, rx_len, PP_TRX_FLAGS, PP_FWT_FC);
 }
 
 /**
- * Send a PicoPass frame that expects NO CRC in the response
- * (used for READCHECK and CHECK commands).
+ * Send a PicoPass command with CRC over the payload (after cmd byte).
+ * Frame on wire: CMD(1) + payload(N) + CRC(2)
+ * CRC covers payload only, NOT the command byte.
  */
-static ReturnCode pp_trx_no_crc_resp(const uint8_t *tx, uint16_t tx_len,
-                                     uint8_t *rx, uint16_t rx_size,
-                                     uint16_t *rx_len)
+static ReturnCode pp_send_with_crc(uint8_t cmd, const uint8_t *payload,
+                                   uint16_t payload_len,
+                                   uint8_t *rx, uint16_t rx_size,
+                                   uint16_t *rx_len)
 {
-    /* No CRC appended to TX either for READCHECK/CHECK */
-    uint32_t flags = RFAL_TXRX_FLAGS_CRC_TX_MANUAL
-                   | RFAL_TXRX_FLAGS_CRC_RX_KEEP
-                   | RFAL_TXRX_FLAGS_CRC_RX_MANUAL;
+    uint8_t frame[PP_TX_BUF_SIZE];
+    uint16_t pos = 0;
 
-    *rx_len = 0;
-    return rfalTransceiveBlockingTxRx(
-        tx, tx_len, rx, rx_size, rx_len, flags, PP_FWT_FC);
+    if (1 + payload_len + 2 > PP_TX_BUF_SIZE) return RFAL_ERR_PARAM;
+
+    frame[pos++] = cmd;
+    if (payload_len > 0) {
+        memcpy(&frame[pos], payload, payload_len);
+        pos += payload_len;
+    }
+
+    /* CRC over payload only (everything after the command byte) */
+    uint8_t crc[2];
+    picopass_crc(payload, payload_len, crc);
+    frame[pos++] = crc[0];
+    frame[pos++] = crc[1];
+
+    return pp_raw_trx(frame, pos, rx, rx_size, rx_len);
+}
+
+/**
+ * Verify PicoPass CRC on a received response buffer.
+ * CRC in response covers all data bytes (the card includes data + CRC).
+ */
+static bool pp_verify_rx_crc(const uint8_t *rx, uint16_t rx_len)
+{
+    if (rx_len < 3) return false;
+    return picopass_crc_check(rx, rx_len);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -94,11 +109,15 @@ static ReturnCode pp_cmd_actall(void)
     uint8_t cmd = PICOPASS_CMD_ACTALL;
     uint8_t rx[4];
     uint16_t rx_len = 0;
-    /* ACTALL: 1 byte command, no CRC, expects SOF only (incomplete frame).
-     * ST25R3916 reports SOF-only as RFAL_ERR_INCOMPLETE_BYTE or timeout. */
-    ReturnCode err = pp_trx_no_crc_resp(&cmd, 1, rx, sizeof(rx), &rx_len);
+
+    /* ACTALL: 1 byte command, no CRC. Card responds with SOF only.
+     * ST25R3916 reports SOF-only as incomplete/framing/CRC error. */
+    ReturnCode err = pp_raw_trx(&cmd, 1, rx, sizeof(rx), &rx_len);
     if (err == RFAL_ERR_NONE || err == RFAL_ERR_INCOMPLETE_BYTE ||
-        err == RFAL_ERR_TIMEOUT) return RFAL_ERR_NONE;
+        err == RFAL_ERR_CRC || err == RFAL_ERR_FRAMING ||
+        err == RFAL_ERR_TIMEOUT) {
+        return RFAL_ERR_NONE;
+    }
     return err;
 }
 
@@ -108,12 +127,12 @@ static ReturnCode pp_cmd_identify(uint8_t anti_csn[8])
     uint8_t rx[12]; /* ACSN(8) + CRC(2) */
     uint16_t rx_len = 0;
 
-    ReturnCode err = pp_trx(&cmd, 1, rx, sizeof(rx), &rx_len, false);
+    /* IDENTIFY: just the command byte, no payload, no CRC on TX.
+     * Response: ACSN(8) + CRC(2) */
+    ReturnCode err = pp_raw_trx(&cmd, 1, rx, sizeof(rx), &rx_len);
     if (err != RFAL_ERR_NONE) return err;
     if (rx_len < 10) return RFAL_ERR_PROTO;
-
-    /* Verify CRC */
-    if (!picopass_crc_check(rx, 10)) return RFAL_ERR_CRC;
+    if (!pp_verify_rx_crc(rx, 10)) return RFAL_ERR_CRC;
 
     memcpy(anti_csn, rx, 8);
     return RFAL_ERR_NONE;
@@ -121,18 +140,16 @@ static ReturnCode pp_cmd_identify(uint8_t anti_csn[8])
 
 static ReturnCode pp_cmd_select(const uint8_t anti_csn[8], uint8_t csn[8])
 {
-    uint8_t tx[9]; /* CMD + ACSN(8) */
     uint8_t rx[12]; /* CSN(8) + CRC(2) */
     uint16_t rx_len = 0;
 
-    tx[0] = PICOPASS_CMD_SELECT;
-    memcpy(&tx[1], anti_csn, 8);
-
-    ReturnCode err = pp_trx(tx, 9, rx, sizeof(rx), &rx_len, true);
+    /* SELECT: CMD + ACSN(8), CRC over ACSN only (not CMD).
+     * Response: CSN(8) + CRC(2) */
+    ReturnCode err = pp_send_with_crc(PICOPASS_CMD_SELECT, anti_csn, 8,
+                                      rx, sizeof(rx), &rx_len);
     if (err != RFAL_ERR_NONE) return err;
     if (rx_len < 10) return RFAL_ERR_PROTO;
-
-    if (!picopass_crc_check(rx, 10)) return RFAL_ERR_CRC;
+    if (!pp_verify_rx_crc(rx, 10)) return RFAL_ERR_CRC;
 
     memcpy(csn, rx, 8);
     return RFAL_ERR_NONE;
@@ -140,18 +157,17 @@ static ReturnCode pp_cmd_select(const uint8_t anti_csn[8], uint8_t csn[8])
 
 static ReturnCode pp_cmd_read_block(uint8_t block_num, uint8_t data[8])
 {
-    uint8_t tx[4]; /* CMD + ADDR + CRC(2) */
     uint8_t rx[12]; /* DATA(8) + CRC(2) */
     uint16_t rx_len = 0;
 
-    tx[0] = PICOPASS_CMD_READ;
-    tx[1] = block_num;
-
-    ReturnCode err = pp_trx(tx, 2, rx, sizeof(rx), &rx_len, true);
+    /* READ: CMD(0x0C) + block_num(1) + CRC(2), CRC over block_num only.
+     * Same command byte as IDENTIFY — distinguished by having a payload.
+     * Response: DATA(8) + CRC(2) */
+    ReturnCode err = pp_send_with_crc(PICOPASS_CMD_READ, &block_num, 1,
+                                      rx, sizeof(rx), &rx_len);
     if (err != RFAL_ERR_NONE) return err;
     if (rx_len < 10) return RFAL_ERR_PROTO;
-
-    if (!picopass_crc_check(rx, 10)) return RFAL_ERR_CRC;
+    if (!pp_verify_rx_crc(rx, 10)) return RFAL_ERR_CRC;
 
     memcpy(data, rx, 8);
     return RFAL_ERR_NONE;
@@ -167,7 +183,7 @@ static ReturnCode pp_cmd_readcheck_kd(uint8_t block_num, uint8_t data[8])
     tx[0] = PICOPASS_CMD_READCHECK_KD;
     tx[1] = block_num;
 
-    ReturnCode err = pp_trx_no_crc_resp(tx, 2, rx, sizeof(rx), &rx_len);
+    ReturnCode err = pp_raw_trx(tx, 2, rx, sizeof(rx), &rx_len);
     if (err != RFAL_ERR_NONE) return err;
     if (rx_len < 8) return RFAL_ERR_PROTO;
 
@@ -178,7 +194,7 @@ static ReturnCode pp_cmd_readcheck_kd(uint8_t block_num, uint8_t data[8])
 static ReturnCode pp_cmd_check(const uint8_t nr[4], const uint8_t mac[4],
                                uint8_t chip_response[4])
 {
-    /* CHECK: NR(4) + MAC(4), no CRC; response = 4 bytes, no CRC */
+    /* CHECK: CMD + NR(4) + MAC(4), no CRC. Response: 4 bytes, no CRC. */
     uint8_t tx[9];
     uint8_t rx[4];
     uint16_t rx_len = 0;
@@ -187,7 +203,7 @@ static ReturnCode pp_cmd_check(const uint8_t nr[4], const uint8_t mac[4],
     memcpy(&tx[1], nr, 4);
     memcpy(&tx[5], mac, 4);
 
-    ReturnCode err = pp_trx_no_crc_resp(tx, 9, rx, sizeof(rx), &rx_len);
+    ReturnCode err = pp_raw_trx(tx, 9, rx, sizeof(rx), &rx_len);
     if (err != RFAL_ERR_NONE) return err;
     if (rx_len < 4) return RFAL_ERR_PROTO;
 
@@ -394,22 +410,26 @@ PicopassReadResult picopass_poller_write_block(uint8_t block_num,
         return PICOPASS_READ_ERR_READ;
     }
 
-    /* UPDATE: CMD(1) + ADDR(1) + DATA(8) + MAC(4) + CRC(2) */
-    uint8_t tx[14];
+    /* UPDATE: CMD(1) + ADDR(1) + DATA(8) + MAC(4), no CRC on TX per bettse.
+     * Response: DATA(8) + CRC(2) */
+    uint8_t payload[13]; /* ADDR(1) + DATA(8) + MAC(4) */
     uint8_t rx[12];
     uint16_t rx_len = 0;
 
-    tx[0] = PICOPASS_CMD_UPDATE;
-    tx[1] = block_num;
-    memcpy(&tx[2], data, 8);
+    payload[0] = block_num;
+    memcpy(&payload[1], data, 8);
 
     /* Compute update MAC */
     uint8_t mac[4];
     picopass_iclass_calc_update_mac(block_num, data, div_key, mac);
-    memcpy(&tx[10], mac, 4);
+    memcpy(&payload[9], mac, 4);
 
-    /* Send with PicoPass CRC */
-    ReturnCode err = pp_trx(tx, 14, rx, sizeof(rx), &rx_len, true);
+    /* UPDATE has no CRC on TX — send raw CMD + payload */
+    uint8_t tx[14];
+    tx[0] = PICOPASS_CMD_UPDATE;
+    memcpy(&tx[1], payload, 13);
+
+    ReturnCode err = pp_raw_trx(tx, 14, rx, sizeof(rx), &rx_len);
     if (err != RFAL_ERR_NONE) {
         platformLog("[PP] UPDATE block %u failed: %d\r\n", block_num, err);
         return PICOPASS_READ_ERR_READ;
