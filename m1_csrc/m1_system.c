@@ -879,3 +879,66 @@ void HAL_Delay(uint32_t Delay)
 {
 	vTaskDelay(Delay);
 } // void HAL_Delay(uint32_t Delay)
+
+
+/*============================================================================*/
+/**
+  * @brief  Get date and time from RTC
+  * @param  dt: pointer to m1_time_t struct
+  */
+/*============================================================================*/
+void m1_get_datetime(m1_time_t *dt)
+{
+	RTC_TimeTypeDef sTime = {0};
+	RTC_DateTypeDef sDate = {0};
+
+	if ( HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN) == HAL_OK )
+	{
+		HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+		dt->hour = sTime.Hours;
+		dt->minute = sTime.Minutes;
+		dt->second = sTime.Seconds;
+		dt->day = sDate.Date;
+		dt->month = sDate.Month;
+		dt->year = 2000 + sDate.Year;
+		dt->weekday = sDate.WeekDay;
+	}
+}
+
+/*============================================================================*/
+/**
+  * @brief  Get local time from RTC (currently same as m1_get_datetime)
+  * @param  dt: pointer to m1_time_t struct
+  */
+/*============================================================================*/
+void m1_get_localtime(m1_time_t *dt)
+{
+	m1_get_datetime(dt);
+}
+
+/*============================================================================*/
+/**
+  * @brief  Set RTC date and time
+  * @param  dt: pointer to m1_time_t struct
+  */
+/*============================================================================*/
+void m1_set_datetime(const m1_time_t *dt)
+{
+	RTC_TimeTypeDef sTime = {0};
+	RTC_DateTypeDef sDate = {0};
+
+	sTime.Hours = dt->hour;
+	sTime.Minutes = dt->minute;
+	sTime.Seconds = dt->second;
+	sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+	sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+
+	sDate.WeekDay = dt->weekday;
+	sDate.Month = dt->month;
+	sDate.Date = dt->day;
+	sDate.Year = dt->year - 2000;
+
+	HAL_PWR_EnableBkUpAccess();
+	HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+	HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+}

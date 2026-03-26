@@ -636,6 +636,64 @@ uint8_t m1_message_box(u8g2_t *u8g2, const char *title1, const char *title2, con
   return 0;
 }
 
+uint8_t m1_message_box_choice(u8g2_t *u8g2, const char *title1, const char *title2, const char *title3, const char *buttons)
+{
+    uint8_t cursor = 0;
+    uint8_t button_cnt = u8x8_GetStringLineCnt(buttons);
+    if (button_cnt == 0) return 0;
+
+    for (;;) {
+        u8g2_FirstPage(u8g2);
+        do {
+            u8g2_SetFont(u8g2, u8g2_font_6x10_tr);
+            uint8_t line_height = u8g2_GetAscent(u8g2) - u8g2_GetDescent(u8g2);
+            uint8_t y = 15;
+            
+            if (title1) { u8g2_DrawStr(u8g2, 2, y, title1); y += line_height; }
+            if (title2) { u8g2_DrawStr(u8g2, 2, y, title2); y += line_height; }
+            if (title3) { u8g2_DrawStr(u8g2, 2, y, title3); y += line_height; }
+            
+            // Draw buttons at the bottom
+            for (uint8_t i = 0; i < button_cnt; i++) {
+                const char *btn_text = u8x8_GetStringLineStart(i, buttons);
+                uint8_t btn_w = u8g2_GetStrWidth(u8g2, btn_text) + 4;
+                uint8_t btn_x = (128 / (button_cnt + 1)) * (i + 1) - (btn_w / 2);
+                
+                if (i == cursor) {
+                    u8g2_DrawBox(u8g2, btn_x - 2, 50, btn_w, 12);
+                    u8g2_SetDrawColor(u8g2, 0);
+                }
+                u8g2_DrawStr(u8g2, btn_x, 60, btn_text);
+                u8g2_SetDrawColor(u8g2, 1);
+            }
+        } while (u8g2_NextPage(u8g2));
+
+        S_M1_Main_Q_t q_item;
+        S_M1_Buttons_Status btn_status;
+        if (xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY) == pdTRUE) {
+            if (q_item.q_evt_type == Q_EVENT_KEYPAD) {
+                xQueueReceive(button_events_q_hdl, &btn_status, 0);
+                if (btn_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK || 
+                    btn_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK) {
+                    if (cursor > 0) cursor--; else cursor = button_cnt - 1;
+                }
+                else if (btn_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK || 
+                         btn_status.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK) {
+                    if (cursor < button_cnt - 1) cursor++; else cursor = 0;
+                }
+                else if (btn_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK) {
+                    xQueueReset(main_q_hdl);
+                    return cursor + 1;
+                }
+                else if (btn_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK) {
+                    xQueueReset(main_q_hdl);
+                    return 0;
+                }
+            }
+        }
+    }
+}
+
 
 
 /*============================================================================*/

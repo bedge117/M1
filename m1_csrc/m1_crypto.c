@@ -595,19 +595,18 @@ void m1_crypto_generate_iv(uint8_t iv[M1_CRYPTO_IV_SIZE])
 
 /*============================================================================*/
 /*
- * Encrypt data in-place with AES-256-CBC + PKCS7 padding.
+ * Encrypt data in-place with AES-256-CBC + PKCS7 padding using a provided key.
  *
- * Input:  plaintext in buf[0..plaintext_len-1]
+ * Input:  plaintext in buf[0..plaintext_len-1], and a 32-byte key
  * Output: [IV (16 bytes)] + [ciphertext with PKCS7 padding] in buf
  * buf_size must be >= 16 + ((plaintext_len / 16) + 1) * 16
  *
  * Returns total output length, or 0 on error.
  */
 /*============================================================================*/
-uint32_t m1_crypto_encrypt(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_size)
+uint32_t m1_crypto_encrypt_with_key(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_size, const uint8_t *key)
 {
 	aes256_ctx_t ctx;
-	uint8_t key[M1_CRYPTO_AES_KEY_SIZE];
 	uint8_t iv[M1_CRYPTO_IV_SIZE];
 	uint8_t prev_ct[AES_BLOCK_SIZE];
 	uint8_t block_in[AES_BLOCK_SIZE];
@@ -618,7 +617,7 @@ uint32_t m1_crypto_encrypt(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_si
 	uint32_t i, j;
 	uint8_t pad_byte;
 
-	if (buf == NULL || plaintext_len == 0)
+	if (buf == NULL || plaintext_len == 0 || key == NULL)
 		return 0;
 
 	/* Calculate padded length (PKCS7: always adds at least 1 byte of padding) */
@@ -631,8 +630,7 @@ uint32_t m1_crypto_encrypt(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_si
 
 	num_blocks = padded_len / AES_BLOCK_SIZE;
 
-	/* Derive key and generate IV */
-	m1_crypto_derive_key(key);
+	/* Generate IV */
 	m1_crypto_generate_iv(iv);
 
 	/* Expand key */
@@ -671,8 +669,36 @@ uint32_t m1_crypto_encrypt(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_si
 	}
 
 	/* Clear sensitive data from stack */
-	memset(key, 0, sizeof(key));
 	memset(&ctx, 0, sizeof(ctx));
+
+	return total_out;
+} // uint32_t m1_crypto_encrypt_with_key(...)
+
+
+
+/*============================================================================*/
+/*
+ * Encrypt data in-place with AES-256-CBC + PKCS7 padding.
+ *
+ * Input:  plaintext in buf[0..plaintext_len-1]
+ * Output: [IV (16 bytes)] + [ciphertext with PKCS7 padding] in buf
+ * buf_size must be >= 16 + ((plaintext_len / 16) + 1) * 16
+ *
+ * Returns total output length, or 0 on error.
+ */
+/*============================================================================*/
+uint32_t m1_crypto_encrypt(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_size)
+{
+	uint8_t key[M1_CRYPTO_AES_KEY_SIZE];
+	uint32_t total_out;
+
+	/* Derive key */
+	m1_crypto_derive_key(key);
+
+	total_out = m1_crypto_encrypt_with_key(buf, plaintext_len, buf_size, key);
+
+	/* Clear sensitive data from stack */
+	memset(key, 0, sizeof(key));
 
 	return total_out;
 } // uint32_t m1_crypto_encrypt(...)
@@ -681,18 +707,17 @@ uint32_t m1_crypto_encrypt(uint8_t *buf, uint32_t plaintext_len, uint32_t buf_si
 
 /*============================================================================*/
 /*
- * Decrypt data in-place.
+ * Decrypt data in-place using a provided key.
  *
- * Input:  [IV (16 bytes)] + [ciphertext] in buf, total_len bytes
+ * Input:  [IV (16 bytes)] + [ciphertext] in buf, total_len bytes, and 32-byte key
  * Output: plaintext in buf[0..plaintext_len-1]
  *
  * Returns plaintext length (after removing PKCS7 padding), or 0 on error.
  */
 /*============================================================================*/
-uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len)
+uint32_t m1_crypto_decrypt_with_key(uint8_t *buf, uint32_t total_len, const uint8_t *key)
 {
 	aes256_ctx_t ctx;
-	uint8_t key[M1_CRYPTO_AES_KEY_SIZE];
 	uint8_t iv[M1_CRYPTO_IV_SIZE];
 	uint8_t prev_ct[AES_BLOCK_SIZE];
 	uint8_t cur_ct[AES_BLOCK_SIZE];
@@ -703,7 +728,7 @@ uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len)
 	uint8_t pad_byte;
 	uint32_t plaintext_len;
 
-	if (buf == NULL || total_len < M1_CRYPTO_IV_SIZE + AES_BLOCK_SIZE)
+	if (buf == NULL || total_len < M1_CRYPTO_IV_SIZE + AES_BLOCK_SIZE || key == NULL)
 		return 0;
 
 	ct_len = total_len - M1_CRYPTO_IV_SIZE;
@@ -716,9 +741,6 @@ uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len)
 
 	/* Extract IV from the beginning */
 	memcpy(iv, buf, M1_CRYPTO_IV_SIZE);
-
-	/* Derive key */
-	m1_crypto_derive_key(key);
 
 	/* Expand key */
 	aes256_key_expansion(&ctx, key);
@@ -751,7 +773,6 @@ uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len)
 	pad_byte = buf[ct_len - 1];
 	if (pad_byte == 0 || pad_byte > AES_BLOCK_SIZE)
 	{
-		memset(key, 0, sizeof(key));
 		memset(&ctx, 0, sizeof(ctx));
 		return 0; /* Invalid padding */
 	}
@@ -761,7 +782,6 @@ uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len)
 	{
 		if (buf[ct_len - 1 - i] != pad_byte)
 		{
-			memset(key, 0, sizeof(key));
 			memset(&ctx, 0, sizeof(ctx));
 			return 0; /* Invalid padding */
 		}
@@ -770,8 +790,35 @@ uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len)
 	plaintext_len = ct_len - pad_byte;
 
 	/* Clear sensitive data from stack */
-	memset(key, 0, sizeof(key));
 	memset(&ctx, 0, sizeof(ctx));
+
+	return plaintext_len;
+} // uint32_t m1_crypto_decrypt_with_key(...)
+
+
+
+/*============================================================================*/
+/*
+ * Decrypt data in-place.
+ *
+ * Input:  [IV (16 bytes)] + [ciphertext] in buf, total_len bytes
+ * Output: plaintext in buf[0..plaintext_len-1]
+ *
+ * Returns plaintext length (after removing PKCS7 padding), or 0 on error.
+ */
+/*============================================================================*/
+uint32_t m1_crypto_decrypt(uint8_t *buf, uint32_t total_len)
+{
+	uint8_t key[M1_CRYPTO_AES_KEY_SIZE];
+	uint32_t plaintext_len;
+
+	/* Derive key */
+	m1_crypto_derive_key(key);
+
+	plaintext_len = m1_crypto_decrypt_with_key(buf, total_len, key);
+
+	/* Clear sensitive data from stack */
+	memset(key, 0, sizeof(key));
 
 	return plaintext_len;
 } // uint32_t m1_crypto_decrypt(...)

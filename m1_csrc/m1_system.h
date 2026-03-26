@@ -188,4 +188,18 @@ void startup_config_handler(void);
 void startup_config_write(uint8_t config_byte, uint8_t config_val);
 void startup_info_screen_display(const char *scr_text);
 
+typedef struct {
+    uint16_t year;    /* 2024..2099 */
+    uint8_t  month;   /* 1..12 */
+    uint8_t  day;     /* 1..31 */
+    uint8_t  hour;    /* 0..23 */
+    uint8_t  minute;  /* 0..59 */
+    uint8_t  second;  /* 0..59 */
+    uint8_t  weekday; /* 1..7 (Monday=1) */
+} m1_time_t;
+
+void m1_get_datetime(m1_time_t *dt);
+void m1_get_localtime(m1_time_t *dt);
+void m1_set_datetime(const m1_time_t *dt);
+
 #endif /* M1_SYSTEM_H_ */
