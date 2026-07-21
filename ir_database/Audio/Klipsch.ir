@@ -1,0 +1,38 @@
+Filetype: IR library file
+Version: 1
+
+# Klipsch (model: Klipsch Soundbar)
+name: Power
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 1E 00 00 00
+#
+# Klipsch (model: Klipsch Soundbar)
+name: Mute
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 01 00 00 00
+#
+# Klipsch (model: Klipsch Soundbar)
+name: Vol_up
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 03 00 00 00
+#
+# Klipsch (model: Klipsch Soundbar)
+name: Vol_dn
+type: parsed
+protocol: NEC
+address: 80 00 00 00
+command: 06 00 00 00
+#
+# Klipsch (model: Klipsch r15pm)
+name: Prev
+type: parsed
+protocol: NEC
+address: 02 00 00 00
+command: 02 00 00 00
+#

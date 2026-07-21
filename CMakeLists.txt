@@ -21,10 +21,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME M1_v0800_C3.12)
+set(CMAKE_PROJECT_NAME M1_v0800_C3.107)
 
 # C3 fork revision — must match M1_C3_REVISION in m1_fw_update_bl.h
-set(M1_C3_REVISION 12)
+set(M1_C3_REVISION 107)
 
 # Include toolchain file
 include("cmake/gcc-arm-none-eabi.cmake")
@@ -78,6 +78,17 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+    # M1_USE_BINARY_PROTOCOL — REMOVED for Option C. This macro (esp_app_main.h)
+    # redirected the menu's wifi_ap_scan_list/ble_*/etc. to the legacy binary-over-AT
+    # *_bin functions, whose transport (init_master_hd) is skipped under M1_USE_ESP_RPC,
+    # so they dereferenced NULL handles and crashed. Mutually exclusive with M1_USE_ESP_RPC.
+
+    # MD5_ENABLED — define GLOBALLY so esp-serial-flasher's post-flash MD5 verify
+    # (esp_loader_flash_verify) is compiled into BOTH the library (esp_loader.c) and
+    # the flash-finish handler (m1_rpc.c). Previously it was only #defined in
+    # m1_esp32_fw_update.h, which m1_rpc.c does NOT include, so ESP_UPDATE_FINISH
+    # skipped verification entirely and reported success on a truncated/dropped flash.
+    MD5_ENABLED
 )
 
 # Add linked libraries

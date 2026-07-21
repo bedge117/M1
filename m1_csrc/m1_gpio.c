@@ -18,6 +18,8 @@
 #include "stm32h5xx_hal.h"
 #include "main.h"
 #include "m1_gpio.h"
+#include "m1_usb_cdc_msc.h"   /* USB-UART bridge baud control (USART1 on header) */
+#include "m1_log_debug.h"     /* M1_LOG_I — log I2C scan results over USB */
 
 /*************************** D E F I N E S ************************************/
 
@@ -250,53 +252,358 @@ void gpio_5v_on_gpio(void)
   * @retval
   */
 /*============================================================================*/
+/*
+ * USB-UART bridge: the M1 acts as a USB<->serial adapter. The USB CDC is bridged
+ * to USART1 on the external header (Pin 12 = PA9 TX, Pin 13 = PA10 RX). The data
+ * path runs continuously in vUsb2SerTask/vSer2UsbTask — any non-RPC bytes on the
+ * USB CDC are forwarded to USART1 and vice versa. This screen lets you pick the
+ * line rate on-device (a host terminal can also set it via the COM port).
+ *
+ * NOTE: the header UART is one pin off from the Flipper Zero (Flipper TX/RX are
+ * pins 13/14), so Flipper UART hats are NOT drop-in — wire M1 pin 12->hat RX,
+ * pin 13->hat TX, share GND/power.
+ */
 void gpio_usb_uart_bridge(void)
 {
 	S_M1_Buttons_Status this_button_status;
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
+	static const uint32_t bauds[] = {
+		9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600
+	};
+	const int n_bauds = (int)(sizeof(bauds) / sizeof(bauds[0]));
+	int sel = 4;        /* default 115200 */
+	int applied = -1;
+	bool redraw = true;
+	char line[24];
 
-	m1_gui_let_update_fw();
+	/* Start the selector on the currently active rate if it's in the list. */
+	uint32_t cur = m1_usb_uart_get_baud();
+	for (int i = 0; i < n_bauds; i++) if (bauds[i] == cur) { sel = i; break; }
 
-	while (1 ) // Main loop of this task
+	/* Force raw USB<->USART1 forwarding while this screen is open, so the bridge
+	 * works even if qMonstatek already latched RPC active (cleared on exit). */
+	m1_uart_bridge_active = true;
+
+	/* Apply the default/selected rate on entry so the bridge is live immediately. */
+	m1_usb_uart_set_baud(bauds[sel]);
+	applied = sel;
+
+	while (1)
 	{
-		;
-		; // Do other parts of this task here
-		;
-
-		// Wait for the notification from button_event_handler_task to subfunc_handler_task.
-		// This task is the sub-task of subfunc_handler_task.
-		// The notification is given in the form of an item in the main queue.
-		// So let read the main queue.
-		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
-		if (ret==pdTRUE)
+		if (redraw)
 		{
-			if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
-			{
-				// Notification is only sent to this task when there's any button activity,
-				// so it doesn't need to wait when reading the event from the queue
-				ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
-				if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK ) // user wants to exit?
-				{
-					; // Do extra tasks here if needed
+			redraw = false;
+			m1_u8g2_firstpage();
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+			u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
 
-					xQueueReset(main_q_hdl); // Reset main q before return
-					break; // Exit and return to the calling task (subfunc_handler_task)
-				} // if ( m1_buttons_status[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
-				else
-				{
-					; // Do other things for this task, if needed
-				}
-			} // if ( q_item.q_evt_type==Q_EVENT_KEYPAD )
+			u8g2_DrawStr(&m1_u8g2, 2, 10, "USB-UART Bridge");
+
+			snprintf(line, sizeof(line), "Baud: %lu%s",
+			         (unsigned long)bauds[sel], (sel == applied) ? "" : " *");
+			u8g2_DrawStr(&m1_u8g2, 2, 24, line);
+
+			u8g2_DrawStr(&m1_u8g2, 2, 34, "Pins: TX=12 RX=13");
+
+			if (sel == applied)
+				u8g2_DrawStr(&m1_u8g2, 2, 44, "USB<->Serial active");
 			else
+				u8g2_DrawStr(&m1_u8g2, 2, 44, "Press OK to apply");
+
+			u8g2_DrawStr(&m1_u8g2, 2, 62, "Up/Dn Baud  Back Exit");
+			m1_u8g2_nextpage();
+		}
+
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
 			{
-				; // Do other things for this task
+				m1_uart_bridge_active = false;   /* restore RPC/qMonstatek routing */
+				xQueueReset(main_q_hdl);
+				break;
 			}
-		} // if (ret==pdTRUE)
-	} // while (1 ) // Main loop of this task
+			else if (this_button_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				sel = (sel > 0) ? sel - 1 : n_bauds - 1;
+				redraw = true;
+			}
+			else if (this_button_status.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				sel = (sel < n_bauds - 1) ? sel + 1 : 0;
+				redraw = true;
+			}
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+			      || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				m1_usb_uart_set_baud(bauds[sel]);
+				applied = sel;
+				redraw = true;
+			}
+		}
+	}
 
 } // void gpio_usb_uart_bridge(void)
 
+
+/*============================================================================*/
+/*            H A R D W A R E   T O O L S  (header pins)                       */
+/*============================================================================*/
+/*
+ * Bit-banged I2C scanner on the external header:
+ *   Pin 6 = PD12 = SCL,  Pin 7 = PD13 = SDA.
+ * Software I2C (open-drain GPIO) — the header pins are plain GPIO (confirmed in
+ * the CubeMX .ioc: no I2C4 peripheral), so bit-banging avoids any AF/timing
+ * dependence and just works. Internal pull-ups are enabled; typical I2C breakout
+ * boards also carry their own. 3.3V bus (header pin 9 for power, pin 8/18 GND).
+ */
+#define TOOL_SCL_PORT   PD12_GPIO_Port
+#define TOOL_SCL_PIN    PD12_Pin
+#define TOOL_SDA_PORT   PD13_GPIO_Port
+#define TOOL_SDA_PIN    PD13_Pin
+
+static void tool_i2c_delay(void) { for (volatile int i = 0; i < 500; i++) __NOP(); }  /* ~slow, safe */
+
+#define TOOL_SCL_HI()   HAL_GPIO_WritePin(TOOL_SCL_PORT, TOOL_SCL_PIN, GPIO_PIN_SET)
+#define TOOL_SCL_LO()   HAL_GPIO_WritePin(TOOL_SCL_PORT, TOOL_SCL_PIN, GPIO_PIN_RESET)
+#define TOOL_SDA_HI()   HAL_GPIO_WritePin(TOOL_SDA_PORT, TOOL_SDA_PIN, GPIO_PIN_SET)
+#define TOOL_SDA_LO()   HAL_GPIO_WritePin(TOOL_SDA_PORT, TOOL_SDA_PIN, GPIO_PIN_RESET)
+#define TOOL_SDA_RD()   HAL_GPIO_ReadPin(TOOL_SDA_PORT, TOOL_SDA_PIN)
+
+static void tool_i2c_pins_init(void)
+{
+	GPIO_InitTypeDef g = {0};
+	g.Mode  = GPIO_MODE_OUTPUT_OD;   /* open-drain: low = drive, high = release (pulled up) */
+	g.Pull  = GPIO_PULLUP;
+	g.Speed = GPIO_SPEED_FREQ_LOW;
+	g.Pin = TOOL_SCL_PIN; HAL_GPIO_Init(TOOL_SCL_PORT, &g);
+	g.Pin = TOOL_SDA_PIN; HAL_GPIO_Init(TOOL_SDA_PORT, &g);
+	TOOL_SCL_HI(); TOOL_SDA_HI();     /* bus idle */
+}
+
+static void tool_i2c_pins_release(void)
+{
+	/* Restore both pins to their power-on state (push-pull output, low). */
+	GPIO_InitTypeDef g = {0};
+	g.Mode  = GPIO_MODE_OUTPUT_PP;
+	g.Pull  = GPIO_NOPULL;
+	g.Speed = GPIO_SPEED_FREQ_LOW;
+	g.Pin = TOOL_SCL_PIN; HAL_GPIO_Init(TOOL_SCL_PORT, &g);
+	g.Pin = TOOL_SDA_PIN; HAL_GPIO_Init(TOOL_SDA_PORT, &g);
+	TOOL_SCL_LO(); TOOL_SDA_LO();
+}
+
+static void tool_i2c_start(void)
+{
+	TOOL_SDA_HI(); TOOL_SCL_HI(); tool_i2c_delay();
+	TOOL_SDA_LO(); tool_i2c_delay();
+	TOOL_SCL_LO(); tool_i2c_delay();
+}
+
+static void tool_i2c_stop(void)
+{
+	TOOL_SDA_LO(); tool_i2c_delay();
+	TOOL_SCL_HI(); tool_i2c_delay();
+	TOOL_SDA_HI(); tool_i2c_delay();
+}
+
+/* Write a byte, return the ACK bit (0 = ACK, 1 = NACK). */
+static uint8_t tool_i2c_write(uint8_t b)
+{
+	for (int i = 0; i < 8; i++)
+	{
+		if (b & 0x80) TOOL_SDA_HI(); else TOOL_SDA_LO();
+		b <<= 1;
+		tool_i2c_delay();
+		TOOL_SCL_HI(); tool_i2c_delay();
+		TOOL_SCL_LO(); tool_i2c_delay();
+	}
+	TOOL_SDA_HI();                    /* release SDA for ACK */
+	tool_i2c_delay();
+	TOOL_SCL_HI(); tool_i2c_delay();
+	uint8_t ack = (TOOL_SDA_RD() == GPIO_PIN_RESET) ? 0 : 1;
+	TOOL_SCL_LO(); tool_i2c_delay();
+	return ack;
+}
+
+/* Probe a 7-bit address: START + addr(write). ACK => a device is present. */
+static bool tool_i2c_probe(uint8_t addr7)
+{
+	tool_i2c_start();
+	uint8_t ack = tool_i2c_write((uint8_t)((addr7 << 1) | 0));
+	tool_i2c_stop();
+	return (ack == 0);
+}
+
+void tool_i2c_scanner(void)
+{
+	S_M1_Buttons_Status this_button_status;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	uint8_t found[16];
+	int nfound = 0;
+	bool rescan = true;
+	char line[24];
+
+	tool_i2c_pins_init();
+
+	while (1)
+	{
+		if (rescan)
+		{
+			rescan = false;
+			/* Scan 0x08..0x77. Require TWO consecutive ACKs before reporting an
+			 * address — filters transient noise / weak-pull-up false positives. */
+			nfound = 0;
+			for (uint8_t a = 0x08; a <= 0x77; a++)
+			{
+				if (tool_i2c_probe(a) && tool_i2c_probe(a) && nfound < (int)sizeof(found))
+					found[nfound++] = a;
+			}
+
+			/* Log results over USB (readable in a terminal / by qMonstatek). */
+			if (nfound == 0)
+				M1_LOG_I(M1_LOGDB_TAG, "I2C scan: no devices\r\n");
+			for (int i = 0; i < nfound; i++)
+				M1_LOG_I(M1_LOGDB_TAG, "I2C found 0x%02X\r\n", found[i]);
+
+			m1_u8g2_firstpage();
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+			u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+			u8g2_DrawStr(&m1_u8g2, 2, 9, "I2C Scanner");
+
+			if (nfound == 0)
+			{
+				u8g2_DrawStr(&m1_u8g2, 2, 26, "No devices found");
+				u8g2_DrawStr(&m1_u8g2, 2, 38, "SDA=pin7 SCL=pin6");
+			}
+			else
+			{
+				if (nfound > 8) snprintf(line, sizeof(line), "Found %d (8 shown):", nfound);
+				else            snprintf(line, sizeof(line), "Found %d:", nfound);
+				u8g2_DrawStr(&m1_u8g2, 2, 21, line);
+
+				/* Up to 8 addresses, 4 per row on two rows (y=33, y=45) — kept
+				 * clear of the divider/hint at the bottom. */
+				int shown = (nfound > 8) ? 8 : nfound;
+				char row[24]; int col = 0; uint8_t y = 33;
+				row[0] = '\0';
+				for (int i = 0; i < shown; i++)
+				{
+					char a[6]; snprintf(a, sizeof(a), "%02X ", found[i]);
+					strncat(row, a, sizeof(row) - strlen(row) - 1);
+					if (++col == 4 || i == shown - 1)
+					{
+						u8g2_DrawStr(&m1_u8g2, 2, y, row);
+						y += 12; col = 0; row[0] = '\0';
+					}
+				}
+			}
+
+			/* Divider keeps the list off the button hint. */
+			u8g2_DrawHLine(&m1_u8g2, 0, 54, 128);
+			u8g2_DrawStr(&m1_u8g2, 2, 63, "OK:Rescan  Back:Exit");
+			m1_u8g2_nextpage();
+		}
+
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				tool_i2c_pins_release();
+				xQueueReset(main_q_hdl);
+				break;
+			}
+			else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+			      || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				rescan = true;
+			}
+		}
+	}
+} // void tool_i2c_scanner(void)
+
+
+/*
+ * Header pin logic reader: shows the live HIGH/LOW level of the general-purpose
+ * header GPIOs. Pins are set to input while reading and restored to their
+ * power-on output-low state on exit. (UART pins 12/13 and SWD pins 10/11 are left
+ * alone so the bridge/debug aren't disturbed.)
+ */
+typedef struct { const char *name; GPIO_TypeDef *port; uint16_t pin; } tool_pin_t;
+
+void tool_pin_reader(void)
+{
+	S_M1_Buttons_Status this_button_status;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	char line[26];
+
+	static const tool_pin_t pins[] = {
+		{ "PE2", PE2_GPIO_Port, PE2_Pin }, { "PE4", PE2_GPIO_Port, PE4_Pin },
+		{ "PE5", PE2_GPIO_Port, PE5_Pin }, { "PE6", PE2_GPIO_Port, PE6_Pin },
+		{ "PD12", PD12_GPIO_Port, PD12_Pin }, { "PD13", PD13_GPIO_Port, PD13_Pin },
+		{ "PC2", PC2_GPIO_Port, PC2_Pin }, { "PC3", PC3_GPIO_Port, PC3_Pin },
+		{ "PD0", PD0_GPIO_Port, PD0_Pin }, { "PD1", PD1_GPIO_Port, PD1_Pin },
+	};
+	const int npins = (int)(sizeof(pins) / sizeof(pins[0]));
+
+	/* Configure all as input for reading. */
+	for (int i = 0; i < npins; i++)
+	{
+		GPIO_InitTypeDef g = {0};
+		g.Pin = pins[i].pin; g.Mode = GPIO_MODE_INPUT; g.Pull = GPIO_NOPULL;
+		g.Speed = GPIO_SPEED_FREQ_LOW;
+		HAL_GPIO_Init(pins[i].port, &g);
+	}
+
+	while (1)
+	{
+		m1_u8g2_firstpage();
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+		u8g2_DrawStr(&m1_u8g2, 2, 10, "Pin Reader (live)");
+		/* Two columns of 5. */
+		for (int i = 0; i < npins; i++)
+		{
+			int lvl = (HAL_GPIO_ReadPin(pins[i].port, pins[i].pin) == GPIO_PIN_SET) ? 1 : 0;
+			int col = i / 5, row = i % 5;
+			snprintf(line, sizeof(line), "%-4s:%s", pins[i].name, lvl ? "HI" : "LO");
+			u8g2_DrawStr(&m1_u8g2, 2 + col * 64, 22 + row * 8, line);
+		}
+		u8g2_DrawStr(&m1_u8g2, 2, 62, "Back Exit");
+		m1_u8g2_nextpage();
+
+		/* Refresh ~5x/sec; poll buttons without blocking. */
+		if (xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(200)) == pdTRUE
+		    && q_item.q_evt_type == Q_EVENT_KEYPAD)
+		{
+			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+			if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+			 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+			{
+				/* Restore to power-on output-low. */
+				for (int i = 0; i < npins; i++)
+				{
+					GPIO_InitTypeDef g = {0};
+					g.Pin = pins[i].pin; g.Mode = GPIO_MODE_OUTPUT_PP; g.Pull = GPIO_NOPULL;
+					g.Speed = GPIO_SPEED_FREQ_LOW;
+					HAL_GPIO_Init(pins[i].port, &g);
+					HAL_GPIO_WritePin(pins[i].port, pins[i].pin, GPIO_PIN_RESET);
+				}
+				xQueueReset(main_q_hdl);
+				break;
+			}
+		}
+	}
+} // void tool_pin_reader(void)
 
 
 /******************************************************************************/
@@ -394,7 +701,7 @@ void gpio_gui_update(const S_M1_Menu_t *phmenu, uint8_t sel_item)
     			break;
 
     		case 3:
-    	    	m1_info_box_display_draw(INFO_BOX_ROW_1, "Please update firmware!");
+    	    	m1_info_box_display_draw(INFO_BOX_ROW_1, "USB<->UART (hdr 12/13)");
     			break;
 
     		default: // Unknown selection

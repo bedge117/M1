@@ -28,6 +28,7 @@
 #include "m1_ring_buffer.h"
 #include "m1_usb_cdc_msc.h"
 #include "m1_compile_cfg.h"
+#include "m1_rpc.h"
 #ifdef M1_APP_RPC_ENABLE
 #include "m1_rpc.h"
 #endif
@@ -39,7 +40,12 @@
 #define UART_PUT_CHAR_TIMEOUT		2 // ms
 #define UART_DEBUG_MSG_TX_TIMEOUT	10 // ms
 
-#define M1_LOGDB_LEVEL_DEFAULT 		LOG_DEBUG_LEVEL_INFO
+/* Default WARN, not INFO: the m1link/RPC bring-up traces are all INFO level and
+ * flood the UART (thousands of lines/min from the 50ms relay poll alone) — pure
+ * overhead a normal user never needs, and a plausible contributor to USB/flash
+ * contention. qMonstatek can raise this to INFO on demand (RPC_CMD_SET_LOG_LEVEL)
+ * when a capture is needed. */
+#define M1_LOGDB_LEVEL_DEFAULT 		LOG_DEBUG_LEVEL_WARN
 
 
 #define GET_MIN_NUM(m, n)                   ((m) < (n) ? (m) : (n))
@@ -515,6 +521,10 @@ int _write(int file, char *data, int len)
         s_capture_buf[s_capture_len] = '\0';
     }
 
+    /* Forward log data to host via RPC when connected */
+    if (m1_rpc_active)
+        m1_rpc_log_enqueue(data, len);
+
     len = m1_ringbuffer_write(plogdb_tx_rb, data, len);
     xQueueSend(log_q_hdl, &q_item, 0);
 
@@ -602,6 +612,17 @@ void m1_logdb_write(const char* data)
  * This function writes a formatted debug/log message to the debug/log output
  */
 /*============================================================================*/
+void m1_logdb_set_level(S_M1_LogDebugLevel_t level)
+{
+	if (level <= LOG_DEBUG_LEVEL_TRACE)
+		m1_logdb.log_level = level;
+}
+
+S_M1_LogDebugLevel_t m1_logdb_get_level(void)
+{
+	return m1_logdb.log_level;
+}
+
 void m1_logdb_printf(S_M1_LogDebugLevel_t level, const char* tag, const char* format, ...)
 {
 	char *db_string;

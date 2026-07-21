@@ -58,6 +58,11 @@ extern QueueHandle_t log_q_hdl;
 
 void m1_logdb_deinit(void);
 
+/* Runtime log-verbosity control. Default is WARN (see m1_log_debug.c); qMonstatek
+ * raises to INFO when a UART capture is needed. level uses S_M1_LogDebugLevel_t. */
+void m1_logdb_set_level(S_M1_LogDebugLevel_t level);
+S_M1_LogDebugLevel_t m1_logdb_get_level(void);
+
 /* RPC CLI output capture — when enabled, _write() also copies output
  * to a side buffer so rpc_handle_cli_exec() can return it via RPC. */
 void m1_logdb_capture_start(char *buf, uint16_t buf_size);

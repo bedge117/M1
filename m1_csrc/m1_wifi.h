@@ -20,6 +20,11 @@ void menu_wifi_init(void);
 void menu_wifi_exit(void);
 
 void wifi_scan_ap(void);
+void wifi_deauth_menu(void);
+void wifi_handshake_menu(void);
+void wifi_beacon_menu(void);
+void wifi_monitor_menu(void);
+void wifi_captive_menu(void);
 void wifi_config(void);
 
 #ifdef M1_APP_WIFI_CONNECT_ENABLE

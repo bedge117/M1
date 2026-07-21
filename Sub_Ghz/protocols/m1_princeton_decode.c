@@ -55,16 +55,48 @@ uint8_t subghz_decode_princeton(uint16_t p, uint16_t pulsecount)
 
     tolerance = subghz_protocols_list[p].te_tolerance;
     max_bits = subghz_protocols_list[p].data_bits;
-    //te_short = subghz_protocols_list[p].te_short;
-    //te_long = subghz_protocols_list[p].te_long;
-    te_short = subghz_decenc_ctl.pulse_times[2];
-    te_long = subghz_decenc_ctl.pulse_times[3];
-    if ( te_long < te_short )
+
+    /* Auto-detect te_short and te_long from pulse data.
+     *
+     * Previous approach used only pulse_times[2] and [3], which is fragile
+     * when individual pulses have significant jitter (common with low-TE
+     * remotes such as Princeton PT2262 with TE≈125 µs).  Instead, scan the
+     * first TE_SCAN_COUNT pulses, sort them, and average the lower and upper
+     * halves to get robust estimates of te_short and te_long. */
+#define TE_SCAN_COUNT 8
     {
-    	tolerance_long = te_short;
-    	te_short = te_long;
-    	te_long = tolerance_long; // Swap bits
-    } // if ( te_long < te_short )
+        uint16_t scan[TE_SCAN_COUNT];
+        uint16_t scan_n = (pulsecount < TE_SCAN_COUNT) ? pulsecount : TE_SCAN_COUNT;
+        uint16_t a;
+        int16_t  b;
+
+        for (a = 0; a < scan_n; a++)
+            scan[a] = subghz_decenc_ctl.pulse_times[a];
+
+        /* Insertion sort (N is tiny) */
+        for (a = 1; a < scan_n; a++) {
+            uint16_t val = scan[a];
+            b = (int16_t)a - 1;
+            while (b >= 0 && scan[b] > val) {
+                scan[b + 1] = scan[b];
+                b--;
+            }
+            scan[b + 1] = val;
+        }
+
+        /* Lower half → te_short, upper half → te_long */
+        uint16_t half = scan_n / 2;
+        if (half == 0) half = 1; /* safety: need at least 1 in each group */
+        uint32_t sum_lo = 0, sum_hi = 0;
+        for (a = 0; a < half; a++)
+            sum_lo += scan[a];
+        for (a = half; a < scan_n; a++)
+            sum_hi += scan[a];
+
+        te_short = (uint16_t)(sum_lo / half);
+        te_long  = (uint16_t)(sum_hi / (scan_n - half));
+    }
+#undef TE_SCAN_COUNT
     tolerance_short = te_short*3; // Assuming this is a valid long bit
     tolerance_long = (tolerance_short*tolerance)/100;
     if ( get_diff(te_long, tolerance_short) > tolerance_long ) // Not a valid bit for this protocol?
@@ -132,7 +164,11 @@ uint8_t subghz_decode_princeton(uint16_t p, uint16_t pulsecount)
     {
         subghz_decenc_ctl.n64_decodedvalue = code;
         subghz_decenc_ctl.ndecodedbitlength = bits_count;
-        subghz_decenc_ctl.ndecodeddelay = 0; //delay;
+        /* Store the detected te_short (in µs) as the signal TE.  Princeton
+         * remotes vary widely in TE (≈100–500 µs depending on the Rt resistor
+         * on the PT2262/SC5262 encoder), so the actually-observed timing is
+         * required for accurate replay and for display parity with Flipper. */
+        subghz_decenc_ctl.ndecodeddelay = te_short;
         subghz_decenc_ctl.ndecodedprotocol = p;
         return 0;
     }

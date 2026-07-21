@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# Arctic (model: Arctic King_RG15B1)
+name: Off
+type: parsed
+protocol: NECext
+address: 01 FF 00 00
+command: 12 ED 00 00
+#

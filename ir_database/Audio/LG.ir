@@ -1,0 +1,59 @@
+Filetype: IR library file
+Version: 1
+
+# LG (model: LG)
+name: Power
+type: parsed
+protocol: Samsung32
+address: 10 00 00 00
+command: 1E 00 00 00
+#
+# LG (model: LG)
+name: Mute
+type: parsed
+protocol: Samsung32
+address: 10 00 00 00
+command: 1F 00 00 00
+#
+# LG (model: LG)
+name: Pause
+type: parsed
+protocol: Samsung32
+address: 10 00 00 00
+command: 05 00 00 00
+#
+# LG (model: LG SJ4)
+name: Vol_up
+type: parsed
+protocol: Samsung32
+address: 2C 00 00 00
+command: 17 00 00 00
+#
+# LG (model: LG SJ4)
+name: Vol_dn
+type: parsed
+protocol: Samsung32
+address: 2C 00 00 00
+command: 16 00 00 00
+#
+# LG (model: LG SJ4)
+name: Play
+type: parsed
+protocol: Samsung32
+address: 2C 00 00 00
+command: 4F 00 00 00
+#
+# LG (model: LG SJ4)
+name: Prev
+type: parsed
+protocol: Samsung32
+address: 2C 00 00 00
+command: 06 00 00 00
+#
+# LG (model: LG AKB74815321)
+name: Next
+type: parsed
+protocol: Samsung32
+address: 2C 00 00 00
+command: 07 00 00 00
+#

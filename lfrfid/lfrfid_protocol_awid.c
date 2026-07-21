@@ -28,6 +28,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -134,6 +136,25 @@ static void awid_decode(const uint8_t *encoded, uint8_t *decoded)
 }
 
 /*============================================================================*/
+/* Encode: build the 96-bit FSK2a frame from decoded data                     */
+/* Ported bit-exact from Flipper protocol_awid_encode (lib/lfrfid, GPLv3):    */
+/*   preamble 0x01, then 22 groups of (3 data bits << 1 | odd parity) => 4b   */
+/*============================================================================*/
+static void awid_encode(const uint8_t *decoded_data, uint8_t *encoded_data)
+{
+    memset(encoded_data, 0, AWID_ENCODED_SIZE);
+
+    /* preamble */
+    bit_lib_set_bits(encoded_data, 0, 0x01, 8);
+
+    for (size_t i = 0; i < 88 / 4; i++) {
+        uint8_t value = (uint8_t)(bit_lib_get_bits(decoded_data, i * 3, 3) << 1);
+        value |= bit_lib_test_parity_32(value, BitLibParityOdd);
+        bit_lib_set_bits(encoded_data, 8 + i * 4, value, 4);
+    }
+}
+
+/*============================================================================*/
 static void awid_begin_impl(void)
 {
     memset(g_awid_encoded, 0, sizeof(g_awid_encoded));
@@ -194,6 +215,56 @@ static void awid_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_awid_write_data /
+ * protocol_awid_encode (lib/lfrfid, GPLv3).
+ *
+ * AWID: FSK2a modulation, RF/50 bitrate, 3 data blocks (block 0 = config,
+ * blocks 1..3 = 96-bit encoded frame). The decoded data (9 bytes) is sourced
+ * from the g_awid_decoded static buffer — it cannot come from tag->uid because
+ * the 66-bit / 9-byte payload does not fit in uid[5]. Before encoding, the
+ * length byte is normalised and the payload is round-tripped through
+ * encode/parity-strip/decode exactly as Flipper does, so the final T5577 image
+ * is bit-exact.
+ */
+/*============================================================================*/
+void protocol_awid_write_begin(void* protocol, void* data)
+{
+    (void)protocol;
+    LFRFIDProgram* write = (LFRFIDProgram*)data;
+    uint8_t        encoded[AWID_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+
+    /* Fix incorrect length byte */
+    if (g_awid_decoded[0] != 26 && g_awid_decoded[0] != 50 && g_awid_decoded[0] != 37 &&
+        g_awid_decoded[0] != 34 && g_awid_decoded[0] != 36) {
+        g_awid_decoded[0] = 26;
+    }
+
+    /* Correct protocol data by redecoding (encode -> strip parity -> decode) */
+    awid_encode(g_awid_decoded, encoded);
+    bit_lib_remove_bit_every_nth(encoded, 8, 88, 4);
+    bit_lib_copy_bits(g_awid_decoded, 0, 66, encoded, 8);
+
+    /* Final encode for T5577 */
+    awid_encode(g_awid_decoded, encoded);
+
+    if (write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_FSK2a | T5577_BITRATE_RF_50 | T5577_TRANS_BL_1_3;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void protocol_awid_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_awid = {
     .name = "AWID",
     .manufacturer = "AWID",
@@ -205,6 +276,9 @@ const LFRFIDProtocolBase protocol_awid = {
         .execute = (lfrfidProtocolDecoderExecute)awid_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_awid_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_awid_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)awid_render_data,
 };

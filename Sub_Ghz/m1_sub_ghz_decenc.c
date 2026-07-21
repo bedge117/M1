@@ -16,6 +16,7 @@
 #include <inttypes.h>
 #include "stm32h5xx_hal.h"
 #include <m1_sub_ghz_decenc.h>
+#include "subghz_protocol_registry.h"
 #include "m1_sub_ghz.h"
 #include "m1_sub_ghz_api.h"
 #include "si446x_cmd.h"
@@ -28,132 +29,41 @@
 
 //************************** C O N S T A N T **********************************/
 
-const SubGHz_protocol_t subghz_protocols_list[] =
-{
-	/*{160, 470, PACKET_PULSE_TIME_TOLERANCE20, 0, 24}, // Princeton: bit 0 |^|___, bit 1 |^^^|_*/
-	{370, 1140, PACKET_PULSE_TIME_TOLERANCE20, 0, 24},  // Princeton: bit 0 |^|___, bit 1 |^^^|_
-	{250, 500, PACKET_PULSE_TIME_TOLERANCE20, 16, 46},  // Security+ 2.0
-	{320, 640, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},   // CAME 12-bit
-	{700, 1400, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Nice FLO 12-bit
-	{500, 1500, PACKET_PULSE_TIME_TOLERANCE25, 0, 10},  // Linear 10-bit
-	{340, 1020, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Holtek HT12E
-	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 66},   // KeeLoq
-	{488, 976, PACKET_PULSE_TIME_TOLERANCE25, 24, 64},  // Oregon Scientific v2.1 (Manchester)
-	{200, 600, PACKET_PULSE_TIME_TOLERANCE25, 4, 56},   // Acurite
-	{550, 1100, PACKET_PULSE_TIME_TOLERANCE25, 0, 44},  // LaCrosse TX
-	{255, 510, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},   // FAAC SLH (Manchester)
-	{500, 1000, PACKET_PULSE_TIME_TOLERANCE20, 0, 44},  // Hormann BiSecur
-	{800, 1600, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Marantec
-	{640, 1280, PACKET_PULSE_TIME_TOLERANCE25, 4, 56},  // Somfy Telis (Manchester)
-	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},   // Star Line (KeeLoq variant)
-	{350, 700, PACKET_PULSE_TIME_TOLERANCE20, 0, 24},   // Gate TX
-	{300, 900, PACKET_PULSE_TIME_TOLERANCE25, 0, 25},   // SMC5326
-	{225, 675, PACKET_PULSE_TIME_TOLERANCE25, 0, 16},   // Power Smart
-	{450, 1350, PACKET_PULSE_TIME_TOLERANCE20, 0, 48},  // iDo
-	{555, 1110, PACKET_PULSE_TIME_TOLERANCE20, 0, 12},  // Ansonic
-	{500, 1500, PACKET_PULSE_TIME_TOLERANCE25, 4, 40},  // Infactory (weather)
-	{120, 240, PACKET_PULSE_TIME_TOLERANCE25, 8, 40},   // Schrader TPMS (Manchester)
-	/* --- New protocols --- */
-	{1000, 3000, PACKET_PULSE_TIME_TOLERANCE20, 0, 40}, // Chamberlain Security+ 1.0
-	{385, 1155, PACKET_PULSE_TIME_TOLERANCE20, 0, 18},  // Clemsa
-	{450, 900, PACKET_PULSE_TIME_TOLERANCE20, 0, 37},   // Doitrand
-	{340, 680, PACKET_PULSE_TIME_TOLERANCE20, 0, 18},   // BETT
-	{330, 990, PACKET_PULSE_TIME_TOLERANCE20, 0, 36},   // Nero Sketch/Radio
-	{300, 900, PACKET_PULSE_TIME_TOLERANCE20, 0, 10},   // FireFly
-	{260, 520, PACKET_PULSE_TIME_TOLERANCE20, 0, 54},   // CAME Twee
-	{200, 400, PACKET_PULSE_TIME_TOLERANCE20, 0, 62},   // CAME Atomo (rolling code)
-	{500, 1000, PACKET_PULSE_TIME_TOLERANCE20, 0, 52},  // Nice Flor S
-	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 72},   // Alutech AT-4N
-	{336, 672, PACKET_PULSE_TIME_TOLERANCE20, 0, 24},   // Centurion
-	{400, 1200, PACKET_PULSE_TIME_TOLERANCE20, 0, 60},  // Kinggates Stylo 4K
-	{1000, 2000, PACKET_PULSE_TIME_TOLERANCE20, 0, 24}, // Megacode
-	{500, 1500, PACKET_PULSE_TIME_TOLERANCE20, 0, 36},  // Mastercode
-	{2000, 6000, PACKET_PULSE_TIME_TOLERANCE25, 0, 7},  // Chamberlain 7-bit
-	{2000, 6000, PACKET_PULSE_TIME_TOLERANCE25, 0, 8},  // Chamberlain 8-bit
-	{2000, 6000, PACKET_PULSE_TIME_TOLERANCE25, 0, 9},  // Chamberlain 9-bit
-	{1000, 3000, PACKET_PULSE_TIME_TOLERANCE25, 0, 10}, // Liftmaster 10-bit
-	{400, 1200, PACKET_PULSE_TIME_TOLERANCE20, 0, 40},  // Dooya
-	{250, 750, PACKET_PULSE_TIME_TOLERANCE25, 0, 48},   // Honeywell
-	{250, 750, PACKET_PULSE_TIME_TOLERANCE25, 0, 32},   // Intertechno
-	{330, 990, PACKET_PULSE_TIME_TOLERANCE25, 0, 32},   // Elro
-	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 40},  // Ambient Weather (Manchester)
-	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 40},   // Bresser 3ch
-	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 56},   // Bresser 5in1
-	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 104},  // Bresser 6in1
-	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 48},  // TFA Dostmann
-	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 36},  // Nexus-TH
-	{250, 500, PACKET_PULSE_TIME_TOLERANCE25, 0, 37},   // ThermoPro TX-2
-	{500, 1000, PACKET_PULSE_TIME_TOLERANCE25, 0, 40},  // GT-WT03
-	{400, 800, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},   // Scher-Khan Magicar
-	{400, 1200, PACKET_PULSE_TIME_TOLERANCE20, 0, 64},  // Scher-Khan Logicar
-	{250, 750, PACKET_PULSE_TIME_TOLERANCE20, 0, 56},   // Toyota
-	{100, 300, PACKET_PULSE_TIME_TOLERANCE30, 0, 64},   // BinRAW (generic fallback)
-};
+/*
+ * Static legacy arrays — kept for backward compatibility with existing code
+ * that indexes subghz_protocols_list[p] and protocol_text[p] directly.
+ *
+ * IMPORTANT: These arrays are now GENERATED from the master registry in
+ * subghz_protocol_registry.c.  To add a new protocol, edit ONLY the
+ * registry — these arrays are rebuilt at startup by subghz_decenc_init().
+ *
+ * NOTE: These arrays are populated once during subghz_decenc_init() and are
+ * only accessed from the Sub-GHz decode task (single-threaded).  They are NOT
+ * safe for concurrent access from ISRs or other RTOS tasks.
+ */
 
-const char *protocol_text[] =
-{
-	"Princeton",
-	"Security+ 2.0",
-	"CAME",
-	"Nice FLO",
-	"Linear",
-	"Holtek",
-	"KeeLoq",
-	"Oregon v2",
-	"Acurite",
-	"LaCrosse TX",
-	"FAAC SLH",
-	"Hormann",
-	"Marantec",
-	"Somfy Telis",
-	"Star Line",
-	"Gate TX",
-	"SMC5326",
-	"Power Smart",
-	"iDo",
-	"Ansonic",
-	"Infactory",
-	"Schrader TPMS",
-	/* --- New protocols --- */
-	"Chamberlain",
-	"Clemsa",
-	"Doitrand",
-	"BETT",
-	"Nero Radio",
-	"FireFly",
-	"CAME Twee",
-	"CAME Atomo",
-	"Nice Flor S",
-	"Alutech AT-4N",
-	"Centurion",
-	"Kinggates Stylo",
-	"Megacode",
-	"Mastercode",
-	"Chamberlain 7",
-	"Chamberlain 8",
-	"Chamberlain 9",
-	"Liftmaster",
-	"Dooya",
-	"Honeywell",
-	"Intertechno",
-	"Elro",
-	"Ambient Weather",
-	"Bresser 3ch",
-	"Bresser 5in1",
-	"Bresser 6in1",
-	"TFA Dostmann",
-	"Nexus-TH",
-	"ThermoPro TX-2",
-	"GT-WT03",
-	"Scher-Khan Magicar",
-	"Scher-Khan Logicar",
-	"Toyota",
-	"BinRAW"
-};
+/* Max protocols we can hold in the legacy arrays (must be >= registry count) */
+#define LEGACY_PROTOCOL_MAX  128
+
+static SubGHz_protocol_t _subghz_protocols_list_storage[LEGACY_PROTOCOL_MAX];
+static const char *_protocol_text_storage[LEGACY_PROTOCOL_MAX];
+
+/* Expose as non-const pointers so existing code can index them */
+SubGHz_protocol_t *subghz_protocols_list_ptr = _subghz_protocols_list_storage;
+const char **protocol_text_ptr = _protocol_text_storage;
+
+/* Legacy externs — redirect to pointer (see updated header) */
+/* These are populated during subghz_decenc_init() */
+
+/*
+ * protocol_text[] — now populated from registry at init time.
+ * The static storage is in _protocol_text_storage above.
+ * Legacy code accesses protocol_text[i] via the extern pointer.
+ */
 
 
 enum {
-   n_protocol = sizeof(subghz_protocols_list) / sizeof(subghz_protocols_list[0])
+   n_protocol = LEGACY_PROTOCOL_MAX   /* Upper bound; actual count is subghz_protocol_registry_count */
 };
 
 
@@ -224,6 +134,9 @@ void subghz_reset_data()
 {
 	subghz_decenc_ctl.n64_decodedvalue = 0;
 	subghz_decenc_ctl.ndecodedbitlength = 0;
+	subghz_decenc_ctl.n32_serialnumber = 0;
+	subghz_decenc_ctl.n32_rollingcode = 0;
+	subghz_decenc_ctl.n8_buttonid = 0;
 	memset(subghz_decenc_ctl.pulse_times, 0, sizeof(subghz_decenc_ctl.pulse_times));
 }
 
@@ -319,244 +232,45 @@ const SubGHz_Weather_Data_t* subghz_get_weather_data(void)
     return &weather_data;
 }
 
-bool subghz_decode_protocol(uint16_t p, uint16_t pulsecount)
+/*
+ * Protocol dispatch — now driven by the registry instead of a switch-case.
+ *
+ * The registry stores a decode function pointer for each protocol.
+ * This eliminates the need to add a case for every new protocol.
+ */
+static bool subghz_decode_protocol(uint16_t p, uint16_t pulsecount)
 {
-    uint8_t ret = false;
+    if (p >= subghz_protocol_registry_count)
+        return 1;  /* out of range */
 
-    switch ( p )
-    {
-    	case PRINCETON:
-    		ret = subghz_decode_princeton(p, pulsecount);
-    		break;
+    const SubGhzProtocolDef *proto = &subghz_protocol_registry[p];
+    if (!proto->decode)
+        return 1;  /* no decoder implemented */
 
-    	case SECURITY_PLUS_20:
-    		ret = subghz_decode_security_plus_20(p, pulsecount);
-    		break;
+    return proto->decode(p, pulsecount);
+}
 
-    	case CAME_12BIT:
-    		ret = subghz_decode_came(p, pulsecount);
-    		break;
 
-    	case NICE_FLO:
-    		ret = subghz_decode_nice_flo(p, pulsecount);
-    		break;
+/* File-level static so subghz_pulse_handler_reset() can clear it */
+static uint32_t pulse_handler_interpacket_gap = 0;
 
-    	case LINEAR_10BIT:
-    		ret = subghz_decode_linear(p, pulsecount);
-    		break;
-
-    	case HOLTEK_HT12E:
-    		ret = subghz_decode_holtek(p, pulsecount);
-    		break;
-
-    	case KEELOQ:
-    		ret = subghz_decode_keeloq(p, pulsecount);
-    		break;
-
-    	case OREGON_V2:
-    		ret = subghz_decode_oregon_v2(p, pulsecount);
-    		break;
-
-    	case ACURITE:
-    		ret = subghz_decode_acurite(p, pulsecount);
-    		break;
-
-    	case LACROSSE_TX:
-    		ret = subghz_decode_lacrosse_tx(p, pulsecount);
-    		break;
-
-    	case FAAC_SLH:
-    		ret = subghz_decode_faac_slh(p, pulsecount);
-    		break;
-
-    	case HORMANN:
-    		ret = subghz_decode_hormann(p, pulsecount);
-    		break;
-
-    	case MARANTEC:
-    		ret = subghz_decode_marantec(p, pulsecount);
-    		break;
-
-    	case SOMFY_TELIS:
-    		ret = subghz_decode_somfy_telis(p, pulsecount);
-    		break;
-
-    	case STAR_LINE:
-    		ret = subghz_decode_starline(p, pulsecount);
-    		break;
-
-    	case GATE_TX:
-    		ret = subghz_decode_gate_tx(p, pulsecount);
-    		break;
-
-    	case SMC5326:
-    		ret = subghz_decode_smc5326(p, pulsecount);
-    		break;
-
-    	case POWER_SMART:
-    		ret = subghz_decode_power_smart(p, pulsecount);
-    		break;
-
-    	case IDO:
-    		ret = subghz_decode_ido(p, pulsecount);
-    		break;
-
-    	case ANSONIC:
-    		ret = subghz_decode_ansonic(p, pulsecount);
-    		break;
-
-    	case INFACTORY:
-    		ret = subghz_decode_infactory(p, pulsecount);
-    		break;
-
-    	case SCHRADER_TPMS:
-    		ret = subghz_decode_schrader(p, pulsecount);
-    		break;
-
-    	/* --- New protocols --- */
-    	case CHAMBERLAIN:
-    		ret = subghz_decode_chamberlain(p, pulsecount);
-    		break;
-
-    	case CLEMSA:
-    		ret = subghz_decode_clemsa(p, pulsecount);
-    		break;
-
-    	case DOITRAND:
-    		ret = subghz_decode_doitrand(p, pulsecount);
-    		break;
-
-    	case BETT:
-    		ret = subghz_decode_bett(p, pulsecount);
-    		break;
-
-    	case NERO_RADIO:
-    		ret = subghz_decode_nero(p, pulsecount);
-    		break;
-
-    	case FIREFLY:
-    		ret = subghz_decode_firefly(p, pulsecount);
-    		break;
-
-    	case CAME_TWEE:
-    		ret = subghz_decode_came_twee(p, pulsecount);
-    		break;
-
-    	case CAME_ATOMO:
-    		ret = subghz_decode_came_atomo(p, pulsecount);
-    		break;
-
-    	case NICE_FLOR_S:
-    		ret = subghz_decode_nice_flor_s(p, pulsecount);
-    		break;
-
-    	case ALUTECH_AT4N:
-    		ret = subghz_decode_alutech(p, pulsecount);
-    		break;
-
-    	case CENTURION:
-    		ret = subghz_decode_centurion(p, pulsecount);
-    		break;
-
-    	case KINGGATES_STYLO:
-    		ret = subghz_decode_kinggates(p, pulsecount);
-    		break;
-
-    	case MEGACODE:
-    		ret = subghz_decode_megacode(p, pulsecount);
-    		break;
-
-    	case MASTERCODE:
-    		ret = subghz_decode_mastercode(p, pulsecount);
-    		break;
-
-    	case CHAMBERLAIN_7BIT:
-    		ret = subghz_decode_chamberlain_7bit(p, pulsecount);
-    		break;
-
-    	case CHAMBERLAIN_8BIT:
-    		ret = subghz_decode_chamberlain_8bit(p, pulsecount);
-    		break;
-
-    	case CHAMBERLAIN_9BIT:
-    		ret = subghz_decode_chamberlain_9bit(p, pulsecount);
-    		break;
-
-    	case LIFTMASTER_10BIT:
-    		ret = subghz_decode_liftmaster(p, pulsecount);
-    		break;
-
-    	case DOOYA:
-    		ret = subghz_decode_dooya(p, pulsecount);
-    		break;
-
-    	case HONEYWELL:
-    		ret = subghz_decode_honeywell(p, pulsecount);
-    		break;
-
-    	case INTERTECHNO:
-    		ret = subghz_decode_intertechno(p, pulsecount);
-    		break;
-
-    	case ELRO:
-    		ret = subghz_decode_elro(p, pulsecount);
-    		break;
-
-    	case AMBIENT_WEATHER:
-    		ret = subghz_decode_ambient_weather(p, pulsecount);
-    		break;
-
-    	case BRESSER_3CH:
-    		ret = subghz_decode_bresser_3ch(p, pulsecount);
-    		break;
-
-    	case BRESSER_5IN1:
-    		ret = subghz_decode_bresser_5in1(p, pulsecount);
-    		break;
-
-    	case BRESSER_6IN1:
-    		ret = subghz_decode_bresser_6in1(p, pulsecount);
-    		break;
-
-    	case TFA_DOSTMANN:
-    		ret = subghz_decode_tfa_dostmann(p, pulsecount);
-    		break;
-
-    	case NEXUS_TH:
-    		ret = subghz_decode_nexus_th(p, pulsecount);
-    		break;
-
-    	case THERMOPRO_TX2:
-    		ret = subghz_decode_thermopro_tx2(p, pulsecount);
-    		break;
-
-    	case GT_WT03:
-    		ret = subghz_decode_gt_wt03(p, pulsecount);
-    		break;
-
-    	case SCHER_KHAN_MAGICAR:
-    		ret = subghz_decode_scher_khan_magicar(p, pulsecount);
-    		break;
-
-    	case SCHER_KHAN_LOGICAR:
-    		ret = subghz_decode_scher_khan_logicar(p, pulsecount);
-    		break;
-
-    	case TOYOTA:
-    		ret = subghz_decode_toyota(p, pulsecount);
-    		break;
-
-    	case BIN_RAW:
-    		ret = subghz_decode_bin_raw(p, pulsecount);
-    		break;
-
-    	default:
-    		break;
-    } // switch ( p )
-
-    return ret;
-} // bool subghz_decode_protocol(uint16_t p, uint16_t subghz_decenc_ctl.npulsecount)
-
+/*============================================================================*/
+/**
+  * @brief  Reset the pulse handler's accumulated state.
+  *         Call before (re)starting RX to ensure a clean decode session.
+  */
+/*============================================================================*/
+void subghz_pulse_handler_reset(void)
+{
+    pulse_handler_interpacket_gap = 0;
+    subghz_decenc_ctl.npulsecount = 0;
+    subghz_decenc_ctl.n64_decodedvalue = 0;
+    subghz_decenc_ctl.ndecodedbitlength = 0;
+    subghz_decenc_ctl.ndecodedprotocol = 0;
+    subghz_decenc_ctl.n32_serialnumber = 0;
+    subghz_decenc_ctl.n32_rollingcode = 0;
+    subghz_decenc_ctl.n8_buttonid = 0;
+}
 
 /*============================================================================*/
 /**
@@ -567,7 +281,6 @@ bool subghz_decode_protocol(uint16_t p, uint16_t pulsecount)
 /*============================================================================*/
 uint8_t subghz_pulse_handler(uint16_t duration)
 {
-	  static uint32_t interpacket_gap = 0;
 	  uint8_t i;
 	  int16_t rssi;
 	  struct si446x_reply_GET_MODEM_STATUS_map *pmodemstat;
@@ -581,16 +294,16 @@ uint8_t subghz_pulse_handler(uint16_t duration)
 			  M1_LOG_D(M1_LOGDB_TAG, "Valid gap: %d, pulses:%d\r\n", duration, subghz_decenc_ctl.npulsecount);
 			  if ( subghz_decenc_ctl.npulsecount >= PACKET_PULSE_COUNT_MIN ) // Potential packet received?
 			  {
-				  for(i = 0; i < n_protocol; i++)
+				  for(i = 0; i < subghz_protocol_registry_count; i++)
 				  {
 					  if ( !subghz_decode_protocol(i, subghz_decenc_ctl.npulsecount) )
 					  {
 						  // receive successfully for protocol i
 						  break;
 					  }
-				  } // for(i = 0; i < n_protocol; i++)
+				  } // for(i = 0; i < subghz_protocol_registry_count; i++)
 			  } // if ( subghz_decenc_ctl.npulsecount >= PACKET_PULSE_COUNT_MIN )
-			  interpacket_gap = duration; // update
+			  pulse_handler_interpacket_gap = duration; // update
 			  subghz_decenc_ctl.npulsecount = 0;
 			  // A potential interpacket gap has been detected, so it's not required to check for this condition for the next packet, if any.
 			  return PULSE_DET_EOP; // error or end of packet has been met
@@ -599,11 +312,11 @@ uint8_t subghz_pulse_handler(uint16_t duration)
 	  else
 	  {
 		  subghz_decenc_ctl.npulsecount = 0; // reset
-		  interpacket_gap += duration;
+		  pulse_handler_interpacket_gap += duration;
 		  // Interpacket gap has been timeout for a potential packet
-		  if ( interpacket_gap > INTERPACKET_GAP_MAX )
+		  if ( pulse_handler_interpacket_gap > INTERPACKET_GAP_MAX )
 		  {
-			  interpacket_gap = 0; // reset
+			  pulse_handler_interpacket_gap = 0; // reset
 			  return PULSE_DET_IDLE; // error
 		  }
 		  else
@@ -656,6 +369,24 @@ bool subghz_decenc_read(SubGHz_Dec_Info_t *received, bool raw)
             received->rssi = subghz_decenc_ctl.subghz_get_decoded_rssi();
             received->te = subghz_decenc_ctl.subghz_get_decoded_delay();
             received->bit_len = subghz_decenc_ctl.subghz_get_decoded_bitlength();
+            /* Fallback: if the protocol decoder did not record a per-capture TE
+             * (most non-Princeton decoders leave ndecodeddelay = 0 and rely on
+             * the fixed registry te_short), populate it from the protocol
+             * registry so the Read/Info display, saved-file `TE:` field, and
+             * Flipper-compatible export all show a non-zero, meaningful value.
+             * Replay of decoded static entries uses the same fallback in
+             * subghz_transmit_static_signal() when resolving te_short for TX,
+             * so this change does not alter TX timing — it only fixes
+             * display/save parity with Flipper for protocols whose decoders
+             * never populated TE. */
+            if (received->te == 0 && received->protocol < LEGACY_PROTOCOL_MAX)
+            {
+                received->te = subghz_protocols_list[received->protocol].te_short;
+            }
+            /* Copy extended fields set by protocol-specific decoders */
+            received->serial_number = subghz_decenc_ctl.n32_serialnumber;
+            received->rolling_code  = subghz_decenc_ctl.n32_rollingcode;
+            received->button_id     = subghz_decenc_ctl.n8_buttonid;
         } // if (value)
         subghz_decenc_ctl.subghz_reset_data();
         ret = true;
@@ -703,4 +434,94 @@ void subghz_decenc_init(void)
 	subghz_decenc_ctl.pulse_det_stat = PULSE_DET_IDLE;
 	memset(subghz_decenc_ctl.pulse_times, 0, sizeof(subghz_decenc_ctl.pulse_times));
 	subghz_decenc_ctl.n64_decodedvalue = 0;
+
+	/* Populate legacy compatibility arrays from the protocol registry */
+	uint16_t count = subghz_protocol_registry_count;
+	if (count > LEGACY_PROTOCOL_MAX) {
+	    M1_LOG_D(M1_LOGDB_TAG, "WARN: registry (%u protos) exceeds legacy max (%u), truncated\r\n",
+	             count, LEGACY_PROTOCOL_MAX);
+	    count = LEGACY_PROTOCOL_MAX;
+	}
+	for (uint16_t i = 0; i < count; i++) {
+	    const SubGhzBlockConst *t = &subghz_protocol_registry[i].timing;
+	    _subghz_protocols_list_storage[i].te_short      = t->te_short;
+	    _subghz_protocols_list_storage[i].te_long        = t->te_long;
+	    _subghz_protocols_list_storage[i].te_tolerance   = t->te_tolerance_pct;
+	    _subghz_protocols_list_storage[i].preamble_bits  = t->preamble_bits;
+	    _subghz_protocols_list_storage[i].data_bits      = t->min_count_bit_for_found;
+	    _protocol_text_storage[i] = subghz_protocol_registry[i].name;
+	}
 } // void subghz_decenc_init(void)
+
+
+/*============================================================================*/
+/* Signal History Ring Buffer Implementation                                   */
+/*============================================================================*/
+
+void subghz_history_reset(SubGHz_History_t *hist)
+{
+	hist->count = 0;
+	hist->head  = 0;
+}
+
+uint8_t subghz_history_add(SubGHz_History_t *hist, const SubGHz_Dec_Info_t *info, uint32_t freq_hz)
+{
+	/* Default semantics: dedup against last entry, evict oldest on overflow. */
+	return subghz_history_add_ex(hist, info, freq_hz, true, true);
+}
+
+uint8_t subghz_history_add_ex(SubGHz_History_t *hist, const SubGHz_Dec_Info_t *info,
+                              uint32_t freq_hz,
+                              bool remove_duplicates, bool delete_old_signals)
+{
+	/* Phase 12: when remove_duplicates is true, check against the most
+	 * recent entry on (protocol, key, bit_len) and merge instead of
+	 * creating a new row.  When false, every reception adds a new entry. */
+	if (remove_duplicates && hist->count > 0)
+	{
+		uint8_t last_idx = (hist->head == 0) ? SUBGHZ_HISTORY_MAX - 1 : hist->head - 1;
+		SubGHz_History_Entry_t *last = &hist->entries[last_idx];
+		if (last->info.protocol == info->protocol &&
+		    last->info.key      == info->key &&
+		    last->info.bit_len  == info->bit_len)
+		{
+			/* Duplicate — increment count, update RSSI to latest */
+			if (last->count < 255)
+				last->count++;
+			last->info.rssi = info->rssi;
+			return hist->count;
+		}
+	}
+
+	/* Phase 12: when delete_old_signals is false and the ring is full,
+	 * drop the new entry instead of evicting the oldest. */
+	if (!delete_old_signals && hist->count >= SUBGHZ_HISTORY_MAX)
+		return hist->count;
+
+	/* Write new entry at head position */
+	SubGHz_History_Entry_t *entry = &hist->entries[hist->head];
+	entry->info          = *info;
+	entry->info.raw_data = NULL;   /* Do not store raw data pointer */
+	entry->info.raw      = false;
+	entry->frequency     = freq_hz;
+	entry->count         = 1;
+
+	hist->head = (hist->head + 1) % SUBGHZ_HISTORY_MAX;
+	if (hist->count < SUBGHZ_HISTORY_MAX)
+		hist->count++;
+
+	return hist->count;
+}
+
+const SubGHz_History_Entry_t *subghz_history_get(const SubGHz_History_t *hist, uint8_t idx)
+{
+	if (idx >= hist->count)
+		return NULL;
+	/* Index 0 = most recent, index (count-1) = oldest */
+	uint8_t pos;
+	if (hist->head >= (idx + 1))
+		pos = hist->head - idx - 1;
+	else
+		pos = SUBGHZ_HISTORY_MAX - (idx + 1 - hist->head);
+	return &hist->entries[pos];
+}

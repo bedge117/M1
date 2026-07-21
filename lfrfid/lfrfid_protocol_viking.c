@@ -25,6 +25,8 @@
 #include "lfrfid.h"
 #include "lfrfid_manchester.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -109,6 +111,54 @@ static void viking_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_viking_write_data /
+ * protocol_viking_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Viking: Manchester modulation, RF/32 bitrate, 2 data blocks. The 64-bit
+ * encoded frame is a 24-bit preamble (0xF2 0x00 0x00) + 32-bit card id at
+ * bit 24 + 8-bit XOR checksum at bit 56. Decoded data (4 bytes) is sourced
+ * from tag->uid, which holds the card id verbatim for protocols <= 5 bytes.
+ */
+/*============================================================================*/
+void protocol_viking_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    const uint8_t*   decoded  = tag_data->uid;
+    uint8_t          encoded[VIKING_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+
+    /* Preamble: 0xF2 0x00 0x00 */
+    bit_lib_set_bits(encoded, 0, 0b11110010, 8);
+    bit_lib_set_bits(encoded, 8, 0b00000000, 8);
+    bit_lib_set_bits(encoded, 16, 0b00000000, 8);
+
+    /* Card id */
+    bit_lib_copy_bits(encoded, 24, 32, decoded, 0);
+
+    /* Checksum */
+    uint32_t id = bit_lib_get_bits_32(decoded, 0, 32);
+    uint8_t  checksum = ((id >> 24) & 0xFF) ^ ((id >> 16) & 0xFF) ^ ((id >> 8) & 0xFF) ^
+                        (id & 0xFF) ^ 0xF2 ^ 0xA8;
+    bit_lib_set_bits(encoded, 56, checksum, 8);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] =
+            T5577_MOD_MANCHESTER | T5577_BITRATE_RF_32 | T5577_TRANS_BL_1_2;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.max_blocks = 3;
+    }
+}
+
+void protocol_viking_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_viking = {
     .name = "Viking",
     .manufacturer = "Viking",
@@ -120,6 +170,10 @@ const LFRFIDProtocolBase protocol_viking = {
         .execute = (lfrfidProtocolDecoderExecute)viking_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write =
+    {
+        .begin = (lfrfidProtocolWriteBegin)protocol_viking_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_viking_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)viking_render_data,
 };

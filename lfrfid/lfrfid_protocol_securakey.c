@@ -25,6 +25,8 @@
 #include "lfrfid.h"
 #include "lfrfid_manchester.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** D E F I N E S **********************************/
 
@@ -141,6 +143,88 @@ static void securakey_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — EXACT INVERSE of this file's securakey_decode().
+ *
+ * The clone requirement is round-trip fidelity on M1 itself: a card captured by
+ * securakey_execute_impl()/securakey_decode() and then written by this encoder
+ * must decode back to the identical g_securakey_decoded. It is therefore NOT a
+ * port of Flipper's structured encoder_start (whose protocol->data layout does
+ * not match M1's decoder); it reconstructs the raw on-wire frame by inverting
+ * precisely what securakey_decode() did.
+ *
+ * securakey_decode() reads frame bits 19..95, skipping the Always-0 "parity"
+ * slots at every position where (pos-2)%9==0 (i.e. pos 20,29,38,47,56,65,74,83,
+ * 92), copying the survivors in order into 48 output bits and stopping at 48.
+ * The resulting position map (frame_pos -> decoded_bit) is:
+ *     out0        <- frame pos 19               (lone bit before first parity slot)
+ *     out1 .. 40  <- frame pos 21 .. 65         (five regular 8-data + 1-parity groups)
+ *     out41 .. 47 <- frame pos 66 .. 72         (final 7-bit tail; decode caps at 48)
+ *
+ * The inverse re-inserts the 19-bit preamble and the Always-0 parity slots
+ * (mirroring the GProxII port's use of bit_lib_add_parity to rebuild a frame):
+ *     - preamble (bits 0..18)  = 0x3FE60  (RKKT pattern the decoder recognises)
+ *     - out0                   -> bit_lib_copy_bits at pos 19  (parity slot 20 stays 0)
+ *     - out1..40               -> bit_lib_add_parity: 5 groups of 8 data + 1 zero
+ *                                 parity, laid out at pos 21..65
+ *     - out41..47              -> bit_lib_copy_bits at pos 66..72
+ * All parity slots (20,29,38,47,56,65 via add_parity; 74,83,92 via memset) are 0,
+ * matching what securakey_can_be_decoded() expects.
+ *
+ * Frame is always the full 96 bits (3 data blocks). M1's decoder requires
+ * bit_count >= 96 to decode at all, so a 64-bit RKKTH-style 2-block write could
+ * never read back on M1; the single 96-bit path is the only round-trippable form
+ * and the true inverse of securakey_decode() (which has no 64-bit path).
+ *
+ * Data source is the full 6-byte decoded buffer g_securakey_decoded (48 bits >
+ * 5 bytes, so tag->uid is not used).
+ */
+/*============================================================================*/
+#define SECURAKEY_ENC_PREAMBLE 0x3FE60u /* 0b0111111111001100000 (19-bit RKKT) */
+
+static void securakey_build_frame(const uint8_t *decoded, uint8_t *encoded)
+{
+    memset(encoded, 0, SECURAKEY_ENCODED_SIZE);
+
+    /* 19-bit preamble at frame bits 0..18 (MSB-first). */
+    bit_lib_set_bits(encoded, 0, (uint8_t)(SECURAKEY_ENC_PREAMBLE >> 11), 8);  /* bits 0..7  */
+    bit_lib_set_bits(encoded, 8, (uint8_t)(SECURAKEY_ENC_PREAMBLE >> 3), 8);   /* bits 8..15 */
+    bit_lib_set_bits(encoded, 16, (uint8_t)(SECURAKEY_ENC_PREAMBLE & 0x7), 3); /* bits 16..18 */
+
+    /* Inverse of securakey_decode's parity-strip (see block comment above). */
+    bit_lib_copy_bits(encoded, 19, 1, decoded, 0);   /* out0        -> pos 19        */
+    bit_lib_add_parity(
+        decoded, 1, encoded, 21, 40, 9, BitLibParityAlways0); /* out1..40 -> pos 21..65 */
+    bit_lib_copy_bits(encoded, 66, 7, decoded, 41);  /* out41..47   -> pos 66..72    */
+}
+
+void securakey_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    uint8_t          encoded[SECURAKEY_ENCODED_SIZE];
+
+    (void)tag_data;
+
+    securakey_build_frame(g_securakey_decoded, encoded);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        /* Manchester | RF/40, 96-bit frame = 3 data blocks (block 0 config). */
+        write->t5577.block_data[0] =
+            T5577_MOD_MANCHESTER | T5577_BITRATE_RF_40 | T5577_TRANS_BL_1_3;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void securakey_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_securakey = {
     .name = "Securakey",
     .manufacturer = "Securakey",
@@ -152,6 +236,9 @@ const LFRFIDProtocolBase protocol_securakey = {
         .execute = (lfrfidProtocolDecoderExecute)securakey_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)securakey_write_begin,
+        .send  = (lfrfidProtocolWriteSend)securakey_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)securakey_render_data,
 };

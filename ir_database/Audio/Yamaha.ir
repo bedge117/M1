@@ -1,0 +1,59 @@
+Filetype: IR library file
+Version: 1
+
+# Yamaha (model: Yamaha RAV15 and NoName Unknown Audio remote)
+name: Play
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 43 00 00 00
+#
+# Yamaha (model: Yamaha RAV15 and NoName Unknown Audio remote)
+name: Vol_up
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 15 00 00 00
+#
+# Yamaha (model: Yamaha RAV15 and NoName Unknown Audio remote)
+name: Vol_dn
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 07 00 00 00
+#
+# Yamaha (model: Yamaha RAV15 and NoName Unknown Audio remote)
+name: Next
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 40 00 00 00
+#
+# Yamaha (model: Yamaha RAV15 and NoName Unknown Audio remote)
+name: Prev
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 44 00 00 00
+#
+# Yamaha (model: Yamaha RX-V375)
+name: Power
+type: parsed
+protocol: NEC
+address: 7E 00 00 00
+command: 2A 00 00 00
+#
+# Yamaha (model: Yamaha RX-V375)
+name: Mute
+type: parsed
+protocol: NEC
+address: 7A 00 00 00
+command: 1C 00 00 00
+#
+# Yamaha (model: Yamaha RAV203_V473170_US)
+name: Pause
+type: parsed
+protocol: RC5
+address: 05 00 00 00
+command: 29 00 00 00
+#

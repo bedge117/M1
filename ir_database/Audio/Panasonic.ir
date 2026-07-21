@@ -1,0 +1,61 @@
+Filetype: IR library file
+Version: 1
+
+# Panasonic (model: Panasonic SA-PM193)
+name: Power
+type: parsed
+protocol: Kaseikyo
+address: AC 02 20 00
+command: D1 03 00 00
+# CD play/pause, tape play also exists but probably less commonly used
+#
+# Panasonic (model: Panasonic SA-PM193)
+name: Play
+type: parsed
+protocol: Kaseikyo
+address: AA 02 20 00
+command: A0 00 00 00
+# same as above
+#
+# Panasonic (model: Panasonic SA-PM193)
+name: Pause
+type: parsed
+protocol: Kaseikyo
+address: AA 02 20 00
+command: A0 00 00 00
+#
+# Panasonic (model: Panasonic SA-PM193)
+name: Vol_up
+type: parsed
+protocol: Kaseikyo
+address: A0 02 20 00
+command: 00 02 00 00
+#
+# Panasonic (model: Panasonic SA-PM193)
+name: Vol_dn
+type: parsed
+protocol: Kaseikyo
+address: A0 02 20 00
+command: 10 02 00 00
+#
+# Panasonic (model: Panasonic SA-PM193)
+name: Next
+type: parsed
+protocol: Kaseikyo
+address: AC 02 20 01
+command: A1 00 00 00
+#
+# Panasonic (model: Panasonic SA-PM193)
+name: Prev
+type: parsed
+protocol: Kaseikyo
+address: AC 02 20 01
+command: 91 00 00 00
+#
+# Panasonic (model: Panasonic SA-PM193)
+name: Mute
+type: parsed
+protocol: Kaseikyo
+address: A0 02 20 00
+command: 20 03 00 00
+#

@@ -11,6 +11,7 @@
 #include "m1_nfc.h"     /* M1NFC_FAM_*, M1NFC_TECH_* */
 #include "privateprofilestring.h"  /* INI style parsing for header */
 #include "logger.h"     /* platformLog */
+#include "m1_amiibo.h"  /* amiibo master-key re-signing */
 
 #define NFC_STORAGE_MIN_DUMP_UNITS  1
 
@@ -776,6 +777,21 @@ nfc_storage_result_t nfc_storage_load_bin(
             pack_page[0] = 0x80;
             pack_page[1] = 0x80;
             platformLog("[BIN] Fixed PACK at page 134: 80 80\r\n");
+        }
+    }
+
+    /* Amiibo re-signing: if the master keys (key_retail.bin) are present on SD,
+     * regenerate the data + tag HMACs for THIS dump's UID so it validates on a
+     * real console. Fixes dumps whose HMACs don't match their UID — the classic
+     * "some worked, some didn't". Only the first 520 bytes (figure region) are
+     * touched; the UID, config, PWD and PACK pages are preserved. */
+    if (page_count >= 135 && bytes_read >= 540) {
+        if (m1_amiibo_ensure_keys()) {
+            if (m1_amiibo_resign(dump_buf)) {
+                platformLog("[BIN] Amiibo re-signed for UID\r\n");
+            }
+        } else {
+            platformLog("[BIN] Amiibo keys not found; served dump as-is\r\n");
         }
     }
 

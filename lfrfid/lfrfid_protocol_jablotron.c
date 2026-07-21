@@ -25,6 +25,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -159,6 +161,45 @@ static void jablotron_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_jablotron_write_data /
+ * protocol_jablotron_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Jablotron: DIPHASE (bi-phase) modulation, RF/64 bitrate, 2 data blocks. The
+ * 64-bit encoded frame written to the tag is: 16-bit preamble (0xFFFF) + 40-bit
+ * decoded payload (5 bytes) + 8-bit checksum. Decoded data (5 bytes) is sourced
+ * from tag->uid, which holds it verbatim (JABLOTRON_DECODED_SIZE == 5).
+ * The trailing 16-bit second preamble in the encoded buffer is decode-only and
+ * is not written.
+ */
+/*============================================================================*/
+void protocol_jablotron_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    const uint8_t*   decoded  = tag_data->uid;
+    uint8_t          encoded[JABLOTRON_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+    bit_lib_set_bits(encoded, 0, 0xFF, 8);              /* preamble 0xFFFF */
+    bit_lib_set_bits(encoded, 8, 0xFF, 8);
+    bit_lib_copy_bits(encoded, 16, 40, decoded, 0);     /* 5-byte payload  */
+    bit_lib_set_bits(encoded, 56, jablotron_checksum(encoded), 8);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_DIPHASE | T5577_BITRATE_RF_64 | T5577_TRANS_BL_1_2;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.max_blocks = 3;
+    }
+}
+
+void protocol_jablotron_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_jablotron = {
     .name = "Jablotron",
     .manufacturer = "Jablotron",
@@ -170,6 +211,9 @@ const LFRFIDProtocolBase protocol_jablotron = {
         .execute = (lfrfidProtocolDecoderExecute)jablotron_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_jablotron_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_jablotron_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)jablotron_render_data,
 };

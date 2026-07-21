@@ -28,6 +28,12 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
+
+/*************************** D E F I N E S ************************************/
+
+#define PARADOX_PREAMBLE_LENGTH  8   /* preamble occupies encoded bits 0..7 */
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -146,6 +152,52 @@ static void paradox_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_paradox_write_data /
+ * protocol_paradox_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Paradox: FSK2a modulation, RF/50 bitrate, 3 data blocks. The 96-bit encoded
+ * frame is an 8-bit preamble (0000 1111) followed by 44 Manchester pairs
+ * (decoded bit 1 -> 10, decoded bit 0 -> 01). Decoded data is 6 bytes and does
+ * NOT fit tag->uid[5], so it is sourced from the full g_paradox_decoded buffer.
+ */
+/*============================================================================*/
+void protocol_paradox_write_begin(void* protocol, void* data)
+{
+    (void)protocol;
+    LFRFIDProgram* write   = (LFRFIDProgram*)data;
+    const uint8_t* decoded = g_paradox_decoded;
+    uint8_t        encoded[PARADOX_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+
+    /* preamble: 0000 1111 */
+    bit_lib_set_bits(encoded, 0, 0x0F, 8);
+
+    /* 44 Manchester pairs after the 8-bit preamble */
+    for(size_t i = 0; i < 44; i++) {
+        if(bit_lib_get_bit(decoded, i))
+            bit_lib_set_bits(encoded, PARADOX_PREAMBLE_LENGTH + i * 2, 0b10, 2);
+        else
+            bit_lib_set_bits(encoded, PARADOX_PREAMBLE_LENGTH + i * 2, 0b01, 2);
+    }
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] =
+            T5577_MOD_FSK2a | T5577_BITRATE_RF_50 | T5577_TRANS_BL_1_3;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void protocol_paradox_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_paradox = {
     .name = "Paradox",
     .manufacturer = "Paradox",
@@ -157,6 +209,9 @@ const LFRFIDProtocolBase protocol_paradox = {
         .execute = (lfrfidProtocolDecoderExecute)paradox_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_paradox_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_paradox_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)paradox_render_data,
 };

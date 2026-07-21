@@ -25,6 +25,8 @@
 #include "lfrfid.h"
 #include "lfrfid_manchester.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -124,6 +126,47 @@ static void noralsy_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_noralsy_write_data /
+ * protocol_noralsy_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Noralsy: ASK/Manchester modulation, RF/32 bitrate, 96-bit frame, 4 blocks
+ * (config + 3 data). Flipper's encoder copies the decoded frame verbatim into
+ * encoded_data (no additional preamble/guard bits), so the 96-bit decoded
+ * buffer is the encoded bitstream. Decoded data (12 bytes) is sourced from the
+ * per-protocol full frame buffer g_noralsy_decoded (data_size > 5 bytes).
+ */
+/*============================================================================*/
+void protocol_noralsy_write_begin(void* protocol, void* data)
+{
+    (void)protocol;
+    LFRFIDProgram* write   = (LFRFIDProgram*)data;
+    const uint8_t* decoded = g_noralsy_decoded;
+    uint8_t        encoded[NORALSY_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+    bit_lib_copy_bits(encoded, 0, NORALSY_ENCODED_SIZE * 8, decoded, 0);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        /* MANCHESTER | RF/32 | max-block 1..3 | sequence terminator = 0x00088068.
+         * Iceman dumps show config 0x00088C6A on real cards, but the extra
+         * nibbles are undocumented and don't affect reads; mirror Proxmark and
+         * leave them zero (matches Flipper). */
+        write->t5577.block_data[0] =
+            T5577_MOD_MANCHESTER | T5577_BITRATE_RF_32 | T5577_TRANS_BL_1_3 | T5577_SST_TERM;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void protocol_noralsy_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_noralsy = {
     .name = "Noralsy",
     .manufacturer = "Noralsy",
@@ -135,6 +178,9 @@ const LFRFIDProtocolBase protocol_noralsy = {
         .execute = (lfrfidProtocolDecoderExecute)noralsy_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_noralsy_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_noralsy_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)noralsy_render_data,
 };

@@ -138,7 +138,7 @@ static void m1_sdm_main_task(void *argument)
 	    {
 	        if (evt.cmd_opt==M1_SDM_CHECK_SDCARD_USAGE)      /* Check SD card memory available */
 	        {
-	        	M1_LOG_N(M1_LOGDB_TAG, "sdm_main_task CHECK_SDCARD_USAGE\r\n");
+	        	M1_LOG_D(M1_LOGDB_TAG, "sdm_main_task CHECK_SDCARD_USAGE\r\n");
 	        	sdcard_is_low = m1_sdm_check_low_sdcard();
 	        	if ( sdcard_is_low==1 )
 	        	{
@@ -149,12 +149,12 @@ static void m1_sdm_main_task(void *argument)
 	        }
 	        if (evt.cmd_opt==M1_SDM_START_STOP)              /* start/stop acquisition command */
 	        {
-	        	M1_LOG_N(M1_LOGDB_TAG, "sdm_main_task START_STOP\r\n");
+	        	M1_LOG_D(M1_LOGDB_TAG, "sdm_main_task START_STOP\r\n");
 	        	sd_logging_error = m1_sdm_startstop_logging();
 	        }
 	        else if (evt.cmd_opt & M1_SDM_DATA_READY_MASK)     /* transfer data to sd card command */
 	        {
-	        	M1_LOG_N(M1_LOGDB_TAG, "sdm_main_task DATA_READY\r\n");
+	        	M1_LOG_D(M1_LOGDB_TAG, "sdm_main_task DATA_READY\r\n");
 	        	m1_sdm_dataready(evt);
 	        }
 	        else
@@ -252,12 +252,12 @@ static void m1_sdm_dataready(S_M1_SdCardManager_Q_t evt)
 	write_size = evt.write_size;
 
     m1_sdm_write_buffer(dst, write_size);
-    M1_LOG_N(M1_LOGDB_TAG, "m1_sdm_dataready %d\r\n", sdwrite_buffer_id);
+    M1_LOG_D(M1_LOGDB_TAG, "m1_sdm_dataready %d\r\n", sdwrite_buffer_id);
     vTaskDelay(1);
     //m1_test_gpio_pull_high();
 	m1_sdm_sync_datfile();
 	//m1_test_gpio_pull_low();
-	M1_LOG_N(M1_LOGDB_TAG, "sdm_sync OK\r\n");
+	M1_LOG_D(M1_LOGDB_TAG, "sdm_sync OK\r\n");
 	vTaskDelay(1);
 } // static void m1_sdm_dataready(S_M1_SdCardManager_Q_t evt)
 
@@ -667,7 +667,7 @@ uint8_t m1_sdm_flush_buffer(void)
 		ret = m1_sdm_write_buffer(src, psrc);
 	}
 
-	M1_LOG_N(M1_LOGDB_TAG, "m1_sdm_flush_buffer: buffer_id %d write_size %d q messages: %d\r\n", sdwrite_buffer_id, psrc, q_empty);
+	M1_LOG_D(M1_LOGDB_TAG, "m1_sdm_flush_buffer: buffer_id %d write_size %d q messages: %d\r\n", sdwrite_buffer_id, psrc, q_empty);
 
 	dev_sd_hdl.buff_info.sd_write_buffer_idx = 0;
 	sdwrite_buffer_id = 0;
@@ -699,7 +699,7 @@ uint8_t m1_sdm_fill_buffer(uint8_t *src, uint16_t srcSize)
 	M1_LOG_I(M1_LOGDB_TAG, "m1_sdm_fill_buffer %d..\r\n", sdwrite_buffer_id);
 	if ( uxQueueSpacesAvailable(sdmtaskqueue)==0 ) // Queue is full?
 	{
-		M1_LOG_N(M1_LOGDB_TAG, "Full!\r\n"); // Skip this data block
+		M1_LOG_W(M1_LOGDB_TAG, "SD buffer full - block skipped\r\n"); // Skip this data block
 		return 1;
 	} // if ( uxQueueSpacesAvailable(sdmtaskqueue)==0 )
 
@@ -715,7 +715,7 @@ uint8_t m1_sdm_fill_buffer(uint8_t *src, uint16_t srcSize)
 		sdwrite_buffer_id = 0;
 	if ( xQueueSend(sdmtaskqueue, &q_item, 0) != pdPASS )
 	{
-		M1_LOG_N(M1_LOGDB_TAG, "Full!\r\n");
+		M1_LOG_W(M1_LOGDB_TAG, "SD buffer full - block skipped\r\n");
 		return 1;
 	}
 
@@ -732,10 +732,10 @@ uint8_t m1_sdm_fill_buffer(uint8_t *src, uint16_t srcSize)
 	S_M1_SdCardManager_Q_t q_item = {0};
 
 	vTaskDelay(10); // Give the SD main task some time to do its job
-	M1_LOG_N(M1_LOGDB_TAG, "m1_sdm_fill_buffer %d..", sdwrite_buffer_id);
+	M1_LOG_D(M1_LOGDB_TAG, "m1_sdm_fill_buffer %d..", sdwrite_buffer_id);
 	if ( uxQueueSpacesAvailable(sdmtaskqueue)==0 ) // Queue is full?
 	{
-		M1_LOG_N(M1_LOGDB_TAG, " Full!\r\n"); // Skip this data block
+		M1_LOG_W(M1_LOGDB_TAG, "SD buffer full - block skipped\r\n"); // Skip this data block
 		vTaskDelay(10); // Give the SD main task more time
 		return 1;
 	} // if ( uxQueueSpacesAvailable(sdmtaskqueue)==0 )
@@ -776,7 +776,7 @@ uint8_t m1_sdm_fill_buffer(uint8_t *src, uint16_t srcSize)
 	if ( q_item.cmd_opt & M1_SDM_DATA_READY_MASK )
 	{
 		xQueueSend(sdmtaskqueue, &q_item, 0);
-		M1_LOG_N(M1_LOGDB_TAG, " queued OK!\r\n");
+		M1_LOG_D(M1_LOGDB_TAG, " queued OK!\r\n");
 	} // if ( q_item.cmd_opt & M1_SDM_DATA_READY_MASK )
 
 	return 0;

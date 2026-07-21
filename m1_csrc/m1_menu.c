@@ -19,6 +19,8 @@
 //#include "u8x8.h"
 //#include "U8g2lib.h"
 #include "m1_gpio.h"
+#include "m1_peer_link.h"   /* M1<->M1 ESP-NOW peer link (Tools) */
+#include "m1_field_detector.h"   /* NFC/RFID reader-field detector (Tools) */
 #include "m1_infrared.h"
 #include "m1_nfc.h"
 #include "m1_rfid.h"
@@ -47,79 +49,14 @@
 
 /*----------------------------- > Sub-GHz ------------------------------------*/
 
-S_M1_Menu_t menu_Sub_GHz_Record =
-{
-    "Read", sub_ghz_record, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Replay =
-{
-    "Replay", sub_ghz_replay, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Frequency_Reader =
-{
-    "Frequency Reader", sub_ghz_frequency_reader, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Regional_Information =
-{
-    "Regional Information", sub_ghz_regional_information, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Radio_Settings =
-{
-    "Radio Settings", sub_ghz_radio_settings, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Spectrum =
-{
-    "Spectrum Analyzer", sub_ghz_spectrum_analyzer, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Weather =
-{
-    "Weather Station", sub_ghz_weather_station, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_BruteForce =
-{
-    "Brute Force", sub_ghz_brute_force, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_RSSI =
-{
-    "RSSI Meter", sub_ghz_rssi_meter, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_FreqScanner =
-{
-    "Freq Scanner", sub_ghz_freq_scanner, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Read =
-{
-    "Read", sub_ghz_read, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_Saved =
-{
-    "Saved", sub_ghz_saved, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_Sub_GHz_AddManually =
-{
-    "Add Manually", sub_ghz_add_manually, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
+/* Sub-GHz cutover to hapax scene engine: the entire subsystem (Read, Saved,
+ * Add Manually, Frequency Reader, Spectrum, RSSI, Freq Scanner, Weather, Brute
+ * Force, Regional, Radio Settings, Jammer) is now driven internally by the
+ * scene manager. The top-level menu is a single leaf action into
+ * sub_ghz_scene_entry(); all former sub-item structs are retired. */
 S_M1_Menu_t menu_Sub_GHz =
 {
-    "Sub-GHz", NULL, NULL, NULL, 11, 0, menu_m1_icon_wave, NULL,
-    {&menu_Sub_GHz_Record, &menu_Sub_GHz_Saved,
-     &menu_Sub_GHz_AddManually,
-     &menu_Sub_GHz_Frequency_Reader, &menu_Sub_GHz_Spectrum, &menu_Sub_GHz_RSSI,
-     &menu_Sub_GHz_FreqScanner, &menu_Sub_GHz_Weather,
-     &menu_Sub_GHz_BruteForce, &menu_Sub_GHz_Regional_Information, &menu_Sub_GHz_Radio_Settings}
+    "Sub-GHz", sub_ghz_scene_entry, NULL, NULL, 0, 1, menu_m1_icon_wave, NULL, {0}   /* reserved=1: Sub-GHz manages orientation per-scene */
 };
 
 /*----------------------------- > 125KHz RFID --------------------------------*/
@@ -206,7 +143,7 @@ S_M1_Menu_t menu_NFC =
 
 S_M1_Menu_t menu_Infrared_Universal_Remotes =
 {
-    "Universal Remotes", infrared_universal_remotes, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "Universal Remotes", infrared_universal_remotes, NULL, NULL, 0, 1, NULL, NULL, NULL   /* reserved=1: IR manages orientation (Remote mode) */
 };
 
 S_M1_Menu_t menu_Infrared_Learn_New_Remote =
@@ -249,8 +186,36 @@ S_M1_Menu_t menu_GPIO_USB_UART =
 
 S_M1_Menu_t menu_GPIO =
 {
-    "GPIO", menu_gpio_init, menu_gpio_exit, gpio_xkey_handler, 4, 0, menu_m1_icon_gpio, gpio_gui_update,
+    "GPIO", menu_gpio_init, menu_gpio_exit, gpio_xkey_handler, 4, 2, menu_m1_icon_gpio, gpio_gui_update,   /* reserved=2: GPIO subtree is landscape */
     {&menu_GPIO_GPIO_Manual_Control, &menu_GPIO_3_3V_On_GPIO, &menu_GPIO_5V_On_GPIO, &menu_GPIO_USB_UART}
+};
+
+/*------------------------------- > TOOLS ------------------------------------*/
+
+S_M1_Menu_t menu_Tools_I2C_Scan =
+{
+    "I2C Scanner", tool_i2c_scanner, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Tools_Pin_Reader =
+{
+    "Pin Reader", tool_pin_reader, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Tools_Peer_Link =
+{
+    "Peer Link", m1_peer_link_run, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Tools_Field_Detect =
+{
+    "Field Detector", m1_field_detector_run, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Tools =
+{
+    "Tools", NULL, NULL, NULL, 4, 0, menu_m1_icon_gpio, NULL,
+    {&menu_Tools_I2C_Scan, &menu_Tools_Pin_Reader, &menu_Tools_Peer_Link, &menu_Tools_Field_Detect}
 };
 
 /*------------------------------- > Settings ---------------------------------*/
@@ -381,20 +346,15 @@ S_M1_Menu_t menu_Settings_About =
 
 S_M1_Menu_t menu_Settings =
 {
-    "Settings", menu_settings_init, NULL, NULL, 7, 0, menu_m1_icon_setting, NULL,
+    "Settings", menu_settings_init, NULL, NULL, 7, 2, menu_m1_icon_setting, NULL,   /* reserved=2: whole Settings subtree is landscape */
     {&menu_Settings_LCD_and_Notifications, &menu_Settings_Storage, &menu_Settings_Power, &menu_Settings_System, &menu_Setting_Firmware_Update, &menu_Setting_ESP32, &menu_Settings_About}
 };
 
 /*------------------------------ > 802.15.4 ----------------------------------*/
 
-S_M1_Menu_t menu_802154_Zigbee =
+S_M1_Menu_t menu_802154_Scan =
 {
-    "Zigbee Scan", zigbee_scan, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_802154_Thread =
-{
-    "Thread Scan", thread_scan, NULL, NULL, 0, 0, NULL, NULL, NULL
+    "802.15.4 Scan", ieee802154_scan_all, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 /*--------------------------------- > Wifi -----------------------------------*/
@@ -402,6 +362,31 @@ S_M1_Menu_t menu_802154_Thread =
 S_M1_Menu_t menu_Wifi_Scan_AP =
 {
     "WiFi Scan+Connect", wifi_scan_ap, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Deauth =
+{
+    "Deauth", wifi_deauth_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Handshake =
+{
+    "Handshake", wifi_handshake_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Beacon =
+{
+    "Beacon", wifi_beacon_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Monitor =
+{
+    "Packet Monitor", wifi_monitor_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Captive =
+{
+    "Captive Portal", wifi_captive_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 S_M1_Menu_t menu_Wifi_Config =
@@ -422,14 +407,14 @@ S_M1_Menu_t menu_Wifi_Disconnect =
 
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 6, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_802154_Zigbee, &menu_802154_Thread, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
+    "Wifi", menu_wifi_init, NULL, NULL, 10, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
 };
 #else
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 4, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_802154_Zigbee, &menu_802154_Thread, &menu_Wifi_Config}
+    "Wifi", menu_wifi_init, NULL, NULL, 8, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_Wifi_Config}
 };
 #endif
 
@@ -518,11 +503,17 @@ S_M1_Menu_t menu_Tetris  = { "Tetris",      game_tetris_run, NULL, NULL, 0, 0, N
 S_M1_Menu_t menu_TRex    = { "T-Rex Runner",game_trex_run,   NULL, NULL, 0, 0, NULL, NULL, {NULL} };
 S_M1_Menu_t menu_Pong    = { "Pong",        game_pong_run,   NULL, NULL, 0, 0, NULL, NULL, {NULL} };
 S_M1_Menu_t menu_Dice    = { "Dice Roll",   game_dice_run,   NULL, NULL, 0, 0, NULL, NULL, {NULL} };
+S_M1_Menu_t menu_Flappy  = { "Flappy Bird", game_flappy_run,     NULL, NULL, 0, 0, NULL, NULL, {NULL} };
+S_M1_Menu_t menu_Coin    = { "Coin Flip",   game_coin_flip_run,  NULL, NULL, 0, 0, NULL, NULL, {NULL} };
+S_M1_Menu_t menu_RPS     = { "Rock Paper Sc",game_rps_run,       NULL, NULL, 0, 0, NULL, NULL, {NULL} };
+S_M1_Menu_t menu_Tama    = { "Tamagotchi",  game_tamagotchi_run, NULL, NULL, 0, 0, NULL, NULL, {NULL} };
+S_M1_Menu_t menu_TTT     = { "Tic-Tac-Toe", game_peer_ttt_run,   NULL, NULL, 0, 0, NULL, NULL, {NULL} };
 
 S_M1_Menu_t menu_Games =
 {
-    "Games", NULL, NULL, NULL, 5, 0, menu_m1_icon_games, NULL,
-    {&menu_Snake, &menu_Tetris, &menu_TRex, &menu_Pong, &menu_Dice}
+    "Games", NULL, NULL, NULL, 10, 0, menu_m1_icon_games, NULL,
+    {&menu_Snake, &menu_Tetris, &menu_TRex, &menu_Pong, &menu_Dice,
+     &menu_Flappy, &menu_Coin, &menu_RPS, &menu_Tama, &menu_TTT}
 };
 #endif /* M1_APP_GAMES_ENABLE */
 
@@ -541,17 +532,17 @@ S_M1_Menu_t menu_Apps =
 const S_M1_Menu_t menu_Main =
 {
 #if defined(M1_APP_BADUSB_ENABLE) && defined(M1_APP_GAMES_ENABLE) && defined(M1_APP_APPS_ENABLE)
-    "Main Menu", NULL, NULL, NULL, 11, 0, NULL, NULL,
-    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_BadUSB, &menu_Games, &menu_Apps, &menu_Settings}
+    "Main Menu", NULL, NULL, NULL, 12, 0, NULL, NULL,
+    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_BadUSB, &menu_Games, &menu_Apps, &menu_Tools, &menu_Settings}
 #elif defined(M1_APP_BADUSB_ENABLE)
-    "Main Menu", NULL, NULL, NULL, 9, 0, NULL, NULL,
-    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_BadUSB, &menu_Settings}
-#elif defined(M1_APP_GAMES_ENABLE) && defined(M1_APP_APPS_ENABLE)
     "Main Menu", NULL, NULL, NULL, 10, 0, NULL, NULL,
-    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_Games, &menu_Apps, &menu_Settings}
+    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_BadUSB, &menu_Tools, &menu_Settings}
+#elif defined(M1_APP_GAMES_ENABLE) && defined(M1_APP_APPS_ENABLE)
+    "Main Menu", NULL, NULL, NULL, 11, 0, NULL, NULL,
+    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_Games, &menu_Apps, &menu_Tools, &menu_Settings}
 #else
-    "Main Menu", NULL, NULL, NULL, 8, 0, NULL, NULL,
-    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_Settings}
+    "Main Menu", NULL, NULL, NULL, 9, 0, NULL, NULL,
+    {&menu_Sub_GHz, &menu_125KHz_RFID, &menu_NFC, &menu_Infrared, &menu_GPIO, &menu_Wifi, &menu_Bluetooth, &menu_Tools, &menu_Settings}
 #endif
 };
 
@@ -568,6 +559,10 @@ TaskHandle_t					menu_main_handler_task_hdl;
 static void menu_main_init(void);
 void menu_main_handler_task(void *param);
 void subfunc_handler_task(void *param);
+
+/* Per-leaf "reserved" flag captured at dispatch: 1 = the activity manages its own
+ * orientation (skip the auto force-landscape wrap); 0 = wrap it. */
+static uint8_t s_subfunc_self_orient = 0;
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
 
@@ -649,6 +644,7 @@ void menu_main_handler_task(void *param)
 	                                menu_ctl.menu_level++; // go to next menu level
 	                                menu_ctl.main_menu_ptr[menu_ctl.menu_level] = pthis_submenu->submenu[menu_ctl.menu_item_active];
 	                                pthis_submenu = menu_ctl.main_menu_ptr[menu_ctl.menu_level];
+	                                if ( pthis_submenu->reserved == 2 ) m1_orient_enter_landscape();
 	                                menu_ctl.this_func = pthis_submenu->sub_func;
 	                            	menu_ctl.num_menu_items = n_items; // update this field
 	                                menu_ctl.menu_item_active = 0; // default for new submenu
@@ -665,6 +661,7 @@ void menu_main_handler_task(void *param)
 	                            {
 	                                m1_device_stat.op_mode = M1_OPERATION_MODE_SUB_FUNC_RUNNING;
 	                                m1_device_stat.sub_func = pthis_submenu->submenu[menu_ctl.menu_item_active]->sub_func; // let schedule to run the function of the selected submenu item
+	                                s_subfunc_self_orient = pthis_submenu->submenu[menu_ctl.menu_item_active]->reserved; // 1 = self-managed orientation
 	                                //this_button_status.event[key].event = BUTTON_EVENT_IDLE; // clear before return
 	                                // Notify the sub-function handler
 	                                xTaskNotify(subfunc_handler_task_hdl, 0, eNoAction);
@@ -811,6 +808,7 @@ void menu_main_handler_task(void *param)
 									if ( pthis_submenu->deinit_func )
 										pthis_submenu->deinit_func(); // Run deinit function of this submenu before leaving
 								} // if ( menu_ctl.num_menu_items )
+								if ( pthis_submenu->reserved == 2 ) m1_orient_restore();
 								menu_ctl.menu_level--; // go back one level
 								menu_ctl.menu_item_active = menu_ctl.last_selected_items[menu_ctl.menu_level]; // restore  previous selected item of the upper menu level
 								pthis_submenu = menu_ctl.main_menu_ptr[menu_ctl.menu_level]; // save the current menu level index
@@ -861,8 +859,12 @@ void subfunc_handler_task(void *param)
 		// or from button_event_handler_task
 		xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
 		assert(m1_device_stat.sub_func!=NULL);
-		// Run the sub-function
+		// Run the sub-function. Bespoke activity screens are landscape-only, so in
+		// Portrait we flip to Normal for the duration and restore on return (no-op
+		// in Normal/Southpaw, and skipped for leaves that manage their own orient).
+		if (s_subfunc_self_orient != 1) m1_orient_enter_landscape();
 		m1_device_stat.sub_func();
+		if (s_subfunc_self_orient != 1) m1_orient_restore();
 		// Sub-function completes, let notify menu_main_handler_task
 		xTaskNotify(menu_main_handler_task_hdl, 0, eNoAction);
 	} // while(1)

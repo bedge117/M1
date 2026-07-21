@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# Pinguino (model: Pinguino PAC_EL275HGRKC)
+name: Off
+type: parsed
+protocol: NEC
+address: 82 00 00 00
+command: 6B 00 00 00
+#

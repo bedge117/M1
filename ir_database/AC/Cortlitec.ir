@@ -1,0 +1,17 @@
+Filetype: IR library file
+Version: 1
+
+# Cortlitec (model: Cortlitec portable_ac)
+name: Off
+type: parsed
+protocol: NECext
+address: 10 E7 00 00
+command: 00 FF 00 00
+#
+# Cortlitec (model: Cortlitec portable_ac)
+name: Dh
+type: parsed
+protocol: NECext
+address: 10 E7 00 00
+command: 0C F3 00 00
+#

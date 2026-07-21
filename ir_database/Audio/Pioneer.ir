@@ -1,0 +1,53 @@
+Filetype: IR library file
+Version: 1
+
+# Pioneer (model: Pioneer VSX-D1-S)
+name: Vol_up
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 0A F5 00 00
+#
+# Pioneer (model: Pioneer VSX-D1-S)
+name: Mute
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 5C A3 00 00
+#
+# Pioneer (model: Pioneer VSX-D1-S)
+name: Power
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 1E E1 00 00
+# # Model: Adastra WA215
+#
+# Pioneer (model: Pioneer VSX-D1-S)
+name: Pause
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 09 00 00 00
+#
+# Pioneer (model: Pioneer VSX-D1-S)
+name: Prev
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 07 00 00 00
+#
+# Pioneer (model: Pioneer AXD7741)
+name: Vol_dn
+type: parsed
+protocol: Pioneer
+address: A5 00 00 00
+command: 0B 00 00 00
+#
+# Pioneer (model: Pioneer XXD3105)
+name: Play
+type: parsed
+protocol: Pioneer
+address: AA 00 00 00
+command: 0C 00 00 00
+#

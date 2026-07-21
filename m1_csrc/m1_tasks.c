@@ -23,6 +23,7 @@
 #include "m1_compile_cfg.h"
 #ifdef M1_APP_RPC_ENABLE
 #include "m1_rpc.h"
+#include "m1_wifi_rpc.h"
 #endif
 
 /*************************** D E F I N E S ************************************/
@@ -134,6 +135,9 @@ void m1_tasks_init(void)
 	m1_rpc_init();
 	free_heap = xPortGetFreeHeapSize();
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
+#if defined(M1_APP_WIFI_CONNECT_ENABLE)
+	wifi_rpc_init();
+#endif
 #endif
 } // void m1_tasks_init(void)
 

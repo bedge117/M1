@@ -37,6 +37,9 @@
 #include "spi_master.h"
 #include "ctrl_api.h"
 #include "esp_app_main.h"
+#include "m1_esp_rpc_cfg.h"   /* M1_USE_ESP_RPC */
+#include "m1_esp_client.h"    /* m1_link native probe (Option C) */
+#include "m1_rpc.h"           /* m1_rpc_screen_streaming_active — screen diag */
 #include "m1_lcd.h"
 #include "m1_bq25896.h"
 #include "m1_bq27421.h"
@@ -109,13 +112,6 @@ BaseType_t cmd_m1_mtest(char *pconsole, size_t xWriteBufferLen, const char *pcCo
 		return pdFALSE;
 	} // if ( num_of_params==0 )
 
-    // CLI tests should not run when there's an active running sub-function
-	if ( m1_device_stat.op_mode==M1_OPERATION_MODE_SUB_FUNC_RUNNING )
-	{
-		strcpy(pconsole, "Error: some task is being executed!\r\n");
-		return pdFALSE;
-	} // if ( m1_device_stat.op_mode==M1_OPERATION_MODE_SUB_FUNC_RUNNING )
-
 	n_params = (num_of_params <= INPUT_PARAMS_MAX)?num_of_params:INPUT_PARAMS_MAX;
 
 	for (i=0; i<n_params; i++)
@@ -140,6 +136,13 @@ BaseType_t cmd_m1_mtest(char *pconsole, size_t xWriteBufferLen, const char *pcCo
     cmd_type = strtol(input_params[0], NULL, 10);
     temp32 = cmd_type/10;
     temp32 *= 10;
+
+    // CLI tests must not run during an active sub-function.
+	if ( m1_device_stat.op_mode==M1_OPERATION_MODE_SUB_FUNC_RUNNING )
+	{
+		strcpy(pconsole, "Error: some task is being executed!\r\n");
+		return pdFALSE;
+	}
 
     //uint32_t stack_mem = uxTaskGetStackHighWaterMark(xTaskGetCurrentTaskHandle());
 
@@ -998,19 +1001,15 @@ void cmd_m1_mtest_esp32(char *pconsole, char *input_params[], uint8_t n_params, 
     		{
     			if ( !get_esp32_main_init_status() )
     				esp32_main_init();
-    			strcat(input_params[1], "\r\n");
+    			/* Option C: there is no AT firmware to send raw strings to.
+    			 * Repurpose as an m1_link liveness probe (ping + fw version)
+    			 * instead of crashing on the uninitialized AT transport. */
     			{
-    				static char at_resp[512];
-    				uint8_t at_ret = spi_AT_send_recv(input_params[1], at_resp, sizeof(at_resp), 10);
-    				if (at_ret == SUCCESS)
-    				{
-    					/* Truncate to fit CLI buffer */
-    					snprintf(pconsole, 190, "SPI_AT> %s", at_resp);
-    				}
-    				else
-    				{
-    					snprintf(pconsole, 190, "SPI_AT err=%d: %s", at_ret, at_resp);
-    				}
+    				char ver[32] = {0};
+    				bool ping_ok = m1_esp_client_ping();
+    				bool ver_ok  = m1_esp_client_fw_version(ver, sizeof(ver));
+    				snprintf(pconsole, 190, "m1_link ping=%s fw=%s\r\n",
+    				         ping_ok ? "OK" : "FAIL", ver_ok ? ver : "?");
     			}
     		} // if ( m1_esp32_get_init_status() )
     		else
@@ -1019,16 +1018,100 @@ void cmd_m1_mtest_esp32(char *pconsole, char *input_params[], uint8_t n_params, 
     		}
     		break;
 
+    	case 73:   /* WiFi packet monitor: start (param = channel, 0 = hop 1-13) */
+    		if ( n_params < 2 ) { strcpy(pconsole, "Error: missing parameter(s)!\r\n"); break; }
+    		{
+    			uint8_t ch = (uint8_t)strtol(input_params[1], NULL, 10);
+    			int e = m1_esp_client_monitor_start(ch);
+    			snprintf(pconsole, 190, "monitor start ch=%u: %s (err=%d/0x%X)\r\n",
+    			         ch, e == 0 ? "OK" : (e == -1000 ? "TIMEOUT" : "FAIL"), e, (unsigned)e);
+    		}
+    		break;
+
+    	case 74:   /* WiFi packet monitor: stats + sample one buffered frame */
+    		{
+    			uint32_t total = 0, dropped = 0; uint8_t buffered = 0;
+    			if ( !m1_esp_client_monitor_stats(&total, &dropped, &buffered) )
+    			{
+    				strcpy(pconsole, "monitor stats FAIL\r\n");
+    				break;
+    			}
+    			uint8_t fr[64]; int8_t rssi = 0; uint8_t ch = 0;
+    			uint16_t flen = m1_esp_client_monitor_read(fr, sizeof(fr), &rssi, &ch);
+    			int p = snprintf(pconsole, 190,
+    			    "total=%lu dropped=%lu buf=%u | frame ch=%u rssi=%d len=%u ",
+    			    (unsigned long)total, (unsigned long)dropped, buffered, ch, rssi, flen);
+    			for (int i = 0; i < flen && i < 8 && p < 180; i++)
+    				p += snprintf(pconsole + p, 190 - p, "%02X ", fr[i]);
+    			snprintf(pconsole + p, 190 - p, "\r\n");
+    		}
+    		break;
+
+    	case 75:   /* WiFi packet monitor: stop */
+    		{
+    			bool ok = m1_esp_client_monitor_stop();
+    			snprintf(pconsole, 190, "monitor stop: %s\r\n", ok ? "OK" : "FAIL");
+    		}
+    		break;
+
+    	case 76:   /* Captive portal: start (param = SSID, used as page title too) */
+    		if ( n_params < 2 ) { strcpy(pconsole, "Error: missing parameter(s)!\r\n"); break; }
+    		{
+    			int e = m1_esp_client_captive_start(input_params[1], input_params[1], 1);
+    			snprintf(pconsole, 190, "captive start '%s': %s (err=%d/0x%X)\r\n",
+    			         input_params[1], e == 0 ? "OK" : (e == -1000 ? "TIMEOUT" : "FAIL"),
+    			         e, (unsigned)e);
+    		}
+    		break;
+
+    	case 77:   /* Captive portal: param 0 = dump creds, 1 = stop, 2 = diag */
+    		if ( n_params < 2 ) { strcpy(pconsole, "Error: missing parameter(s)!\r\n"); break; }
+    		if ( strtol(input_params[1], NULL, 10) == 1 )
+    		{
+    			bool ok = m1_esp_client_captive_stop();
+    			snprintf(pconsole, 190, "captive stop: %s\r\n", ok ? "OK" : "FAIL");
+    		}
+    		else if ( strtol(input_params[1], NULL, 10) == 2 )
+    		{
+    			uint32_t dns_q = 0, http_hits = 0; uint8_t clients = 0;
+    			char lastpost[96] = {0};
+    			if ( m1_esp_client_captive_diag(&dns_q, &http_hits, &clients, lastpost, sizeof(lastpost)) )
+    				snprintf(pconsole, 190, "captive: clients=%u dns_q=%lu http_hits=%lu post=%s\r\n",
+    				         clients, (unsigned long)dns_q, (unsigned long)http_hits,
+    				         lastpost[0] ? lastpost : "(none)");
+    			else
+    				strcpy(pconsole, "captive diag FAIL\r\n");
+    		}
+    		else
+    		{
+    			uint8_t buf[256];
+    			int n = m1_esp_client_captive_creds(buf, sizeof(buf));
+    			if ( n < 1 ) { strcpy(pconsole, "creds: none\r\n"); break; }
+    			uint8_t cnt = buf[0];
+    			int p = snprintf(pconsole, 190, "creds=%u ", cnt);
+    			uint16_t o = 1;
+    			for ( uint8_t i = 0; i < cnt && p < 170; i++ )
+    			{
+    				if ( o + 6 > n ) break;
+    				o += 4;                        /* skip timestamp */
+    				uint8_t ul = buf[o++]; char u[64]; uint8_t uc = ul < 63 ? ul : 63;
+    				memcpy(u, &buf[o], uc); u[uc] = 0; o += ul;
+    				uint8_t pl = buf[o++]; char pw[64]; uint8_t pc = pl < 63 ? pl : 63;
+    				memcpy(pw, &buf[o], pc); pw[pc] = 0; o += pl;
+    				p += snprintf(pconsole + p, 190 - p, "[%s:%s] ", u, pw);
+    			}
+    			snprintf(pconsole + p, 190 - p, "\r\n");
+    		}
+    		break;
+
     	case 78:
-    		M1_LOG_N(M1_LOGDB_TAG, "CLI mtest: ESP32 - reset\r\n");
+    		M1_LOG_N(M1_LOGDB_TAG, "CLI mtest: ESP32 - reboot\r\n");
     		if ( n_params < 2 )
     		{
     			strcpy(pconsole, "Error: missing parameter(s)!\r\n");
     			break;
     		}
-    		esp32_disable();
-    		HAL_Delay(100);
-    		esp32_enable();
+    		m1_esp32_reboot();   /* proper cold reset + link re-sync */
     		break;
 
     	case 79:

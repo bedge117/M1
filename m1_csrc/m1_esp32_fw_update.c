@@ -47,8 +47,9 @@
 #define ESP32_IMAGE_SIZE_MAX					(uint32_t)0x400000 // 4Mbytes
 #define ESP32_IMAGE_CHUNK_SIZE					1024 // bytes
 
-#define ESP32_START_ADDRESS_MIN					0x0000 // default
-#define ESP32_START_ADDRESS_DEF					0x10000 // default app address, 64K
+#define ESP32_START_ADDRESS_MIN					0x0000 // factory image (bootloader+parts+app)
+#define ESP32_START_ADDRESS_DEF					0x10000 // high-increment threshold, 64K
+#define ESP32_START_ADDRESS_APP					0x60000 // app partition (app-only update) — default
 #define ESP32_START_ADDRESS_MAX					0x100000 // 1024K
 #define ESP32_START_ADDRESS_LO_INC				0x1000 // normal address increment, 4K each step
 #define ESP32_START_ADDRESS_HI_INC				0x10000 // fast address increment, 64K each step
@@ -102,7 +103,8 @@ void setting_esp32_init(void)
 		pfilename_md5 = malloc(ESP_FILE_NAME_LEN_MAX);
 	assert(pfilename_md5!=NULL);
 
-	start_address = ESP32_START_ADDRESS_MIN;
+	start_address = ESP32_START_ADDRESS_MIN;   /* default to 0x0: on-device flashing is
+	                                              usually a full-firmware install/recovery */
 	esp32_update_status = M1_FW_UPDATE_NOT_READY; // Reset
 } // void setting_esp32_init(void)
 

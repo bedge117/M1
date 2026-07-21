@@ -28,6 +28,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -148,6 +150,83 @@ static void ioprox_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — modulation/bitrate/block layout ported from Flipper
+ * protocol_io_prox_xsf_write_data (FSK2a, RF/64, 2 data blocks, GPLv3).
+ *
+ * The 64-bit encoded frame is NOT Flipper's standard IoProx framing: it is the
+ * EXACT INVERSE of THIS file's ioprox_decode / ioprox_can_be_decoded, so that a
+ * card read by the M1 decoder and written back here reads back identically on
+ * M1. Frame layout the M1 decoder expects (bit offsets):
+ *
+ *   [0..7]   = 0x00                (data[0] == 0x00)
+ *   [8]      = 1                   (framing)
+ *   [9..16]  = uid[0]  version     (ioprox_decode reads bits 9)
+ *   [17]     = 1                   (framing)
+ *   [18..25] = uid[1]  facility    (reads bits 18)
+ *   [26]     = 1                   (framing)
+ *   [27..34] = uid[2]  code hi     (reads bits 27)
+ *   [35]     = 1                   (framing)
+ *   [36..43] = uid[3]  code lo     (reads bits 36)
+ *   [44]     = 1                   (framing)
+ *   [45..52] = checksum = 0xFF - (uid[0]+uid[1]+uid[2]+uid[3])   (validated at bit 45)
+ *   [53]     = 1                   (framing)
+ *   [62]     = 0                   (required 0)
+ *   remaining bits (54..61, 63) = 0
+ *
+ * Decoded data (4 bytes) is sourced from tag->uid in M1's stored order, which
+ * holds it verbatim for protocols <= 5 bytes.
+ */
+/*============================================================================*/
+void protocol_ioprox_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    const uint8_t*   decoded  = tag_data->uid;
+    uint8_t          encoded[IOPROX_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+
+    /* byte 0 (bits 0..7) stays 0x00 from memset; framing bit at 8 = 1 */
+    bit_lib_set_bit(encoded, 8, 1);
+
+    /* Version (decode reads bits 9). */
+    bit_lib_set_bits(encoded, 9, decoded[0], 8);
+    bit_lib_set_bit(encoded, 17, 1);
+
+    /* Facility (decode reads bits 18). */
+    bit_lib_set_bits(encoded, 18, decoded[1], 8);
+    bit_lib_set_bit(encoded, 26, 1);
+
+    /* Code high (decode reads bits 27). */
+    bit_lib_set_bits(encoded, 27, decoded[2], 8);
+    bit_lib_set_bit(encoded, 35, 1);
+
+    /* Code low (decode reads bits 36). */
+    bit_lib_set_bits(encoded, 36, decoded[3], 8);
+    bit_lib_set_bit(encoded, 44, 1);
+
+    /* Checksum (decode validates at bits 45): 0xFF - sum of the 4 data bytes. */
+    uint8_t checksum = (uint8_t)(0xFF - (decoded[0] + decoded[1] + decoded[2] + decoded[3]));
+    bit_lib_set_bits(encoded, 45, checksum, 8);
+    bit_lib_set_bit(encoded, 53, 1);
+
+    /* bit 62 must be 0 (already 0 from memset). */
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_FSK2a | T5577_BITRATE_RF_64 | T5577_TRANS_BL_1_2;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.max_blocks = 3;
+    }
+}
+
+void protocol_ioprox_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_ioprox = {
     .name = "IoProxXSF",
     .manufacturer = "Kantech",
@@ -159,6 +238,9 @@ const LFRFIDProtocolBase protocol_ioprox = {
         .execute = (lfrfidProtocolDecoderExecute)ioprox_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_ioprox_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_ioprox_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)ioprox_render_data,
 };

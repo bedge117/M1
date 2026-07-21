@@ -121,22 +121,44 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-void HardFault_Handler(void)
+/* USER CODE BEGIN HardFault_capture */
+/* Fault post-mortem: stash the stacked frame + fault-status regs into TAMP
+ * backup registers (survive the reset), then reboot cleanly instead of hanging.
+ * Read back over SWD after the reset:  mdw 0x44007D08 6  (BKP2R..BKP7R):
+ *   BKP2R 0x44007D08 = magic 0xFA017C0D   BKP3R 0x44007D0C = faulting PC
+ *   BKP4R 0x44007D10 = stacked LR         BKP5R 0x44007D14 = CFSR
+ *   BKP6R 0x44007D18 = BFAR               BKP7R 0x44007D1C = HFSR              */
+__attribute__((used)) void m1_fault_capture(uint32_t *frame)
+{
+	volatile uint32_t cfsr = SCB->CFSR;
+	volatile uint32_t hfsr = SCB->HFSR;
+	volatile uint32_t bfar = SCB->BFAR;
+
+	PWR->DBPCR |= PWR_DBPCR_DBP;      /* enable backup-domain write */
+	TAMP->BKP2R = 0xFA017C0DU;        /* magic sentinel */
+	TAMP->BKP3R = frame[6];           /* stacked PC = faulting instruction */
+	TAMP->BKP4R = frame[5];           /* stacked LR = return address */
+	TAMP->BKP5R = cfsr;
+	TAMP->BKP6R = bfar;
+	TAMP->BKP7R = hfsr;
+
+	for (volatile int i = 0; i < 4000; i++) { __NOP(); }  /* let writes settle */
+	NVIC_SystemReset();
+	while (1) { }
+}
+/* USER CODE END HardFault_capture */
+
+__attribute__((naked)) void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-	static volatile int _go_db;
-
-	_go_db = 0;
-
-	while( _go_db==0 )
-		;
-	return;
+	__asm volatile (
+		"tst  lr, #4           \n"   /* EXC_RETURN bit2: 0=MSP frame, 1=PSP  */
+		"ite  eq               \n"
+		"mrseq r0, msp         \n"
+		"mrsne r0, psp         \n"
+		"b    m1_fault_capture \n"   /* pass frame pointer in r0            */
+	);
   /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
 }
 
 /**

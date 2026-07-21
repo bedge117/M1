@@ -66,7 +66,10 @@ extern "C" {
 #define T5577_MOD_FSK1a      	(6<<T5577_MOD_SHIFT)
 #define T5577_MOD_FSK2a      	(7<<T5577_MOD_SHIFT)
 #define T5577_MOD_MANCHESTER 	(8<<T5577_MOD_SHIFT)
-#define T5577_MOD_BIPHASE    	(9<<T5577_MOD_SHIFT)
+/* T5577 modulation is a 5-bit field: Biphase/Diphase use bit 16, not 9<<12.
+ * Values match the ATA5577 datasheet and Flipper's lfrfid tools/t5577.h. */
+#define T5577_MOD_BIPHASE    	(16<<T5577_MOD_SHIFT)   /* 0x00010000 */
+#define T5577_MOD_DIPHASE    	(24<<T5577_MOD_SHIFT)   /* 0x00018000 */
 
 #define T5577_X_MODE            (1<<17)
 

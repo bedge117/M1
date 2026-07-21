@@ -89,6 +89,8 @@
 #define RPC_CMD_CLI_RESP        0x61
 #define RPC_CMD_ESP_UART_SNOOP  0x62
 #define RPC_CMD_ESP_UART_SNOOP_RESP 0x63
+#define RPC_CMD_LOG_MESSAGE     0x64    /* M1→host: streamed debug log text */
+#define RPC_CMD_SET_LOG_LEVEL   0x65    /* host->M1: payload[0]=level (0..5) — gate UART verbosity */
 
 /* ── Button IDs (match m1_system.h) ── */
 #define RPC_BUTTON_OK           0
@@ -234,6 +236,7 @@ void m1_rpc_notify_screen_update(void);
  * @brief  Check if screen streaming is currently active.
  */
 bool m1_rpc_screen_streaming_active(void);
+bool m1_rpc_route_is_tcp(void);                 /* is screen output routed to TCP/WiFi */
 
 /**
  * @brief  Send an RPC frame over USB CDC.
@@ -261,5 +264,37 @@ extern S_RPC_ScreenStream rpc_screen_stream;
  *         to prevent corruption of RPC binary frames.
  */
 extern volatile bool m1_rpc_active;
+
+/**
+ * @brief  Enqueue log data for RPC forwarding to host.
+ */
+void m1_rpc_log_enqueue(const char *data, int len);
+
+/**
+ * @brief  WiFi TCP TX callback type.
+ */
+typedef bool (*rpc_tcp_tx_fn_t)(const uint8_t *data, uint16_t len);
+
+/**
+ * @brief  Register a TCP transmit function for WiFi RPC.
+ */
+void m1_rpc_register_tcp_tx(rpc_tcp_tx_fn_t fn);
+
+/**
+ * @brief  Set/clear TCP routing — when set, m1_rpc_send_frame routes to TCP.
+ */
+void m1_rpc_route_to_tcp(bool enable);
+
+/* Stop screen streaming — call when the WiFi/TCP client disconnects so the M1
+ * doesn't keep pushing frames to a dead socket. */
+void m1_rpc_stop_screen_stream(void);
+
+/**
+ * @brief  Fill `out` with the ESP32 coprocessor firmware string ("m1_link
+ *         X.Y.Z", "ESP not started", "checking...", "updating...") for the
+ *         on-device System Info screen. Uses the same cached probe as the
+ *         qMonstatek Device-Info path; non-blocking after the first success.
+ */
+void m1_rpc_esp_fw_str(char *out, uint16_t cap);
 
 #endif /* M1_RPC_H_ */

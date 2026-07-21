@@ -53,6 +53,7 @@ target_include_directories(m1_01 INTERFACE
     ../../NFC/NFC_drv/common
     ../../NFC/NFC_drv/legacy
     ../../NFC/NFC_drv/legacy/picopass
+    ../../NFC/amiibo
     ../../Battery
     ../../lfrfid
     ../../USB
@@ -260,8 +261,6 @@ target_sources(m1_01 INTERFACE
     ../../Esp32_serial_flasher/src/slip.c
     ../../Esp_spi_at/esp-idf/components/esp_driver_spi/src/gpspi/spi_master.c
     ../../Esp_spi_at/examples/at_spi_master/spi/stm32/main/esp_app_main.c
-    ../../Esp_spi_at/examples/at_spi_master/spi/stm32/main/esp_queue.c
-    ../../Esp_spi_at/examples/at_spi_master/spi/stm32/main/m1_at_response_parser.c
     ../../FatFs/diskio.c
     ../../FatFs/ff.c
     ../../FatFs/ff_gen_drv.c
@@ -306,6 +305,13 @@ target_sources(m1_01 INTERFACE
     ../../NFC/NFC_drv/common/nfc_storage.c
     ../../NFC/NFC_drv/legacy/nfc_driver.c
     ../../NFC/NFC_drv/legacy/nfc_listener.c
+    ../../NFC/amiibo/amiibo.c
+    ../../NFC/amiibo/keygen.c
+    ../../NFC/amiibo/drbg.c
+    ../../NFC/amiibo/mbedtls_shim.c
+    ../../NFC/amiibo/tiny_aes.c
+    ../../NFC/amiibo/sha256.c
+    ../../NFC/amiibo/m1_amiibo.c
     ../../NFC/NFC_drv/legacy/nfc_poller.c
     ../../NFC/NFC_drv/legacy/mfc_crypto1.c
     ../../NFC/NFC_drv/legacy/picopass/picopass_cipher.c
@@ -385,6 +391,7 @@ target_sources(m1_01 INTERFACE
     ../../USB/Core/Src/usbd_ctlreq.c
     ../../USB/Core/Src/usbd_desc.c
     ../../USB/Core/Src/usbd_ioreq.c
+    ../../lfrfid/bit_lib.c
     ../../lfrfid/lfrfid.c
     ../../lfrfid/lfrfid_file.c
     ../../lfrfid/lfrfid_hal.c
@@ -429,6 +436,10 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_esp32_fw_update.c
     ../../m1_csrc/m1_esp32_hal.c
     ../../m1_csrc/m1_esp_hosted_dummy.c
+    ../../m1_csrc/m1_esp_rpc.c
+    ../../m1_csrc/m1_link.c
+    ../../m1_csrc/m1_esp_client.c
+    ../../m1_csrc/m1_qmon_relay.c
     ../../m1_csrc/m1_file_browser.c
     ../../m1_csrc/m1_file_util.c
     ../../m1_csrc/m1_fusb302.c
@@ -436,6 +447,8 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_fw_update_bl.c
     ../../m1_csrc/m1_rpc.c
     ../../m1_csrc/m1_gpio.c
+    ../../m1_csrc/m1_peer_link.c
+    ../../m1_csrc/m1_field_detector.c
     ../../m1_csrc/m1_i2c.c
     ../../m1_csrc/m1_infrared.c
     ../../m1_csrc/m1_int_hdl.c
@@ -457,6 +470,128 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_settings.c
     ../../m1_csrc/m1_storage.c
     ../../m1_csrc/m1_sub_ghz.c
+    ../../m1_csrc/m1_scene.c
+    ../../Sub_Ghz/cc1101_fec.c
+    ../../Sub_Ghz/protocols/m1_acurite_592txr_decode.c
+    ../../Sub_Ghz/protocols/m1_acurite_5n1_decode.c
+    ../../Sub_Ghz/protocols/m1_acurite_606tx_decode.c
+    ../../Sub_Ghz/protocols/m1_acurite_609txc_decode.c
+    ../../Sub_Ghz/protocols/m1_acurite_986_decode.c
+    ../../Sub_Ghz/protocols/m1_auriol_ahfl_decode.c
+    ../../Sub_Ghz/protocols/m1_auriol_hg0601a_decode.c
+    ../../Sub_Ghz/protocols/m1_beninca_arc_decode.c
+    ../../Sub_Ghz/protocols/m1_dickert_mahs_decode.c
+    ../../Sub_Ghz/protocols/m1_ditec_gol4_decode.c
+    ../../Sub_Ghz/protocols/m1_elplast_decode.c
+    ../../Sub_Ghz/protocols/m1_emos_e601x_decode.c
+    ../../Sub_Ghz/protocols/m1_feron_decode.c
+    ../../Sub_Ghz/protocols/m1_firecracker_cm17a_decode.c
+    ../../Sub_Ghz/protocols/m1_gangqi_decode.c
+    ../../Sub_Ghz/protocols/m1_gt_wt02_decode.c
+    ../../Sub_Ghz/protocols/m1_hay21_decode.c
+    ../../Sub_Ghz/protocols/m1_hollarm_decode.c
+    ../../Sub_Ghz/protocols/m1_holtek_base_decode.c
+    ../../Sub_Ghz/protocols/m1_honeywell_wdb_decode.c
+    ../../Sub_Ghz/protocols/m1_hormann_bisecur_decode.c
+    ../../Sub_Ghz/protocols/m1_intertechno_v3_decode.c
+    ../../Sub_Ghz/protocols/m1_jarolift_decode.c
+    ../../Sub_Ghz/protocols/m1_kedsum_th_decode.c
+    ../../Sub_Ghz/protocols/m1_keyfinder_decode.c
+    ../../Sub_Ghz/protocols/m1_kia_seed_decode.c
+    ../../Sub_Ghz/protocols/m1_lacrosse_tx141thbv2_decode.c
+    ../../Sub_Ghz/protocols/m1_legrand_decode.c
+    ../../Sub_Ghz/protocols/m1_linear_delta3_decode.c
+    ../../Sub_Ghz/protocols/m1_magellan_decode.c
+    ../../Sub_Ghz/protocols/m1_marantec24_decode.c
+    ../../Sub_Ghz/protocols/m1_nero_sketch_decode.c
+    ../../Sub_Ghz/protocols/m1_nord_ice_decode.c
+    ../../Sub_Ghz/protocols/m1_oregon3_decode.c
+    ../../Sub_Ghz/protocols/m1_oregon_v1_decode.c
+    ../../Sub_Ghz/protocols/m1_pcsg_generic_decode.c
+    ../../Sub_Ghz/protocols/m1_phoenix_v2_decode.c
+    ../../Sub_Ghz/protocols/m1_pocsag_decode.c
+    ../../Sub_Ghz/protocols/m1_revers_rb2_decode.c
+    ../../Sub_Ghz/protocols/m1_roger_decode.c
+    ../../Sub_Ghz/protocols/m1_solight_te44_decode.c
+    ../../Sub_Ghz/protocols/m1_somfy_keytis_decode.c
+    ../../Sub_Ghz/protocols/m1_thermopro_tx4_decode.c
+    ../../Sub_Ghz/protocols/m1_tpms_generic_decode.c
+    ../../Sub_Ghz/protocols/m1_treadmill37_decode.c
+    ../../Sub_Ghz/protocols/m1_tx_8300_decode.c
+    ../../Sub_Ghz/protocols/m1_vauno_en8822c_decode.c
+    ../../Sub_Ghz/protocols/m1_wendox_w6726_decode.c
+    ../../Sub_Ghz/protocols/m1_x10_decode.c
+    ../../Sub_Ghz/subghz_alutech_at_4n.c
+    ../../Sub_Ghz/subghz_alutech_at_4n_table_builtin.c
+    ../../Sub_Ghz/subghz_block_generic.c
+    ../../Sub_Ghz/subghz_button_caps.c
+    ../../Sub_Ghz/subghz_button_override.c
+    ../../Sub_Ghz/subghz_came_atomo.c
+    ../../Sub_Ghz/subghz_create_proto.c
+    ../../Sub_Ghz/subghz_decode_try_fn.c
+    ../../Sub_Ghz/subghz_endless_tx.c
+    ../../Sub_Ghz/subghz_hex_editor.c
+    ../../Sub_Ghz/subghz_keeloq.c
+    ../../Sub_Ghz/subghz_keeloq_create.c
+    ../../Sub_Ghz/subghz_keeloq_encoder.c
+    ../../Sub_Ghz/subghz_keeloq_mfkeys.c
+    ../../Sub_Ghz/subghz_keeloq_mfkeys_builtin.c
+    ../../Sub_Ghz/subghz_key_encoder.c
+    ../../Sub_Ghz/subghz_new_remote_gen.c
+    ../../Sub_Ghz/subghz_nice_flor_s.c
+    ../../Sub_Ghz/subghz_nice_flor_s_table_builtin.c
+    ../../Sub_Ghz/subghz_playlist_parser.c
+    ../../Sub_Ghz/subghz_proto_pirate_timing.c
+    ../../Sub_Ghz/subghz_protocol_registry.c
+    ../../Sub_Ghz/subghz_raw_capture_alloc.c
+    ../../Sub_Ghz/subghz_raw_decoder.c
+    ../../Sub_Ghz/subghz_raw_line_parser.c
+    ../../Sub_Ghz/subghz_read_raw_status.c
+    ../../Sub_Ghz/subghz_scene_polish.c
+    ../../Sub_Ghz/subghz_scene_state.c
+    ../../Sub_Ghz/subghz_secplus_v1_encoder.c
+    ../../Sub_Ghz/subghz_signal_fields.c
+    ../../Sub_Ghz/subghz_signal_format.c
+    ../../Sub_Ghz/subghz_submenu_model.c
+    ../../Sub_Ghz/subghz_transmitter_ctl.c
+    ../../Sub_Ghz/subghz_txrx_state.c
+    ../../m1_csrc/m1_subghz_button_bar.c
+    ../../m1_csrc/m1_subghz_scene.c
+    ../../m1_csrc/m1_subghz_scene_bind_wizard.c
+    ../../m1_csrc/m1_subghz_scene_brute_force.c
+    ../../m1_csrc/m1_subghz_scene_config.c
+    ../../m1_csrc/m1_subghz_scene_decode_raw.c
+    ../../m1_csrc/m1_subghz_scene_delete.c
+    ../../m1_csrc/m1_subghz_scene_freq_analyzer.c
+    ../../m1_csrc/m1_subghz_scene_freq_scanner.c
+    ../../m1_csrc/m1_subghz_scene_menu.c
+    ../../m1_csrc/m1_subghz_scene_more_raw.c
+    ../../m1_csrc/m1_subghz_scene_need_saving.c
+    ../../m1_csrc/m1_subghz_scene_playlist.c
+    ../../m1_csrc/m1_subghz_scene_proto_pirate_menu.c
+    ../../m1_csrc/m1_subghz_scene_proto_pirate_tuner.c
+    ../../m1_csrc/m1_subghz_scene_read.c
+    ../../m1_csrc/m1_subghz_scene_read_raw.c
+    ../../m1_csrc/m1_subghz_scene_receiver_info.c
+    ../../m1_csrc/m1_subghz_scene_remote.c
+    ../../m1_csrc/m1_subghz_scene_rssi_meter.c
+    ../../m1_csrc/m1_subghz_scene_save_name.c
+    ../../m1_csrc/m1_subghz_scene_save_success.c
+    ../../m1_csrc/m1_subghz_scene_saved.c
+    ../../m1_csrc/m1_subghz_scene_saved_menu.c
+    ../../m1_csrc/m1_subghz_scene_set_button.c
+    ../../m1_csrc/m1_subghz_scene_set_counter.c
+    ../../m1_csrc/m1_subghz_scene_set_key.c
+    ../../m1_csrc/m1_subghz_scene_set_mfkey.c
+    ../../m1_csrc/m1_subghz_scene_set_serial.c
+    ../../m1_csrc/m1_subghz_scene_set_type.c
+    ../../m1_csrc/m1_subghz_scene_signal_settings.c
+    ../../m1_csrc/m1_subghz_scene_spectrum_analyzer.c
+    ../../m1_csrc/m1_subghz_scene_transmitter.c
+    ../../m1_csrc/m1_subghz_scene_weather_station.c
+    ../../m1_csrc/subghz_autosave.c
+    ../../m1_csrc/subghz_freq_presets.c
+    ../../m1_csrc/m1_submenu.c
     ../../m1_csrc/m1_sys_init.c
     ../../m1_csrc/m1_system.c
     ../../m1_csrc/m1_tasks.c
@@ -464,6 +599,8 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_virtual_kb.c
     ../../m1_csrc/m1_watchdog.c
     ../../m1_csrc/m1_wifi.c
+    ../../m1_csrc/m1_wifi_rpc.c
+    ../../m1_csrc/m1_protocol.c
     ../../m1_csrc/privateprofilestring.c
     ../../m1_csrc/uiView.c
     # === Enhanced firmware: Flipper file format parsers (Phase 2) ===
@@ -490,6 +627,11 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/game_trex.c
     ../../m1_csrc/game_pong.c
     ../../m1_csrc/game_dice.c
+    ../../m1_csrc/game_flappy.c
+    ../../m1_csrc/game_coin_flip.c
+    ../../m1_csrc/game_rps.c
+    ../../m1_csrc/game_tamagotchi.c
+    ../../m1_csrc/game_peer_ttt.c
     # === Enhanced firmware: ELF App Loader (Phase 10) ===
     ../../m1_csrc/m1_elf_loader.c
     ../../m1_csrc/m1_app_api.c

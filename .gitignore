@@ -71,6 +71,19 @@ appsplan.md
 .claude/
 CLAUDE.md
 
+# Experimental build output (never commit firmware binaries)
+build-exp/
+*.zip
+
+# Copyrighted / sensitive key material — NEVER commit
+amiibo_keys/
+key_retail.bin
+
+# Stray captures, build logs, scratch dirs
+*.sub
+build_err.txt
+test-branch/
+
 # Local project directories (not part of firmware)
 qMonstatek/
 m1-sdk/

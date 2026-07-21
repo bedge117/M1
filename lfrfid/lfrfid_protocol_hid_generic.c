@@ -34,10 +34,13 @@
 #include "uiView.h"
 
 #include "lfrfid.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /*************************** D E F I N E S ************************************/
 
-#define HID_GEN_ENCODED_BITS  (HID_GENERIC_ENCODED_SIZE * 8)  /* 104 */
+#define HID_GEN_ENCODED_BITS    (HID_GENERIC_ENCODED_SIZE * 8)  /* 104 */
+#define HID_GEN_DECODED_BITS    (HID_GENERIC_DATA_BYTES * 4)    /* 44  */
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -59,6 +62,8 @@ static bool    hid_generic_encoder_begin_impl(void *proto);
 static void    hid_generic_encoder_send_impl(void *proto);
 static uint8_t *hid_generic_get_data(void *proto);
 static void    hid_generic_render_data(void *proto, char *result);
+static void    hid_generic_write_begin(void *protocol, void *data);
+static void    hid_generic_write_send(void *proto);
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
 
@@ -402,6 +407,60 @@ static void hid_generic_render_data(void *proto, char *result)
 
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_hid_generic_write_data /
+ * protocol_hid_generic_encode (lib/lfrfid, GPLv3).
+ *
+ * HID Generic: FSK2a modulation, RF/50 bitrate, 3 data blocks. The 104-bit
+ * encoded frame is preamble (0x1D) at byte 0 + 88 Manchester bits (0->01,
+ * 1->10) of the 44-bit decoded credential starting at bit 8. Only the first
+ * 96 bits (blocks 1..3) are written to the tag; the trailing preamble byte is
+ * not programmed. Decoded data (6 bytes / 44 bits) is sourced from the
+ * per-protocol static g_hid_decoded buffer, NOT tag->uid, because uid is only
+ * 5 bytes and would truncate the 44-bit credential.
+ */
+/*============================================================================*/
+void hid_generic_write_begin(void *protocol, void *data)
+{
+    (void)protocol;
+    const uint8_t *decoded = g_hid_decoded;
+    LFRFIDProgram *write   = (LFRFIDProgram *)data;
+    uint8_t        encoded[HID_GENERIC_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+
+    /* Preamble byte 0 = 0x1D */
+    encoded[0] = HID_GENERIC_PREAMBLE;
+
+    /* Manchester-encode 44 decoded bits into 88 bits starting at bit 8.
+     * Convention: 1 -> 10, 0 -> 01 (matches hid_manchester_encode). */
+    size_t bit_index = 0;
+    for(size_t i = 0; i < HID_GEN_DECODED_BITS; i++) {
+        if(bit_lib_get_bit(decoded, i)) {
+            bit_lib_set_bit(encoded, 8 + bit_index, 1);
+            bit_lib_set_bit(encoded, 8 + bit_index + 1, 0);
+        } else {
+            bit_lib_set_bit(encoded, 8 + bit_index, 0);
+            bit_lib_set_bit(encoded, 8 + bit_index + 1, 1);
+        }
+        bit_index += 2;
+    }
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_FSK2a | T5577_BITRATE_RF_50 | T5577_TRANS_BL_1_3;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void hid_generic_write_send(void *proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 /**
  * @brief Protocol definition table entry
  */
@@ -424,8 +483,8 @@ const LFRFIDProtocolBase protocol_hid_generic = {
     },
     .write =
     {
-        .begin = NULL,
-        .send  = NULL,
+        .begin = (lfrfidProtocolWriteBegin)hid_generic_write_begin,
+        .send  = (lfrfidProtocolWriteSend)hid_generic_write_send,
     },
     .render_data = (lfrfidProtocolRenderData)hid_generic_render_data,
 };

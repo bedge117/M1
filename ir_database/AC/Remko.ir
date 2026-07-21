@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# Remko (model: Remko RKL)
+name: Off
+type: parsed
+protocol: NECext
+address: 86 6B 00 00
+command: 12 ED 00 00
+#

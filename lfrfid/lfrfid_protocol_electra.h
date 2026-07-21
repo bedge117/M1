@@ -3,6 +3,7 @@
 #define LFRFID_PROTOCOL_ELECTRA_H_
 
 #define ELECTRA_DECODED_SIZE    8   /* 5 base + 3 epilogue */
+#define ELECTRA_ENCODED_SIZE    16  /* 8 base + 8 epilogue (two 64-bit words) */
 #define ELECTRA_HALF_BIT_US     256 /* RF/64 */
 
 extern const LFRFIDProtocolBase protocol_electra;
