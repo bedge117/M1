@@ -158,6 +158,90 @@ void menu_gpio_exit(void)
 
 
 
+/*============================================================================*/
+/*        A P P - F A C I N G   E X T   G P I O   A P I  (0-based ids)         */
+/*                                                                            */
+/* Lets external .m1app apps drive/read the header GPIO signal pins. App ids  */
+/* are 0-based over the user pins only (firmware index = app_id +             */
+/* M1_EXT_GPIO_FIRST_ID), so the 3 power-rail control pins are hidden.        */
+/* mode()/write()/read() cover both output-drive and input-monitor use.      */
+/*============================================================================*/
+
+uint8_t m1_gpio_ext_app_count(void)
+{
+    return (uint8_t)(M1_EXT_GPIO_LIST_N - M1_EXT_GPIO_FIRST_ID);
+}
+
+const char *m1_gpio_ext_app_name(uint8_t app_id)
+{
+    if (app_id >= m1_gpio_ext_app_count()) return "";
+    return m1_ext_gpio_label[app_id + M1_EXT_GPIO_FIRST_ID];
+}
+
+/* mode: 0 = input, 1 = push-pull output (driven low on entry). */
+void m1_gpio_ext_app_mode(uint8_t app_id, uint8_t mode)
+{
+    if (app_id >= m1_gpio_ext_app_count()) return;
+    uint8_t i = (uint8_t)(app_id + M1_EXT_GPIO_FIRST_ID);
+
+    GPIO_InitTypeDef g = {0};
+    g.Pin   = m1_ext_gpio[i].gpio_pin;
+    g.Pull  = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    g.Mode  = mode ? GPIO_MODE_OUTPUT_PP : GPIO_MODE_INPUT;
+    HAL_GPIO_Init(m1_ext_gpio[i].gpio_port, &g);
+
+    if (mode)
+    {
+        HAL_GPIO_WritePin(m1_ext_gpio[i].gpio_port, m1_ext_gpio[i].gpio_pin, GPIO_PIN_RESET);
+        m1_ext_gpio_stat[i] = 0;
+    }
+}
+
+void m1_gpio_ext_app_write(uint8_t app_id, uint8_t on)
+{
+    if (app_id >= m1_gpio_ext_app_count()) return;
+    uint8_t i = (uint8_t)(app_id + M1_EXT_GPIO_FIRST_ID);
+
+    HAL_GPIO_WritePin(m1_ext_gpio[i].gpio_port, m1_ext_gpio[i].gpio_pin,
+                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    m1_ext_gpio_stat[i] = on ? 1 : 0;
+}
+
+uint8_t m1_gpio_ext_app_read(uint8_t app_id)
+{
+    if (app_id >= m1_gpio_ext_app_count()) return 0;
+    uint8_t i = (uint8_t)(app_id + M1_EXT_GPIO_FIRST_ID);
+    return (HAL_GPIO_ReadPin(m1_ext_gpio[i].gpio_port, m1_ext_gpio[i].gpio_pin) == GPIO_PIN_SET) ? 1 : 0;
+}
+
+/* Park all user header pins in a safe state (analog + pulldown) and restore
+ * the SWD debug pins (PA14/PA13) to their alternate function. Call on exit. */
+void m1_gpio_ext_app_release(void)
+{
+    GPIO_InitTypeDef g = {0};
+    uint8_t i;
+
+    g.Mode = GPIO_MODE_ANALOG;
+    g.Pull = GPIO_PULLDOWN;
+    for (i = M1_EXT_GPIO_FIRST_ID; i < M1_EXT_GPIO_LIST_N; i++)
+    {
+        g.Pin = m1_ext_gpio[i].gpio_pin;
+        HAL_GPIO_Init(m1_ext_gpio[i].gpio_port, &g);
+    }
+
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Alternate = GPIO_AF0_SWJ;
+    g.Pull      = GPIO_PULLDOWN;
+    g.Pin       = SWCLK_Pin;
+    HAL_GPIO_Init(SWCLK_GPIO_Port, &g);
+    g.Pull      = GPIO_PULLUP;
+    g.Pin       = SWDIO_Pin;
+    HAL_GPIO_Init(SWDIO_GPIO_Port, &g);
+}
+
+
+
 /******************************************************************************/
 /**
   * @brief

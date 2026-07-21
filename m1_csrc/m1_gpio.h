@@ -31,6 +31,14 @@ void tool_pin_reader(void);    /* live logic-level reader for header GPIOs */
 
 void ext_power_5V_set(uint8_t set_mode);
 void ext_power_3V_set(uint8_t set_mode);
+
+/* App-facing external-header GPIO control (0-based over the user signal pins). */
+uint8_t     m1_gpio_ext_app_count(void);
+const char *m1_gpio_ext_app_name(uint8_t app_id);
+void        m1_gpio_ext_app_mode(uint8_t app_id, uint8_t mode);   /* 0=input, 1=output */
+void        m1_gpio_ext_app_write(uint8_t app_id, uint8_t on);
+uint8_t     m1_gpio_ext_app_read(uint8_t app_id);
+void        m1_gpio_ext_app_release(void);
 void gpio_gui_update(const S_M1_Menu_t *phmenu, uint8_t sel_item);
 void gpio_xkey_handler(S_M1_Key_Event event, uint8_t button_id, uint8_t sel_item);
 
