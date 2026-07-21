@@ -84,6 +84,15 @@ void CDC_Signal_Next_Tx(void);
 void m1_usb_cdc_comdefault(void);
 void m1_usb_cdc_comconfig(void);
 
+/* USB-UART bridge (USART1 on header pins 12=TX/PA9, 13=RX/PA10) baud control. */
+void     m1_usb_uart_set_baud(uint32_t baud);
+uint32_t m1_usb_uart_get_baud(void);
+
+/* When true, USB-CDC bytes are forwarded raw to USART1 (bypassing RPC), so the
+ * bridge works even after qMonstatek has latched RPC active. Set/cleared by the
+ * USB-UART bridge menu on entry/exit. */
+extern volatile bool m1_uart_bridge_active;
+
 /*********************************************/
 // USB MSC
 extern volatile int8_t m1_USB_MSC_ready;

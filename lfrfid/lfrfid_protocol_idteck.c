@@ -23,6 +23,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -147,6 +149,55 @@ static void idteck_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_idteck_write_data /
+ * protocol_idteck_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Idteck: PSK1 modulation, RF/32 bitrate, 2 data blocks. The 64-bit encoded
+ * frame is the 32-bit "IDTK" preamble (0x49 0x44 0x54 0x4B) at bits 0..31 and
+ * the 32-bit card payload at bits 32..63.
+ *
+ * DATA SOURCE: Idteck decoded is 8 bytes and does not fit tag->uid[5], so the
+ * card payload is sourced from the module-local g_idteck_decoded buffer (the
+ * same buffer get_data() returns). Its layout differs from Flipper's
+ * protocol->data: Flipper stores [preamble(4)][card(4)] (card at bits 32..63),
+ * while M1's decoder stores [card(4)][preamble(4)] (card at bits 0..31 —
+ * idteck_decode copies encoded[4..11], i.e. the payload then the next repeated
+ * preamble). The card is therefore read from g_idteck_decoded bits 0..31.
+ *
+ * Config word matches Flipper bit-exactly; all fields have named M1 constants.
+ */
+/*============================================================================*/
+void protocol_idteck_write_begin(void* protocol, void* data)
+{
+    (void)protocol; /* Idteck decoded (8 bytes) does not fit tag->uid; use g_idteck_decoded */
+    LFRFIDProgram* write   = (LFRFIDProgram*)data;
+    const uint8_t* decoded = g_idteck_decoded;
+    uint8_t        encoded[IDTECK_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+    /* Preamble "IDTK" = 0x49 0x44 0x54 0x4B at bits 0..31 */
+    encoded[0] = 0x49;
+    encoded[1] = 0x44;
+    encoded[2] = 0x54;
+    encoded[3] = 0x4B;
+    /* Card payload lives at g_idteck_decoded bits 0..31; place it at bits 32..63 */
+    bit_lib_copy_bits(encoded, 32, 32, decoded, 0);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_PSK1 | T5577_BITRATE_RF_32 | T5577_TRANS_BL_1_2;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.max_blocks = 3;
+    }
+}
+
+void protocol_idteck_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_idteck = {
     .name = "Idteck",
     .manufacturer = "Idteck",
@@ -158,6 +209,9 @@ const LFRFIDProtocolBase protocol_idteck = {
         .execute = (lfrfidProtocolDecoderExecute)idteck_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_idteck_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_idteck_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)idteck_render_data,
 };

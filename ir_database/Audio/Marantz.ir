@@ -1,0 +1,38 @@
+Filetype: IR library file
+Version: 1
+
+# Marantz (model: Marantz RC2100DR_CD)
+name: Prev
+type: parsed
+protocol: RC5
+address: 14 00 00 00
+command: 21 00 00 00
+#
+# Marantz (model: Marantz RC2100DR_CD)
+name: Next
+type: parsed
+protocol: RC5
+address: 14 00 00 00
+command: 20 00 00 00
+#
+# Marantz (model: Marantz RC2100DR_CDR)
+name: Power
+type: parsed
+protocol: RC5
+address: 1A 00 00 00
+command: 0C 00 00 00
+#
+# Marantz (model: Marantz RC2100DR_CDR)
+name: Pause
+type: parsed
+protocol: RC5
+address: 1A 00 00 00
+command: 30 00 00 00
+#
+# Marantz (model: Marantz RC2100DR_CDR)
+name: Play
+type: parsed
+protocol: RC5
+address: 1A 00 00 00
+command: 35 00 00 00
+#

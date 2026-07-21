@@ -22,6 +22,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** C O N S T A N T S ******************************/
 
@@ -249,6 +251,70 @@ static void nexwatch_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_nexwatch_write_data /
+ * protocol_nexwatch_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Nexwatch: PSK1 modulation, RF/32 bit rate, 3 data blocks. The 96-bit encoded
+ * frame is the 8-bit preamble 0x56 (bits 0-7), a zero reserved word (bits
+ * 8-39), the 32-bit scrambled ID (bits 40-71) and the 24-bit check/parity word
+ * (bits 72-95).
+ *
+ * DATA SOURCE / LAYOUT NOTE: Nexwatch decoded data is 8 bytes and does NOT fit
+ * the 5-byte tag->uid, so the full decoded buffer (g_nex_decoded, returned by
+ * nexwatch_get_data) is used as the data source instead. Unlike Flipper — whose
+ * protocol->data holds the RAW frame (byte0 = 0, bytes 1-4 = raw *scrambled*
+ * ID, bytes 5-7 = check) and is copied verbatim into the encoded frame — the M1
+ * decoder (nexwatch_decode) stores the *descrambled* ID in bytes 0-3. The
+ * layouts therefore do NOT match, so the ID is re-scrambled here (the inverse of
+ * nexwatch_decode's descramble, reusing nexwatch_hex_2_id) before being placed
+ * at bits 40-71. Bytes 4-6 already hold the raw 24-bit check word (bits 72-95)
+ * and are copied through unchanged; byte 7 (a redundant parity-nibble copy) is
+ * unused.
+ */
+void protocol_nexwatch_write_begin(void* protocol, void* data)
+{
+    (void)protocol;
+    LFRFIDProgram* write   = (LFRFIDProgram*)data;
+    const uint8_t* decoded = g_nex_decoded;
+    uint8_t        encoded[NEXWATCH_ENCODED_DATA_SIZE];
+
+    /* Re-scramble the descrambled 32-bit ID back to the raw frame form.
+     * nexwatch_decode does:  id.bit[hex_2_id[i]] = scrambled.bit[31 - i]
+     * inverse:               scrambled.bit[31 - i] = id.bit[hex_2_id[i]]      */
+    uint32_t id = ((uint32_t)decoded[0] << 24) | ((uint32_t)decoded[1] << 16) |
+                  ((uint32_t)decoded[2] << 8) | (uint32_t)decoded[3];
+    uint32_t scrambled = 0;
+    for(int i = 0; i < 32; i++) {
+        if(id & (1UL << nexwatch_hex_2_id[i]))
+            scrambled |= (1UL << (31 - i));
+    }
+    uint8_t scrambled_be[4] = {
+        (uint8_t)(scrambled >> 24), (uint8_t)(scrambled >> 16),
+        (uint8_t)(scrambled >> 8),  (uint8_t)(scrambled)};
+
+    memset(encoded, 0, sizeof(encoded));
+    encoded[0] = 0x56;                                   /* preamble, bits 0-7  */
+    /* bits 8-39 stay 0 (reserved word) */
+    bit_lib_copy_bits(encoded, 40, 32, scrambled_be, 0); /* scrambled ID 40-71  */
+    bit_lib_copy_bits(encoded, 72, 24, decoded, 32);     /* check word   72-95  */
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] =
+            T5577_MOD_PSK1 | T5577_BITRATE_RF_32 | T5577_TRANS_BL_1_3;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void protocol_nexwatch_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_nexwatch = {
     .name = "Nexwatch",
     .manufacturer = "Honeywell",
@@ -260,6 +326,9 @@ const LFRFIDProtocolBase protocol_nexwatch = {
         .execute = (lfrfidProtocolDecoderExecute)nexwatch_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_nexwatch_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_nexwatch_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)nexwatch_render_data,
 };

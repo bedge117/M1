@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# Boulanger (model: Boulanger AC)
+name: Off
+type: parsed
+protocol: NEC
+address: 81 00 00 00
+command: 6B 00 00 00
+#

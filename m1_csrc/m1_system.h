@@ -28,6 +28,9 @@
 #define M1_ORIENT_NORMAL     0
 #define M1_ORIENT_SOUTHPAW   1
 #define M1_ORIENT_REMOTE     2
+/* Device-wide 90° portrait — same R1 rotation as the IR "Remote" mode, but a
+ * user-selectable system setting with a dedicated portrait menu layout. */
+#define M1_ORIENT_PORTRAIT   M1_ORIENT_REMOTE
 
 #define NUM_BUTTONS_MAX     	6
 
@@ -166,11 +169,13 @@ extern S_M1_Buttons_Status 	m1_buttons_status;
 extern S_M1_Device_Status_t	m1_device_stat;
 extern uint8_t              m1_southpaw_mode;  /* 0=right-handed, 1=left-handed (legacy, derived from orientation) */
 extern uint8_t              m1_esp32_auto_init; /* 0=on-demand, 1=init at boot */
-extern uint8_t              m1_screen_orientation; /* M1_ORIENT_NORMAL/SOUTHPAW/REMOTE */
+extern uint8_t              m1_screen_orientation; /* ACTIVE display orientation (may be temp-forced Normal) */
+extern uint8_t              m1_system_orientation; /* user's CHOSEN orientation to return to */
 extern uint8_t              m1_brightness_level;   /* 0=Off, 1=Low, 2=Med, 3=High, 4=Max */
 extern uint8_t              m1_buzzer_on;          /* 0=Off, 1=On */
 extern uint8_t              m1_led_notify_on;      /* 0=Off, 1=On */
 extern uint8_t              m1_sleep_timeout_idx;   /* 0=30s, 1=1m, 2=5m, 3=10m, 4=15m, 5=Never */
+extern uint8_t              m1_menu_style;          /* 0=Small(8px),1=Medium(10px),2=Large(13px) — scene menu font (hapax graft) */
 #ifdef M1_APP_BADBT_ENABLE
 #define BADBT_NAME_MAX_LEN 20
 extern char m1_badbt_name[BADBT_NAME_MAX_LEN + 1];

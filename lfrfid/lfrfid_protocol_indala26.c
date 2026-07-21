@@ -33,6 +33,8 @@
 #include "uiView.h"
 
 #include "lfrfid.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /*************************** D E F I N E S ************************************/
 
@@ -330,6 +332,45 @@ static void indala26_render_data(void *proto, char *result)
  * @brief Protocol definition table entry
  */
 /*============================================================================*/
+/*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_indala26_write_data /
+ * protocol_indala26_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Indala26: PSK1 modulation, RF/32 bitrate, 2 data blocks. The 64-bit encoded
+ * frame is preamble (10100000 …) + guard bit at 32 + the 28-bit decoded payload
+ * placed at Flipper's bit offsets. Decoded data (4 bytes) is sourced from
+ * tag->uid, which holds it verbatim for protocols <= 5 bytes.
+ */
+/*============================================================================*/
+void protocol_indala26_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    const uint8_t*   decoded  = tag_data->uid;
+    uint8_t          encoded[INDALA26_ENCODED_DATA_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+    bit_lib_set_bit(encoded, 0, 1);                    /* preamble 1010 0000 … */
+    bit_lib_set_bit(encoded, 2, 1);
+    bit_lib_set_bit(encoded, 32, 1);                   /* guard bit */
+    bit_lib_copy_bits(encoded, 33, 22, decoded, 0);
+    bit_lib_copy_bits(encoded, 55, 5,  decoded, 22);
+    bit_lib_copy_bits(encoded, 62, 2,  decoded, 27);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_PSK1 | T5577_BITRATE_RF_32 | T5577_TRANS_BL_1_2;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.max_blocks = 3;
+    }
+}
+
+void protocol_indala26_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
 const LFRFIDProtocolBase protocol_indala26 = {
     .name = "Indala26",
     .manufacturer = "Motorola",
@@ -348,8 +389,8 @@ const LFRFIDProtocolBase protocol_indala26 = {
     },
     .write =
     {
-        .begin = NULL,
-        .send  = NULL,
+        .begin = (lfrfidProtocolWriteBegin)protocol_indala26_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_indala26_write_send,
     },
     .render_data = (lfrfidProtocolRenderData)indala26_render_data,
 };

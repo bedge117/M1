@@ -35,7 +35,7 @@
 
 /*************************** D E F I N E S ************************************/
 
-#define BROWSE_NAMES_MAX     16
+#define BROWSE_NAMES_MAX     256
 #define BROWSE_NAME_MAX_LEN  64
 
 #define DASHBOARD_ITEM_COUNT  5
@@ -186,10 +186,21 @@ static void draw_dashboard(uint8_t selection)
 	u8g2_FirstPage(&m1_u8g2);
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 
-	/* Title bar */
+	/* Title bar — full title in landscape; a short centered one in portrait so
+	 * it doesn't clip at 64px. */
 	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);
-	u8g2_DrawStr(&m1_u8g2, 2, 10, "Universal Remote");
-	u8g2_DrawHLine(&m1_u8g2, 0, 12, 128);
+	if ( m1_screen_orientation == M1_ORIENT_PORTRAIT )
+	{
+		int pw = u8g2_GetDisplayWidth(&m1_u8g2);
+		int sw = u8g2_GetStrWidth(&m1_u8g2, "Remotes");
+		u8g2_DrawStr(&m1_u8g2, (pw - sw) / 2, 10, "Remotes");
+		u8g2_DrawHLine(&m1_u8g2, 0, 12, pw);
+	}
+	else
+	{
+		u8g2_DrawStr(&m1_u8g2, 2, 10, "Universal Remote");
+		u8g2_DrawHLine(&m1_u8g2, 0, 12, 128);
+	}
 
 	/* Menu items — show up to 4 visible with scrolling */
 	u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
@@ -238,6 +249,9 @@ static void dashboard_screen(void)
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
 	uint8_t selection = 0;
+	/* Remember the system orientation so a temporary Remote-mode toggle in here
+	 * doesn't leave the whole UI rotated after we exit. */
+	uint8_t ir_entry_orient = m1_screen_orientation;
 
 	draw_dashboard(selection);
 
@@ -252,6 +266,12 @@ static void dashboard_screen(void)
 
 				if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 				{
+					/* Restore the system orientation on the way out. */
+					m1_screen_orientation = ir_entry_orient;
+					m1_southpaw_mode = (ir_entry_orient == M1_ORIENT_SOUTHPAW) ? 1 : 0;
+					u8g2_SetDisplayRotation(&m1_u8g2,
+						ir_entry_orient == M1_ORIENT_SOUTHPAW ? U8G2_R0 :
+						ir_entry_orient == M1_ORIENT_REMOTE   ? U8G2_R1 : U8G2_R2);
 					xQueueReset(main_q_hdl);
 					break; /* Exit to caller */
 				}

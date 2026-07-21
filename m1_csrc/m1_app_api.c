@@ -51,6 +51,7 @@
 #include "flipper_rfid.h"
 #include "flipper_subghz.h"
 #include "m1_wifi.h"
+#include "m1_esp_client.h"   /* expose the ESP32-C6 WiFi/BLE/ESP-NOW API to apps */
 #include "m1_field_detect.h"
 #include "m1_usb_cdc_msc.h"
 #include "m1_badusb.h"
@@ -444,6 +445,42 @@ void m1_app_api_init(void)
         { "rand",      (void *)rand },
         { "srand",     (void *)srand },
         { "abs",       (void *)abs },
+
+        /* ===== ESP32-C6 coprocessor: WiFi / BLE / ESP-NOW =====
+         * Programmatic access to the wireless card so custom apps can scan,
+         * connect, run BLE, drive the offensive WiFi suite, and peer-link. */
+        { "m1_esp_client_ping",            (void *)m1_esp_client_ping },
+        { "m1_esp_client_fw_version",      (void *)m1_esp_client_fw_version },
+        /* WiFi station */
+        { "m1_esp_client_wifi_scan",       (void *)m1_esp_client_wifi_scan },
+        { "m1_esp_client_wifi_connect",    (void *)m1_esp_client_wifi_connect },
+        { "m1_esp_client_wifi_disconnect", (void *)m1_esp_client_wifi_disconnect },
+        { "m1_esp_client_wifi_status",     (void *)m1_esp_client_wifi_status },
+        /* BLE */
+        { "m1_esp_client_ble_scan",        (void *)m1_esp_client_ble_scan },
+        { "m1_esp_client_ble_advertise",   (void *)m1_esp_client_ble_advertise },
+        { "m1_esp_client_ble_connect",     (void *)m1_esp_client_ble_connect },
+        { "m1_esp_client_ble_hid_init",    (void *)m1_esp_client_ble_hid_init },
+        { "m1_esp_client_ble_hid_deinit",  (void *)m1_esp_client_ble_hid_deinit },
+        { "m1_esp_client_ble_hid_key",     (void *)m1_esp_client_ble_hid_key },
+        { "m1_esp_client_ble_hid_status",  (void *)m1_esp_client_ble_hid_status },
+        /* Offensive WiFi */
+        { "m1_esp_client_deauth_start",    (void *)m1_esp_client_deauth_start },
+        { "m1_esp_client_deauth_stop",     (void *)m1_esp_client_deauth_stop },
+        { "m1_esp_client_sta_scan",        (void *)m1_esp_client_sta_scan },
+        { "m1_esp_client_hs_start",        (void *)m1_esp_client_hs_start },
+        { "m1_esp_client_hs_status",       (void *)m1_esp_client_hs_status },
+        { "m1_esp_client_hs_read",         (void *)m1_esp_client_hs_read },
+        { "m1_esp_client_hs_stop",         (void *)m1_esp_client_hs_stop },
+        { "m1_esp_client_beacon_start",    (void *)m1_esp_client_beacon_start },
+        { "m1_esp_client_beacon_stop",     (void *)m1_esp_client_beacon_stop },
+        /* ESP-NOW peer link */
+        { "m1_esp_client_now_start",       (void *)m1_esp_client_now_start },
+        { "m1_esp_client_now_stop",        (void *)m1_esp_client_now_stop },
+        { "m1_esp_client_now_announce",    (void *)m1_esp_client_now_announce },
+        { "m1_esp_client_now_get_peers",   (void *)m1_esp_client_now_get_peers },
+        { "m1_esp_client_now_send",        (void *)m1_esp_client_now_send },
+        { "m1_esp_client_now_recv",        (void *)m1_esp_client_now_recv },
     };
 
     uint16_t num_entries = sizeof(entries) / sizeof(entries[0]);

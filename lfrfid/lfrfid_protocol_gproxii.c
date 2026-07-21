@@ -28,6 +28,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -227,6 +229,65 @@ static void gproxii_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_gproxii_write_data
+ * (lib/lfrfid, GPLv3).
+ *
+ * GProxII: BI-PHASE modulation, RF/64 bitrate, 3 data blocks (block 0 = config,
+ * blocks 1..3 = 96-bit encoded frame). Flipper writes protocol->data, which is
+ * the raw 96-bit captured frame. The M1 decoder instead persists only the
+ * XOR-stripped 9-byte payload (g_gproxii_decoded / tag->uid), so the encoded
+ * frame is reconstructed here by inverting the decode: re-apply the byte-0 XOR
+ * key, reverse each byte, then re-insert the Always-0 parity bit every 5th
+ * position and prepend the 6-bit 0b111110 preamble. The result is bit-exact to
+ * Flipper's protocol->data.
+ */
+/*============================================================================*/
+static void gproxii_encode(const uint8_t *decoded, uint8_t *encoded)
+{
+    uint8_t stripped[9];
+
+    /* Re-apply XOR: byte 0 is the key, bytes 1..8 are XORed with it */
+    stripped[0] = decoded[0];
+    for (int i = 1; i < 9; i++)
+        stripped[i] = (uint8_t)(decoded[i] ^ decoded[0]);
+
+    /* Reverse each byte (inverse of decode's bit_lib_reverse_8_fast pass) */
+    for (int i = 0; i < 9; i++)
+        stripped[i] = bit_lib_reverse_8_fast(stripped[i]);
+
+    /* Build 96-bit frame: 6-bit preamble + 90 bits (72 data with an
+     * Always-0 parity bit inserted after every 4 data bits) */
+    memset(encoded, 0, GPROXII_ENCODED_SIZE);
+    bit_lib_set_bits(encoded, 0, 0x3E, 6); /* preamble 0b111110 */
+    bit_lib_add_parity(stripped, 0, encoded, 6, 72, 5, BitLibParityAlways0);
+}
+
+/*============================================================================*/
+void protocol_gproxii_write_begin(void* protocol, void* data)
+{
+    (void)protocol;
+    LFRFIDProgram* write = (LFRFIDProgram*)data;
+    uint8_t        encoded[GPROXII_ENCODED_SIZE];
+
+    gproxii_encode(g_gproxii_decoded, encoded);
+
+    if (write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] =
+            T5577_MOD_BIPHASE | T5577_BITRATE_RF_64 | T5577_TRANS_BL_1_3;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void protocol_gproxii_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_gproxii = {
     .name = "GProxII",
     .manufacturer = "Guardall",
@@ -238,6 +299,9 @@ const LFRFIDProtocolBase protocol_gproxii = {
         .execute = (lfrfidProtocolDecoderExecute)gproxii_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_gproxii_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_gproxii_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)gproxii_render_data,
 };

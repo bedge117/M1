@@ -1,0 +1,45 @@
+Filetype: IR library file
+Version: 1
+
+# JBL (model: JBL 5_1_Soundbar)
+name: Power
+type: parsed
+protocol: NECext
+address: 84 74 00 00
+command: FF 00 00 00
+#
+# JBL (model: JBL CINEMA_SB120)
+name: Mute
+type: parsed
+protocol: NECext
+address: 02 BD 00 00
+command: AD 52 00 00
+#
+# JBL (model: JBL CINEMA_SB120)
+name: Vol_up
+type: parsed
+protocol: NECext
+address: 02 BD 00 00
+command: 26 D9 00 00
+#
+# JBL (model: JBL CINEMA_SB120)
+name: Vol_dn
+type: parsed
+protocol: NECext
+address: 02 BD 00 00
+command: 28 D7 00 00
+#
+# JBL (model: JBL CINEMA_SB120)
+name: Next
+type: parsed
+protocol: NECext
+address: 02 BD 00 00
+command: 27 D8 00 00
+#
+# JBL (model: JBL CINEMA_SB120)
+name: Prev
+type: parsed
+protocol: NECext
+address: 02 BD 00 00
+command: 25 DA 00 00
+#

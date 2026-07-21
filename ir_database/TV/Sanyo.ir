@@ -1,0 +1,38 @@
+Filetype: IR library file
+Version: 1
+
+# Sanyo (model: Sanyo DP26640)
+name: Ch_next
+type: parsed
+protocol: NEC
+address: 38 00 00 00
+command: 0A 00 00 00
+#
+# Sanyo (model: Sanyo DP26640)
+name: Ch_prev
+type: parsed
+protocol: NEC
+address: 38 00 00 00
+command: 0B 00 00 00
+#
+# Sanyo (model: Sanyo DP26640)
+name: Vol_up
+type: parsed
+protocol: NEC
+address: 38 00 00 00
+command: 0E 00 00 00
+#
+# Sanyo (model: Sanyo DP26640)
+name: Vol_dn
+type: parsed
+protocol: NEC
+address: 38 00 00 00
+command: 0F 00 00 00
+#
+# Sanyo (model: Sanyo DP26640)
+name: Mute
+type: parsed
+protocol: NEC
+address: 38 00 00 00
+command: 18 00 00 00
+#

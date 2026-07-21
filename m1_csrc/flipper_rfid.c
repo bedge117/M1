@@ -40,13 +40,52 @@ typedef struct {
  * Values from lfrfid_protocol.h: LFRFIDProtocolEM4100, LFRFIDProtocolH10301, etc.
  */
 static const rfid_proto_map_t rfid_proto_table[] = {
-	{ "EM4100",    LFRFIDProtocolEM4100 },
-	{ "EM-Marin",  LFRFIDProtocolEM4100 },         /* Alias used by some Flipper files */
-	{ "EM4100_32", LFRFIDProtocolEM4100_32 },
-	{ "EM4100_16", LFRFIDProtocolEM4100_16 },
-	{ "H10301",    LFRFIDProtocolH10301 },
-	{ "HID26",     LFRFIDProtocolH10301 },          /* HID 26-bit = H10301 */
-	{ NULL,        LFRFIDProtocolMax }              /* Sentinel / unknown */
+	/* EM4100 / EM-Marin variants */
+	{ "EM4100",       LFRFIDProtocolEM4100 },
+	{ "EM-Marin",     LFRFIDProtocolEM4100 },       /* alias used by some Flipper files  */
+	{ "EM4100_32",    LFRFIDProtocolEM4100_32 },
+	{ "EM4100-32",    LFRFIDProtocolEM4100_32 },    /* alternative separator              */
+	{ "EM410032",     LFRFIDProtocolEM4100_32 },    /* no-separator form                  */
+	{ "EM4100_16",    LFRFIDProtocolEM4100_16 },
+	{ "EM4100-16",    LFRFIDProtocolEM4100_16 },
+	{ "EM410016",     LFRFIDProtocolEM4100_16 },
+
+	/* HID Wiegand family */
+	{ "H10301",       LFRFIDProtocolH10301 },
+	{ "HID26",        LFRFIDProtocolH10301 },       /* HID 26-bit = H10301               */
+	{ "HIDProx",      LFRFIDProtocolHIDGeneric },   /* Flipper: protocol_hid_generic.name */
+	{ "HID Generic",  LFRFIDProtocolHIDGeneric },   /* alternate display name             */
+	{ "HIDExt",       LFRFIDProtocolHIDExGeneric }, /* Flipper: protocol_hid_ex_generic.name */
+	{ "HID Ex Generic", LFRFIDProtocolHIDExGeneric },
+
+	/* PSK protocols */
+	{ "Indala26",     LFRFIDProtocolIndala26 },     /* Flipper: protocol_indala26.name    */
+	{ "Keri",         LFRFIDProtocolKeri },         /* Flipper: protocol_keri.name        */
+	{ "Nexwatch",     LFRFIDProtocolNexwatch },     /* Flipper: protocol_nexwatch.name    */
+	{ "Quadrakey",    LFRFIDProtocolNexwatch },     /* Nexwatch sub-type alias            */
+	{ "Nexkey",       LFRFIDProtocolNexwatch },     /* Nexwatch sub-type alias            */
+	{ "Idteck",       LFRFIDProtocolIdteck },       /* Flipper: protocol_idteck.name      */
+
+	/* FSK protocols */
+	{ "AWID",         LFRFIDProtocolAWID },         /* Flipper: protocol_awid.name        */
+	{ "Pyramid",      LFRFIDProtocolPyramid },      /* Flipper: protocol_pyramid.name     */
+	{ "Paradox",      LFRFIDProtocolParadox },      /* Flipper: protocol_paradox.name     */
+	{ "IoProxXSF",    LFRFIDProtocolIoProxXSF },    /* Flipper: protocol_io_prox_xsf.name */
+	{ "FDX-A",        LFRFIDProtocolFDX_A },        /* Flipper: protocol_fdx_a.name       */
+
+	/* Manchester / bi-phase protocols */
+	{ "Viking",       LFRFIDProtocolViking },       /* Flipper: protocol_viking.name      */
+	{ "FDX-B",        LFRFIDProtocolFDX_B },         /* Flipper: protocol_fdx_b.name       */
+	{ "Electra",      LFRFIDProtocolElectra },      /* Flipper: protocol_electra.name     */
+	{ "Gallagher",    LFRFIDProtocolGallagher },    /* Flipper: protocol_gallagher.name   */
+	{ "Jablotron",    LFRFIDProtocolJablotron },    /* Flipper: protocol_jablotron.name   */
+	{ "PAC/Stanley",  LFRFIDProtocolPACStanley },   /* Flipper: protocol_pac_stanley.name */
+	{ "Radio Key",    LFRFIDProtocolSecurakey },    /* Flipper: protocol_securakey.name   */
+	{ "Securakey",    LFRFIDProtocolSecurakey },    /* common community alias             */
+	{ "GProxII",      LFRFIDProtocolGProxII },      /* Flipper: protocol_gproxii.name     */
+	{ "Noralsy",      LFRFIDProtocolNoralsy },      /* Flipper: protocol_noralsy.name     */
+
+	{ NULL,           LFRFIDProtocolMax }           /* sentinel                           */
 };
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/

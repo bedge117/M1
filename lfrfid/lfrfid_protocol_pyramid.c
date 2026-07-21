@@ -28,6 +28,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -259,6 +261,100 @@ static void pyramid_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_pyramid_encode /
+ * protocol_pyramid_write_data (lib/lfrfid, GPLv3).
+ *
+ * Pyramid: FSK2a modulation, RF/50 bitrate, 4 data blocks (152-bit frame).
+ * The frame is built from the decoded Wiegand payload (format 26): facility
+ * code + card number with Wiegand parity, odd column parity added every 8 bits,
+ * and a trailing CRC-8 (poly 0x31, reflected). Decoded data (4 bytes: format,
+ * FC, card_hi, card_lo) is sourced from tag->uid, which holds it verbatim for
+ * protocols <= 5 bytes.
+ */
+/*============================================================================*/
+static bool pyramid_get_parity(const uint8_t* bits, uint8_t type, int length)
+{
+    int x;
+    for(x = 0; length > 0; --length)
+        x += bit_lib_get_bit(bits, length - 1);
+    x %= 2;
+    return x ^ type;
+}
+
+static void pyramid_add_wiegand_parity(
+    uint8_t* target,
+    uint8_t  target_position,
+    uint8_t* source,
+    uint8_t  length)
+{
+    bit_lib_set_bit(
+        target, target_position, pyramid_get_parity(source, 0 /* even */, length / 2));
+    bit_lib_copy_bits(target, target_position + 1, length, source, 0);
+    bit_lib_set_bit(
+        target,
+        target_position + length + 1,
+        pyramid_get_parity(source + length / 2, 1 /* odd */, length / 2));
+}
+
+static void pyramid_encode(const uint8_t* data, uint8_t* encoded)
+{
+    memset(encoded, 0, PYRAMID_ENCODED_SIZE);
+
+    uint8_t pre[16];
+    memset(pre, 0, sizeof(pre));
+
+    /* Format start bit */
+    bit_lib_set_bit(pre, 79, 1);
+
+    uint8_t wiegand[3];
+    memset(wiegand, 0, sizeof(wiegand));
+
+    /* FC */
+    bit_lib_copy_bits(wiegand, 0, 8, data, 8);
+    /* CardNum */
+    bit_lib_copy_bits(wiegand, 8, 16, data, 16);
+
+    /* Wiegand parity */
+    pyramid_add_wiegand_parity(pre, 80, wiegand, 24);
+
+    bit_lib_add_parity(pre, 8, encoded, 8, 102, 8, 1 /* odd */);
+
+    /* Add checksum */
+    uint8_t checksum_buffer[13];
+    for(uint8_t i = 0; i < 13; i++)
+        checksum_buffer[i] = bit_lib_get_bits(encoded, 16 + (i * 8), 8);
+
+    uint8_t crc = (uint8_t)bit_lib_crc8(checksum_buffer, 13, 0x31, 0x00, true, true, 0x00);
+    bit_lib_set_bits(encoded, 120, crc, 8);
+}
+
+void protocol_pyramid_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    const uint8_t*   decoded  = tag_data->uid;
+    uint8_t          encoded[PYRAMID_ENCODED_SIZE];
+
+    pyramid_encode(decoded, encoded);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] =
+            T5577_MOD_FSK2a | T5577_BITRATE_RF_50 | T5577_TRANS_BL_1_4;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.block_data[4] = bit_lib_get_bits_32(encoded, 96, 32);
+        write->t5577.max_blocks = 5;
+    }
+}
+
+void protocol_pyramid_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_pyramid = {
     .name = "Pyramid",
     .manufacturer = "Farpointe",
@@ -270,6 +366,9 @@ const LFRFIDProtocolBase protocol_pyramid = {
         .execute = (lfrfidProtocolDecoderExecute)pyramid_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_pyramid_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_pyramid_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)pyramid_render_data,
 };

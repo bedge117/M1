@@ -98,6 +98,11 @@ volatile uint16_t tail_usbcdc_rx = 0;
 volatile uint8_t usbcdc_rx_paused = 0;
 volatile int8_t m1_USB_CDC_ready = 0;  // 0=ready, -1=not
 
+/* When set (by the USB-UART bridge menu), ALL USB-CDC bytes are forwarded to
+ * USART1 instead of the RPC parser — even if RPC latched active from an earlier
+ * qMonstatek session. Cleared on menu exit so RPC/qMonstatek resumes. */
+volatile bool m1_uart_bridge_active = false;
+
 // USB MSC
 /*
  * msc_sd_stat
@@ -395,8 +400,10 @@ void vUsb2SerTask(void *pvParameters)
       /* RPC routing: once RPC mode is active, ALL data goes to the
        * RPC parser (frames may span multiple stream buffer reads).
        * Before RPC is active, detect the first sync byte to enter
-       * RPC mode. */
-      if (m1_rpc_active || m1_rpc_is_sync(logdb_tx_buffer, received_bytes))
+       * RPC mode. EXCEPTION: the USB-UART bridge menu forces raw
+       * forwarding to USART1 regardless of RPC state. */
+      if (!m1_uart_bridge_active &&
+          (m1_rpc_active || m1_rpc_is_sync(logdb_tx_buffer, received_bytes)))
       {
         m1_rpc_feed(logdb_tx_buffer, received_bytes);
 
@@ -687,6 +694,24 @@ void m1_usb_cdc_comconfig(void)
 	huart_logdb.Init.BaudRate = linecoding.bitrate;
 
 	m1_logdb_init();
+}
+
+/*============================================================================*/
+/**
+  * @brief  Set the USB-UART bridge (USART1 on header pins PA9/PA10) baud rate
+  *         on-device. Reuses the VCP reconfig path, so it behaves exactly like a
+  *         host SET_LINE_CODING. The host can still override it later.
+  */
+/*============================================================================*/
+void m1_usb_uart_set_baud(uint32_t baud)
+{
+	linecoding.bitrate = baud;
+	m1_usb_cdc_comconfig();
+}
+
+uint32_t m1_usb_uart_get_baud(void)
+{
+	return linecoding.bitrate;
 }
 
 /*============================================================================*/

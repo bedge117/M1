@@ -28,6 +28,16 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
+
+/*************************** D E F I N E S ************************************/
+
+#define FDX_A_PREAMBLE_0        0x55
+#define FDX_A_PREAMBLE_1        0x1D
+/* Manchester-decoded payload bit count: (ENCODED_BIT - PREAMBLE_BIT) / 2 =
+ * ((2 + 10) * 8 - 2 * 8) / 2 = (96 - 16) / 2 = 40 */
+#define FDX_A_DECODED_BIT_SIZE  40
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -189,6 +199,59 @@ static void fdxa_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_fdx_a_write_data /
+ * protocol_fdx_a_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * FDX-A: FSK2a modulation, RF/50 bitrate, 3 data blocks. The encoded frame is
+ * a 2-byte preamble (0x55, 0x1D) followed by the 40-bit decoded payload
+ * Manchester-encoded (data 1 -> "10", data 0 -> "01") starting at bit offset
+ * 16. Decoded data (5 bytes) is sourced from tag->uid, which holds it verbatim
+ * for protocols <= 5 bytes.
+ */
+/*============================================================================*/
+void protocol_fdx_a_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    const uint8_t*   decoded  = tag_data->uid;
+    uint8_t          encoded[FDX_A_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+
+    /* Preamble */
+    encoded[0] = FDX_A_PREAMBLE_0;
+    encoded[1] = FDX_A_PREAMBLE_1;
+
+    /* Manchester-encode the 40 decoded bits into bits 16..95 */
+    size_t bit_index = 0;
+    for(size_t i = 0; i < FDX_A_DECODED_BIT_SIZE; i++) {
+        bool bit = bit_lib_get_bit(decoded, i);
+        if(bit) {
+            bit_lib_set_bit(encoded, 16 + bit_index, 1);
+            bit_lib_set_bit(encoded, 16 + bit_index + 1, 0);
+        } else {
+            bit_lib_set_bit(encoded, 16 + bit_index, 0);
+            bit_lib_set_bit(encoded, 16 + bit_index + 1, 1);
+        }
+        bit_index += 2;
+    }
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_FSK2a | T5577_BITRATE_RF_50 | T5577_TRANS_BL_1_3;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.max_blocks = 4;
+    }
+}
+
+void protocol_fdx_a_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_fdx_a = {
     .name = "FDX-A",
     .manufacturer = "FECAVA",
@@ -200,6 +263,9 @@ const LFRFIDProtocolBase protocol_fdx_a = {
         .execute = (lfrfidProtocolDecoderExecute)fdxa_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_fdx_a_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_fdx_a_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)fdxa_render_data,
 };

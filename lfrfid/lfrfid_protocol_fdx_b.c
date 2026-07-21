@@ -26,6 +26,8 @@
 #include "lfrfid.h"
 #include "lfrfid_manchester.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** D E F I N E S **********************************/
 
@@ -247,6 +249,59 @@ static void fdxb_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_fdx_b_write_data /
+ * protocol_fdx_b_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * FDX-B: DIPHASE (differential bi-phase) modulation, RF/32 bitrate, 4 data
+ * blocks. The 128-bit encoded frame is an 11-bit header (bit 0 = 1), followed
+ * by 13 groups of {control bit = 1, 8 payload bits}. Rows 0-7 carry the 64-bit
+ * ID, rows 8-9 carry the recomputed CRC-16/CCITT, rows 10-12 carry the 24-bit
+ * extended data. Payload is sourced from the module's full decoded buffer
+ * g_fdxb_decoded (11 bytes) — the decoded payload does not fit tag->uid.
+ */
+/*============================================================================*/
+void fdxb_write_begin(void* protocol, void* data)
+{
+    (void)protocol;                                  /* LFRFID_TAG_INFO* unused: data from g_fdxb_decoded */
+    LFRFIDProgram* write   = (LFRFIDProgram*)data;
+    const uint8_t* decoded = g_fdxb_decoded;
+    uint8_t        encoded[FDX_B_ENCODED_SIZE];
+
+    /* --- protocol_fdx_b_encoder_start --- */
+    memset(encoded, 0, sizeof(encoded));
+    bit_lib_set_bit(encoded, 0, 1);                  /* 11-bit header: 1000 0000 000 */
+    for(size_t i = 0; i < 13; i++) {
+        bit_lib_set_bit(encoded, 11 + 9 * i, 1);     /* control bit = 1 every 9th */
+        if(i == 8 || i == 9) continue;               /* rows 8,9 = CRC, filled below */
+
+        if(i < 8) {
+            bit_lib_copy_bits(encoded, 12 + 9 * i, 8, decoded, i * 8);
+        } else {
+            bit_lib_copy_bits(encoded, 12 + 9 * i, 8, decoded, (i - 2) * 8);
+        }
+    }
+
+    uint16_t crc_res = bit_lib_crc16(decoded, 8, 0x1021, 0x0000, false, false, 0x0000);
+    bit_lib_copy_bits(encoded, 84, 8, (uint8_t*)&crc_res, 8);
+    bit_lib_copy_bits(encoded, 93, 8, (uint8_t*)&crc_res, 0);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = T5577_MOD_DIPHASE | T5577_BITRATE_RF_32 | T5577_TRANS_BL_1_4;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.block_data[4] = bit_lib_get_bits_32(encoded, 96, 32);
+        write->t5577.max_blocks = 5;
+    }
+}
+
+void fdxb_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_fdx_b = {
     .name = "FDX-B",
     .manufacturer = "ISO 11784",
@@ -258,6 +313,9 @@ const LFRFIDProtocolBase protocol_fdx_b = {
         .execute = (lfrfidProtocolDecoderExecute)fdxb_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)fdxb_write_begin,
+        .send  = (lfrfidProtocolWriteSend)fdxb_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)fdxb_render_data,
 };

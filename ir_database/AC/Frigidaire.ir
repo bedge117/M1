@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# Frigidaire (model: Frigidaire RG15D_AC)
+name: Off
+type: parsed
+protocol: NECext
+address: 08 F5 00 00
+command: 11 EE 00 00
+#

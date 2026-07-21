@@ -22,6 +22,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** V A R I A B L E S ******************************/
 
@@ -165,6 +167,57 @@ static void keri_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_keri_write_data /
+ * protocol_keri_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * Keri: PSK1 modulation, PSK carrier RF/2, X-mode, 2 data blocks. The 64-bit
+ * encoded frame is the 3-bit "111" preamble at the start, a guard bit forced to
+ * 1 at offset 32, and the 32-bit decoded internal ID copied to offset 32..63
+ * (the guard bit overwrites the top ID bit, i.e. the always-set start bit).
+ * Decoded data (4 bytes) is sourced from tag->uid, which holds the internal ID
+ * verbatim (keri_decode copies encoded[2..5] into it).
+ *
+ * Config word is kept bit-exact with Flipper: TESTMODE_DISABLED (0x60000000)
+ * and the Keri bit-rate field (0xF << 18) have no named M1 constant, so they
+ * are written as raw hex.
+ */
+/*============================================================================*/
+void protocol_keri_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    uint8_t          decoded[KERI_DECODED_SIZE];
+    uint8_t          encoded[KERI_ENCODED_DATA_SIZE];
+
+    /* Start bit is always set (Flipper: protocol->data[0] |= (1 << 7)). */
+    memcpy(decoded, tag_data->uid, KERI_DECODED_SIZE);
+    decoded[0] |= (1 << 7);
+
+    memset(encoded, 0, sizeof(encoded));
+    bit_lib_set_bit(encoded, 0, 1);                    /* preamble 111 00000 … */
+    bit_lib_set_bit(encoded, 1, 1);
+    bit_lib_set_bit(encoded, 2, 1);
+    bit_lib_copy_bits(encoded, 32, 32, decoded, 0);    /* 32-bit internal ID */
+    bit_lib_set_bits(encoded, 32, 1, 1);               /* guard bit */
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        write->t5577.block_data[0] = 0x60000000 |      /* TESTMODE disabled */
+                                     T5577_X_MODE | T5577_MOD_PSK1 |
+                                     T5577_PSKCF_RF_2 | T5577_TRANS_BL_1_2;
+        write->t5577.block_data[0] |= 0xF << 18;       /* Keri bit-rate field */
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.max_blocks = 3;
+    }
+}
+
+void protocol_keri_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_keri = {
     .name = "Keri",
     .manufacturer = "Keri",
@@ -176,6 +229,9 @@ const LFRFIDProtocolBase protocol_keri = {
         .execute = (lfrfidProtocolDecoderExecute)keri_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_keri_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_keri_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)keri_render_data,
 };

@@ -19,6 +19,7 @@
 #include "m1_io_defs.h"
 #include "m1_compile_cfg.h"
 #include "m1_display.h"
+#include "m1_system.h"   /* m1_screen_orientation, M1_ORIENT_PORTRAIT */
 
 /*************************** D E F I N E S ************************************/
 
@@ -412,6 +413,45 @@ uint8_t m1_gui_submenu_update(const char *phmenu[], uint8_t num_items, uint8_t s
 	menu_frame_y = menu_text_frame_top_pos_y[menu_level_id];
 	menu_text_y = menu_text_top_pos_y[menu_level_id];
 
+	/* ---- Portrait (R1, 64x128) menu: isolated full-width vertical list, no
+	 * per-item M icon or logo. The 4-row scroll window is unchanged (only the
+	 * geometry differs), and the normal landscape path below is untouched. ---- */
+	if ( m1_screen_orientation == M1_ORIENT_PORTRAIT )
+	{
+		int pw = u8g2_GetDisplayWidth(&m1_u8g2);    /* 64 in R1 */
+		int ph = u8g2_GetDisplayHeight(&m1_u8g2);   /* 128 in R1 */
+		int py = 26;
+		u8g2_SetFont(&m1_u8g2, menu_text_font_n[menu_level_id]);
+		for (run=disp_window_top_row; run<=disp_window_bottom_row; run++)
+		{
+			if ( run==active_item )
+			{
+				u8g2_DrawBox(&m1_u8g2, 0, py - 13, pw - 5, 18);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+				u8g2_SetFont(&m1_u8g2, menu_text_font_b[menu_level_id]);
+				u8g2_DrawStr(&m1_u8g2, 3, py, phmenu[run - 1]);
+				u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+				u8g2_SetFont(&m1_u8g2, menu_text_font_n[menu_level_id]);
+			}
+			else
+			{
+				u8g2_DrawStr(&m1_u8g2, 3, py, phmenu[run - 1]);
+			}
+			py += 26;
+		}
+		/* right-edge vertical scrollbar */
+		u8g2_DrawFrame(&m1_u8g2, pw - 3, 0, 3, ph);
+		u8g2_DrawBox(&m1_u8g2, pw - 3, (ph * sel_item) / num_items, 3, ph / num_items);
+		u8g2_NextPage(&m1_u8g2);
+		if ( x_menu_update_init )
+		{
+			x_menu_display[x_menu_level].active_disp_row = disp_window_active_row;
+			x_menu_display[x_menu_level].disp_top_row = disp_window_top_row;
+			x_menu_display[x_menu_level].sel_item = sel_item;
+		}
+		return 0;
+	}
+
 	u8g2_SetFont(&m1_u8g2, menu_text_font_n[menu_level_id]);
 	for (run=disp_window_top_row; run<=disp_window_bottom_row; run++)
 	{
@@ -653,17 +693,20 @@ uint8_t m1_message_box_choice(u8g2_t *u8g2, const char *title1, const char *titl
             if (title2) { u8g2_DrawStr(u8g2, 2, y, title2); y += line_height; }
             if (title3) { u8g2_DrawStr(u8g2, 2, y, title3); y += line_height; }
             
-            // Draw buttons at the bottom
+            // Draw buttons at the bottom (live dims → works in portrait too;
+            // landscape values are unchanged)
+            int mpw = u8g2_GetDisplayWidth(u8g2);
+            int mph = u8g2_GetDisplayHeight(u8g2);
             for (uint8_t i = 0; i < button_cnt; i++) {
                 const char *btn_text = u8x8_GetStringLineStart(i, buttons);
                 uint8_t btn_w = u8g2_GetStrWidth(u8g2, btn_text) + 4;
-                uint8_t btn_x = (128 / (button_cnt + 1)) * (i + 1) - (btn_w / 2);
-                
+                uint8_t btn_x = (mpw / (button_cnt + 1)) * (i + 1) - (btn_w / 2);
+
                 if (i == cursor) {
-                    u8g2_DrawBox(u8g2, btn_x - 2, 50, btn_w, 12);
+                    u8g2_DrawBox(u8g2, btn_x - 2, mph - 14, btn_w, 12);
                     u8g2_SetDrawColor(u8g2, 0);
                 }
-                u8g2_DrawStr(u8g2, btn_x, 60, btn_text);
+                u8g2_DrawStr(u8g2, btn_x, mph - 4, btn_text);
                 u8g2_SetDrawColor(u8g2, 1);
             }
         } while (u8g2_NextPage(u8g2));
@@ -705,14 +748,20 @@ uint8_t m1_message_box_choice(u8g2_t *u8g2, const char *title1, const char *titl
 /*============================================================================*/
 void m1_draw_bottom_bar(u8g2_t *u8g2, const uint8_t *lbitmap, const char *ltext, const char *rtext, const uint8_t *rbitmap)
 {
-	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
-	u8g2_DrawBox(&m1_u8g2, 0, 52, 128, 12); // Draw an inverted bar at the bottom to display options
+	/* Use live display dims so this works in both landscape (128x64) and
+	 * portrait (64x128); landscape values are identical to before. */
+	int pw = u8g2_GetDisplayWidth(&m1_u8g2);
+	int ph = u8g2_GetDisplayHeight(&m1_u8g2);
+	int by = ph - 12;
 
-	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // Write text in inverted color
-	u8g2_DrawXBMP(&m1_u8g2, 1, 54, 8, 8, lbitmap); // draw arrowleft icon
-	m1_draw_text(&m1_u8g2, 11, 61, 50,ltext, TEXT_ALIGN_LEFT);
-	u8g2_DrawXBMP(&m1_u8g2, 119, 54, 8, 8, rbitmap); // draw arrowright icon
-	m1_draw_text(&m1_u8g2, 67, 61, 50,rtext, TEXT_ALIGN_RIGHT);
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_DrawBox(&m1_u8g2, 0, by, pw, 12); // inverted bottom bar for the options
+
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG); // inverted-color text
+	u8g2_DrawXBMP(&m1_u8g2, 1, by + 2, 8, 8, lbitmap); // left arrow icon
+	m1_draw_text(&m1_u8g2, 11, by + 9, (pw / 2) - 11, ltext, TEXT_ALIGN_LEFT);
+	u8g2_DrawXBMP(&m1_u8g2, pw - 9, by + 2, 8, 8, rbitmap); // right arrow icon
+	m1_draw_text(&m1_u8g2, pw / 2, by + 9, (pw / 2) - 11, rtext, TEXT_ALIGN_RIGHT);
 }
 
 /*============================================================================*/

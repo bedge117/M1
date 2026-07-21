@@ -1,0 +1,45 @@
+Filetype: IR library file
+Version: 1
+
+# Medion (model: Medion MD21302)
+name: Power
+type: parsed
+protocol: NEC
+address: 19 00 00 00
+command: 18 00 00 00
+#
+# Medion (model: Medion MD21302)
+name: Mute
+type: parsed
+protocol: NEC
+address: 19 00 00 00
+command: 56 00 00 00
+#
+# Medion (model: Medion MD21302)
+name: Vol_up
+type: parsed
+protocol: NEC
+address: 19 00 00 00
+command: 4F 00 00 00
+#
+# Medion (model: Medion MD21302)
+name: Vol_dn
+type: parsed
+protocol: NEC
+address: 19 00 00 00
+command: 0D 00 00 00
+#
+# Medion (model: Medion MD21302)
+name: Ch_next
+type: parsed
+protocol: NEC
+address: 19 00 00 00
+command: 4C 00 00 00
+#
+# Medion (model: Medion MD21302)
+name: Ch_prev
+type: parsed
+protocol: NEC
+address: 19 00 00 00
+command: 0F 00 00 00
+#

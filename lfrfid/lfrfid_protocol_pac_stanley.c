@@ -23,6 +23,8 @@
 
 #include "lfrfid.h"
 #include "lfrfid_bit_lib.h"
+#include "t5577.h"
+#include "bit_lib.h"
 
 /***************************** C O N S T A N T S ******************************/
 
@@ -206,6 +208,92 @@ static void pac_render_data(void *proto, char *result)
 }
 
 /*============================================================================*/
+/* T5577 write support — ported from Flipper protocol_pac_stanley_write_data /
+ * protocol_pac_stanley_encoder_start (lib/lfrfid, GPLv3).
+ *
+ * PAC/Stanley: DIRECT modulation, RF/32 bitrate, 4 data blocks. The 128-bit
+ * encoded frame is: 0xFF mark/stop preamble, start bit + reflected STX, then 8
+ * ASCII-hex card-id bytes ("20" + 8 hex chars of the 4 decoded bytes) plus a
+ * checksum byte, each carried as reversed 7-bit + odd-parity in a 10-bit cell
+ * (start/stop framing bits pre-seeded by the 0x40>> pattern). Decoded data
+ * (4 bytes) is sourced from tag->uid, which holds it verbatim.
+ */
+/*============================================================================*/
+
+/* Flipper toolbox uint8_to_hex_chars: 4 src bytes -> 8 uppercase hex chars */
+static void pac_uint8_to_hex_chars(const uint8_t* src, uint8_t* target, int length)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    for (int i = 0; i < length; i += 2) {
+        target[i]     = (uint8_t)hex[src[i / 2] >> 4];
+        target[i + 1] = (uint8_t)hex[src[i / 2] & 0x0F];
+    }
+}
+
+/* Port of protocol_pac_stanley_encoder_start: build 128-bit frame from 4 bytes */
+static void pac_encode(const uint8_t* decoded, uint8_t* encoded)
+{
+    uint8_t idbytes[10];
+    idbytes[0] = '2';
+    idbytes[1] = '0';
+    pac_uint8_to_hex_chars(decoded, &idbytes[2], 8);
+
+    /* Insert start and stop bits (10-bit cell framing pattern) */
+    for (size_t i = 0; i < 16; i++)
+        encoded[i] = (uint8_t)(0x40 >> ((i + 3) % 5 * 2));
+
+    encoded[0] = 0xFF; /* mark + stop */
+    encoded[1] = 0x20; /* start + reflect8(STX) */
+
+    uint8_t checksum = 0;
+    for (size_t i = 2; i < 13; i++) {
+        uint8_t shift = (uint8_t)(7 - (i + 3) % 4 * 2);
+        uint8_t index = (uint8_t)(i + (i - 1) / 4);
+
+        uint16_t pattern;
+        if (i < 12) {
+            pattern = bit_lib_reverse_8_fast(idbytes[i - 2]);
+            pattern |= bit_lib_test_parity_32(pattern, BitLibParityOdd);
+            if (i > 3) checksum ^= idbytes[i - 2];
+        } else {
+            pattern = (uint16_t)((bit_lib_reverse_8_fast(checksum) & 0xFE) |
+                                 (bit_lib_test_parity_32(checksum, BitLibParityOdd)));
+        }
+        pattern = (uint16_t)(pattern << shift);
+
+        encoded[index]     |= (uint8_t)(pattern >> 8 & 0xFF);
+        encoded[index + 1] |= (uint8_t)(pattern & 0xFF);
+    }
+}
+
+void protocol_pac_stanley_write_begin(void* protocol, void* data)
+{
+    LFRFID_TAG_INFO* tag_data = (LFRFID_TAG_INFO*)protocol;
+    LFRFIDProgram*   write    = (LFRFIDProgram*)data;
+    const uint8_t*   decoded  = tag_data->uid;
+    uint8_t          encoded[PAC_STANLEY_ENCODED_SIZE];
+
+    memset(encoded, 0, sizeof(encoded));
+    pac_encode(decoded, encoded);
+
+    if(write && write->type == LFRFIDProgramTypeT5577) {
+        /* DIRECT modulation, RF/32 bitrate, 4 data blocks */
+        write->t5577.block_data[0] = T5577_MOD_DIRECT | T5577_BITRATE_RF_32 | T5577_TRANS_BL_1_4;
+        write->t5577.block_data[1] = bit_lib_get_bits_32(encoded, 0, 32);
+        write->t5577.block_data[2] = bit_lib_get_bits_32(encoded, 32, 32);
+        write->t5577.block_data[3] = bit_lib_get_bits_32(encoded, 64, 32);
+        write->t5577.block_data[4] = bit_lib_get_bits_32(encoded, 96, 32);
+        write->t5577.max_blocks = 5;
+    }
+}
+
+void protocol_pac_stanley_write_send(void* proto)
+{
+    (void)proto;
+    t5577_execute_write(lfrfid_program, 0);
+}
+
+/*============================================================================*/
 const LFRFIDProtocolBase protocol_pac_stanley = {
     .name = "PAC/Stanley",
     .manufacturer = "PAC",
@@ -217,6 +305,9 @@ const LFRFIDProtocolBase protocol_pac_stanley = {
         .execute = (lfrfidProtocolDecoderExecute)pac_execute_impl,
     },
     .encoder = { .begin = NULL, .send = NULL },
-    .write   = { .begin = NULL, .send = NULL },
+    .write   = {
+        .begin = (lfrfidProtocolWriteBegin)protocol_pac_stanley_write_begin,
+        .send  = (lfrfidProtocolWriteSend)protocol_pac_stanley_write_send,
+    },
     .render_data = (lfrfidProtocolRenderData)pac_render_data,
 };

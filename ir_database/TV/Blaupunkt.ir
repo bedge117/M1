@@ -1,0 +1,38 @@
+Filetype: IR library file
+Version: 1
+
+# Blaupunkt (model: Blaupunkt)
+name: Mute
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 50 AF 00 00
+#
+# Blaupunkt (model: Blaupunkt)
+name: Vol_up
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 1E E1 00 00
+#
+# Blaupunkt (model: Blaupunkt)
+name: Vol_dn
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 5F A0 00 00
+#
+# Blaupunkt (model: Blaupunkt)
+name: Ch_next
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 1F E0 00 00
+#
+# Blaupunkt (model: Blaupunkt)
+name: Ch_prev
+type: parsed
+protocol: NECext
+address: 00 7F 00 00
+command: 5C A3 00 00
+#

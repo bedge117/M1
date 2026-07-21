@@ -1,0 +1,17 @@
+Filetype: IR library file
+Version: 1
+
+# Lifetime (model: Lifetime Air)
+name: Off
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 02 00 00 00
+#
+# Lifetime (model: Lifetime Air)
+name: Dh
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 57 00 00 00
+#

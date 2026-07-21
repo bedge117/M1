@@ -53,6 +53,11 @@ void game_tetris_run(void);
 void game_trex_run(void);
 void game_pong_run(void);
 void game_dice_run(void);
+void game_flappy_run(void);
+void game_coin_flip_run(void);
+void game_rps_run(void);
+void game_tamagotchi_run(void);
+void game_peer_ttt_run(void);   /* 2-player Tic-Tac-Toe (peer link or pass & play) */
 
 /* SD card apps browser (Phase 2) */
 void game_apps_browser_run(void);

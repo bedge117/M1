@@ -399,6 +399,14 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
   uint8_t result = USBD_OK;
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
 
+  /* pClassData is NULL until the CDC class is registered/enumerated, and can go
+   * NULL again on a USB reset/disconnect. Without this guard, hcdc->TxState
+   * dereferences NULL+0x214 -> precise BusFault -> HardFault -> random reboot
+   * (confirmed via TAMP fault capture: BFAR=0x214, PC in CDC_Transmit_FS). */
+  if (hcdc == NULL) {
+    return USBD_FAIL;
+  }
+
   if (hcdc->TxState != 0){
     return USBD_BUSY;
   }

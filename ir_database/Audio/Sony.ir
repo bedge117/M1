@@ -1,0 +1,59 @@
+Filetype: IR library file
+Version: 1
+
+# Sony (model: Sony MHC_GSX75)
+name: Pause
+type: parsed
+protocol: SIRC20
+address: 3A 07 00 00
+command: 38 00 00 00
+#
+# Sony (model: Sony CFD-S35CP)
+name: Vol_up
+type: parsed
+protocol: SIRC15
+address: 44 00 00 00
+command: 12 00 00 00
+#
+# Sony (model: Sony CFD-S35CP)
+name: Vol_dn
+type: parsed
+protocol: SIRC15
+address: 44 00 00 00
+command: 13 00 00 00
+#
+# Sony (model: Sony CFD-S35CP)
+name: Play
+type: parsed
+protocol: SIRC15
+address: 64 00 00 00
+command: 32 00 00 00
+#
+# Sony (model: Sony CFD-S35CP)
+name: Prev
+type: parsed
+protocol: SIRC15
+address: 64 00 00 00
+command: 3A 00 00 00
+#
+# Sony (model: Sony CFD-S35CP)
+name: Next
+type: parsed
+protocol: SIRC15
+address: 64 00 00 00
+command: 3B 00 00 00
+#
+# Sony (model: Sony Amp)
+name: Power
+type: parsed
+protocol: SIRC15
+address: 30 00 00 00
+command: 15 00 00 00
+#
+# Sony (model: Sony Amp)
+name: Mute
+type: parsed
+protocol: SIRC15
+address: 30 00 00 00
+command: 14 00 00 00
+#

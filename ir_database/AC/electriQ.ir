@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# electriQ (model: electriQ P15C-V2)
+name: Off
+type: parsed
+protocol: NEC
+address: 00 00 00 00
+command: 43 00 00 00
+#

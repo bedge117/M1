@@ -19,6 +19,7 @@
 #include "u8g2.h"
 #include "mui.h"
 #include "m1_virtual_kb.h"
+#include "m1_settings.h"   /* m1_orient_enter_landscape/restore — the QWERTY grid is landscape-only */
 
 /*************************** D E F I N E S ************************************/
 
@@ -357,6 +358,7 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 
 	memset(filename, 0, sizeof(filename));
 	key[1] = 0x00;
+	m1_orient_enter_landscape();   /* keyboard is a 128px QWERTY grid — force landscape */
     /* Graphic work starts here */
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
     m1_u8g2_firstpage(); // This call required for page drawing in mode 1
@@ -732,8 +734,60 @@ uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_nam
 		} // if (ret==pdTRUE)
 	} // while (1 ) // Main loop of this task
 
+	m1_orient_restore();   /* back to the chosen orientation */
 	return len;
 }// uint8_t m1_vkb_get_filename(char *description, char *default_name, char *new_name)
+
+
+
+/*============================================================================*/
+/**
+ * @brief  Text-entry wrapper over the alphanumeric keyboard, with an explicit
+ *         output-buffer size. Ported from the hapax scene engine's vkb API so
+ *         the grafted Sub-GHz scenes (set key/serial/counter/etc.) can request
+ *         free text. Our keyboard already exposes the full character set via
+ *         m1_vkb_pages, so this simply delegates to m1_vkb_get_filename and
+ *         copies the result into the caller's sized buffer. Input length is
+ *         bounded by M1_VIRTUAL_KB_FILENAME_MAX (20).
+ * @param  description   prompt text (NULL treated as "")
+ * @param  default_text  pre-filled text (NULL treated as "")
+ * @param  new_text      output buffer (may be NULL to just prompt)
+ * @param  new_text_size size of new_text in bytes (incl. NUL)
+ * @retval number of characters written (0 on cancel)
+ */
+/*============================================================================*/
+uint8_t m1_vkb_get_text(char *description, char *default_text, char *new_text, size_t new_text_size)
+{
+	char tmp[M1_VIRTUAL_KB_FILENAME_MAX + 1];
+
+	if ( description == NULL )
+		description = "";
+	if ( default_text == NULL )
+		default_text = "";
+
+	tmp[0] = '\0';
+
+	uint8_t result = m1_vkb_get_filename(description, default_text, tmp);
+
+	if ( new_text != NULL && new_text_size > 0 )
+	{
+		if ( result > 0 )
+		{
+			size_t copy_len = result;
+			if ( copy_len >= new_text_size )
+				copy_len = new_text_size - 1;
+			memcpy(new_text, tmp, copy_len);
+			new_text[copy_len] = '\0';
+			result = (uint8_t)copy_len;
+		}
+		else
+		{
+			new_text[0] = '\0';
+		}
+	}
+
+	return result;
+}
 
 
 
@@ -784,6 +838,7 @@ uint8_t m1_vkbs_get_data(char *description, char *data_buffer)
 	key[1] = '\0'; // NULL at the end of a string
 	exit_ok = 0;
 	M1_VIRTUAL_KBS_DATA_MAX = strlen(data_buffer);
+	m1_orient_enter_landscape();   /* hex keyboard is landscape-only */
     /* Graphic work starts here */
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
     m1_u8g2_firstpage(); // This call required for page drawing in mode 1
@@ -1179,6 +1234,7 @@ uint8_t m1_vkbs_get_data(char *description, char *data_buffer)
 		} // if (ret==pdTRUE)
 	} // while (1 ) // Main loop of this task
 
+	m1_orient_restore();   /* back to the chosen orientation */
 	return len;
 }// uint8_t m1_vkbs_get_data(char *description, char *data_buffer)
 

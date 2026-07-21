@@ -19,6 +19,8 @@
 #include "main.h"
 #include "m1_settings.h"
 #include "m1_esp32_hal.h"
+#include "m1_esp_client.h"
+#include "m1_qmon_relay.h"
 //#include "spi_drv.h"
 #include "m1_ring_buffer.h"
 
@@ -148,6 +150,11 @@ void m1_esp32_init(void)
 		esp32_exti_handshake.RisingCallback = NULL;
 		esp32_exti_handshake.FallingCallback = NULL;
 
+		/* Ready the m1_link full-duplex transport (idles CS). */
+		m1_esp_client_init();
+		/* Start the qMonstatek-over-WiFi relay bridge. */
+		m1_qmon_relay_init();
+
 		esp32_enable();
 	} // if ( !esp32_init_done )
 
@@ -180,6 +187,29 @@ void esp32_disable(void)
 	HAL_GPIO_WritePin(GPIOA, ESP32_EN_Pin, GPIO_PIN_RESET);
 	HAL_Delay(50);
 } // static void esp32_disable(void)
+
+
+
+/******************************************************************************/
+/**
+  * @brief  Reboot ONLY the ESP32 (leaves the M1 running).
+  *
+  * Holds the ESP in reset long enough to fully cold-start even a "warm" chip
+  * (one busy with WiFi/BLE/ESP-NOW), then releases it. The M1<->ESP transport
+  * (SPI3 / m1_link) stays configured across the reset — the ESP reboots into
+  * its firmware and the link re-syncs on the next request; the stale RX buffer
+  * is dropped here so that re-sync starts clean.
+  * @param None
+  * @retval None
+  */
+/******************************************************************************/
+void m1_esp32_reboot(void)
+{
+	esp32_disable();          // EN low (holds 50ms internally)
+	HAL_Delay(250);           // ~300ms total in reset — cold-starts a warm ESP
+	esp32_enable();           // EN high — ESP boots fresh
+	m1_esp32_reset_buffer();  // drop pre-reboot stale RX so the link re-syncs clean
+} // void m1_esp32_reboot(void)
 
 
 

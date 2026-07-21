@@ -40,6 +40,9 @@
 #include "usbd_cdc_if.h"
 #include "battery.h"
 #include "m1_esp32_hal.h"
+#include "m1_esp_rpc_cfg.h"   /* M1_USE_ESP_RPC */
+#include "m1_esp_client.h"    /* m1_esp_client_fw_version — dynamic ESP version */
+#include "m1_qmon_relay.h"    /* m1_qmon_relay_suspend — pause WiFi relay during flash */
 #include "esp_loader.h"
 #include "stm32_port.h"
 #include "app_common.h"
@@ -114,12 +117,27 @@ static uint8_t           s_crc_idx;
 static uint8_t           s_tx_buf[RPC_MAX_FRAME_SIZE];
 static SemaphoreHandle_t s_tx_mutex;
 
+/* WiFi TCP routing */
+static rpc_tcp_tx_fn_t  s_tcp_tx_fn = NULL;
+static volatile bool     s_route_tcp = false;
+
+bool m1_rpc_route_is_tcp(void) { return s_route_tcp; }
+
 /* Screen streaming */
 S_RPC_ScreenStream rpc_screen_stream;
 static uint8_t     s_screen_fb_copy[RPC_SCREEN_FB_SIZE];
 
 /* RPC mode flag — when true, debug output goes to UART only (not USB CDC) */
 volatile bool m1_rpc_active = false;
+
+/* ── Log forwarding ring buffer ──
+ * _write() enqueues here (under log mutex); rpc_task drains it periodically. */
+#define RPC_LOG_BUF_SIZE        4096
+#define RPC_LOG_FLUSH_MAX       1024    /* max bytes per RPC frame */
+static char              s_log_ring[RPC_LOG_BUF_SIZE];
+static volatile uint16_t s_log_ring_head = 0;   /* written by _write() */
+static volatile uint16_t s_log_ring_tail = 0;   /* read by rpc_task */
+static uint8_t           s_log_seq = 0;
 
 /* RPC task */
 static TaskHandle_t s_rpc_task_hdl;
@@ -149,10 +167,10 @@ static const uint16_t s_crc16_table[256] = {
     0xA56A, 0xB54B, 0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D,
     0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
     0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC,
-    0x4864, 0x5845, 0x6826, 0x7807, 0x08E0, 0x18C1, 0x28A2, 0x38C3,
-    0xC92C, 0xD90D, 0xE96E, 0xF94F, 0x89A8, 0x9989, 0xA9EA, 0xB9CB,
-    0x5A15, 0x4A34, 0x7A57, 0x6A76, 0x1A91, 0x0AB0, 0x3AD3, 0x2AF2,
-    0xDB1D, 0xCB3C, 0xFB5F, 0xEB7E, 0x9B99, 0x8BB8, 0xBBDB, 0xABFA,
+    0x48C4, 0x58E5, 0x6886, 0x78A7, 0x0840, 0x1861, 0x2802, 0x3823,
+    0xC9CC, 0xD9ED, 0xE98E, 0xF9AF, 0x8948, 0x9969, 0xA90A, 0xB92B,
+    0x5AF5, 0x4AD4, 0x7AB7, 0x6A96, 0x1A71, 0x0A50, 0x3A33, 0x2A12,
+    0xDBFD, 0xCBDC, 0xFBBF, 0xEB9E, 0x9B79, 0x8B58, 0xBB3B, 0xAB1A,
     0x6CA6, 0x7C87, 0x4CE4, 0x5CC5, 0x2C22, 0x3C03, 0x0C60, 0x1C41,
     0xEDAE, 0xFD8F, 0xCDEC, 0xDDCD, 0xAD2A, 0xBD0B, 0x8D68, 0x9D49,
     0x7E97, 0x6EB6, 0x5ED5, 0x4EF4, 0x3E13, 0x2E32, 0x1E51, 0x0E70,
@@ -167,9 +185,9 @@ static const uint16_t s_crc16_table[256] = {
     0x26D3, 0x36F2, 0x0691, 0x16B0, 0x6657, 0x7676, 0x4615, 0x5634,
     0xD94C, 0xC96D, 0xF90E, 0xE92F, 0x99C8, 0x89E9, 0xB98A, 0xA9AB,
     0x5844, 0x4865, 0x7806, 0x6827, 0x18C0, 0x08E1, 0x3882, 0x28A3,
-    0xCB7D, 0xDB5C, 0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBBBA,
-    0x4A55, 0x5A74, 0x6A17, 0x7A36, 0x0AD1, 0x1AF0, 0x2A93, 0x3AB2,
-    0xFD0E, 0xED2F, 0xDD4C, 0xCD6D, 0xBD8A, 0xAD8B, 0x9DE8, 0x8DC9,
+    0xCB7D, 0xDB5C, 0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBB9A,
+    0x4A75, 0x5A54, 0x6A37, 0x7A16, 0x0AF1, 0x1AD0, 0x2AB3, 0x3A92,
+    0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9,
     0x7C26, 0x6C07, 0x5C64, 0x4C45, 0x3CA2, 0x2C83, 0x1CE0, 0x0CC1,
     0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8,
     0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0
@@ -199,6 +217,7 @@ static void rpc_handle_screen_capture(const S_RPC_Frame *f);
 static void rpc_handle_button_press(const S_RPC_Frame *f);
 static void rpc_handle_button_release(const S_RPC_Frame *f);
 static void rpc_handle_button_click(const S_RPC_Frame *f);
+static void rpc_handle_set_log_level(const S_RPC_Frame *f);
 static void rpc_handle_file_list(const S_RPC_Frame *f);
 static void rpc_handle_file_read(const S_RPC_Frame *f);
 static void rpc_handle_file_write_start(const S_RPC_Frame *f);
@@ -288,7 +307,11 @@ static void rpc_usb_transmit(const uint8_t *data, uint16_t len)
         uint8_t result = CDC_Transmit_FS((uint8_t *)data, len);
         if (result == USBD_OK)
         {
-            M1_LOG_I(M1_LOGDB_TAG, "TX OK %u bytes cmd=0x%02X\r\n", len, data[1]);
+            /* Do NOT log successful LOG_MESSAGE (0x64) TX — logging it would
+             * itself emit another LOG_MESSAGE frame, creating a self-sustaining
+             * log-about-logging feedback loop that floods the CDC every ~100ms. */
+            if (data[1] != RPC_CMD_LOG_MESSAGE)
+                M1_LOG_I(M1_LOGDB_TAG, "TX OK %u bytes cmd=0x%02X\r\n", len, data[1]);
             return;
         }
         M1_LOG_I(M1_LOGDB_TAG, "TX retry %d result=%d\r\n", retry, result);
@@ -346,10 +369,71 @@ void m1_rpc_send_frame(uint8_t cmd, uint8_t seq,
     s_tx_buf[idx++] = (uint8_t)(crc & 0xFF);
     s_tx_buf[idx++] = (uint8_t)(crc >> 8);
 
-    /* Transmit */
-    rpc_usb_transmit(s_tx_buf, frame_size);
+    /* Transmit — route to TCP or USB */
+    if (s_route_tcp && s_tcp_tx_fn)
+        s_tcp_tx_fn(s_tx_buf, frame_size);
+    else
+        rpc_usb_transmit(s_tx_buf, frame_size);
 
     xSemaphoreGive(s_tx_mutex);
+}
+
+
+void m1_rpc_register_tcp_tx(rpc_tcp_tx_fn_t fn) { s_tcp_tx_fn = fn; }
+void m1_rpc_route_to_tcp(bool enable) { s_route_tcp = enable; }
+
+/* Called by the relay when the WiFi/TCP client goes away. Screen streaming is
+ * fire-and-forget from the M1's side — without this the M1 keeps pushing frames
+ * to a dead socket (user saw "SCREEN: frame 200... streaming" long after the
+ * disconnect), needlessly loading the shared SPI link. */
+void m1_rpc_stop_screen_stream(void) { rpc_screen_stream.active = false; }
+
+
+/*============================================================================*/
+/*               L O G   F O R W A R D I N G                                 */
+/*============================================================================*/
+
+void m1_rpc_log_enqueue(const char *data, int len)
+{
+    for (int i = 0; i < len; i++)
+    {
+        uint16_t next = (s_log_ring_head + 1) % RPC_LOG_BUF_SIZE;
+        if (next == s_log_ring_tail)
+            break;  /* full — drop */
+        s_log_ring[s_log_ring_head] = data[i];
+        s_log_ring_head = next;
+    }
+}
+
+static void rpc_flush_log(void)
+{
+    uint16_t head = s_log_ring_head;
+    uint16_t tail = s_log_ring_tail;
+
+    if (head == tail)
+        return;
+
+    uint8_t tmp[RPC_LOG_FLUSH_MAX];
+    uint16_t len = 0;
+
+    while (tail != head && len < RPC_LOG_FLUSH_MAX)
+    {
+        tmp[len++] = (uint8_t)s_log_ring[tail];
+        tail = (tail + 1) % RPC_LOG_BUF_SIZE;
+    }
+    s_log_ring_tail = tail;
+
+    /* Always send logs to USB, never over WiFi TCP (floods QML event loop).
+     * Bypass m1_rpc_send_frame routing and go directly to USB. */
+    if (s_route_tcp) {
+        /* Build frame manually and send to USB */
+        bool saved = s_route_tcp;
+        s_route_tcp = false;
+        m1_rpc_send_frame(RPC_CMD_LOG_MESSAGE, s_log_seq++, tmp, len);
+        s_route_tcp = saved;
+    } else {
+        m1_rpc_send_frame(RPC_CMD_LOG_MESSAGE, s_log_seq++, tmp, len);
+    }
 }
 
 
@@ -545,6 +629,9 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
     case RPC_CMD_BUTTON_RELEASE:  rpc_handle_button_release(frame);  break;
     case RPC_CMD_BUTTON_CLICK:    rpc_handle_button_click(frame);    break;
 
+    /* Debug — runtime UART log verbosity */
+    case RPC_CMD_SET_LOG_LEVEL:   rpc_handle_set_log_level(frame);   break;
+
     /* File — read-only operations stay inline */
     case RPC_CMD_FILE_LIST:        rpc_handle_file_list(frame);        break;
     case RPC_CMD_FILE_READ:        rpc_handle_file_read(frame);        break;
@@ -574,7 +661,8 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
 
     /* Firmware */
     case RPC_CMD_FW_INFO:          rpc_handle_fw_info(frame);          break;
-    case RPC_CMD_FW_UPDATE_START:  rpc_handle_fw_update_start(frame);  break;
+    /* FW_UPDATE_START is deferred (see below) — its inactive-bank erase blocks
+     * for seconds and would stall the USB CDC endpoint if run inline here. */
     case RPC_CMD_FW_UPDATE_DATA:   rpc_handle_fw_update_data(frame);   break;
     case RPC_CMD_FW_UPDATE_FINISH: rpc_handle_fw_update_finish(frame); break;
     case RPC_CMD_FW_BANK_SWAP:     rpc_handle_fw_bank_swap(frame);     break;
@@ -585,11 +673,13 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
     case RPC_CMD_ESP_INFO:          rpc_handle_esp_info(frame);          break;
     case RPC_CMD_ESP_UPDATE_DATA:   rpc_handle_esp_update_data(frame);   break;
 
-    /* ESP32 flash start/finish — deferred to rpc_task because
-     * connect_to_target(), flash erase, and flash verify are slow
-     * (seconds) and would stall the USB CDC endpoint. */
+    /* ESP32 flash start/finish + M1 FW update start — deferred to rpc_task
+     * because connect_to_target(), the ESP flash erase/verify, and the M1
+     * inactive-bank erase are all slow (seconds) and would stall the USB CDC
+     * endpoint (dropping the connection / leaving the flash path wedged). */
     case RPC_CMD_ESP_UPDATE_START:
     case RPC_CMD_ESP_UPDATE_FINISH:
+    case RPC_CMD_FW_UPDATE_START:
         if (s_deferred_pending)
         {
             m1_rpc_send_nack(frame->seq, RPC_ERR_BUSY);
@@ -617,7 +707,22 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
             xTaskNotifyGive(s_rpc_task_hdl);
         }
         break;
-    case RPC_CMD_ESP_UART_SNOOP:    rpc_handle_esp_uart_snoop(frame);    break;
+    /* ESP UART snoop — DEFERRED to rpc_task. It power-cycles the ESP and polls
+     * its UART for ~8s; running that inline on the USB CDC task stalls the
+     * endpoint for 8s, which drops the connection and loses the response frame.
+     * The rpc_task has a bigger stack and doesn't block the USB endpoint. */
+    case RPC_CMD_ESP_UART_SNOOP:
+        if (s_deferred_pending)
+        {
+            m1_rpc_send_nack(frame->seq, RPC_ERR_BUSY);
+        }
+        else
+        {
+            memcpy(&s_deferred_frame, frame, sizeof(S_RPC_Frame));
+            s_deferred_pending = true;
+            xTaskNotifyGive(s_rpc_task_hdl);
+        }
+        break;
 
     default:
         m1_rpc_send_nack(frame->seq, RPC_ERR_UNKNOWN_CMD);
@@ -642,12 +747,77 @@ static void rpc_handle_ping(const S_RPC_Frame *f)
 /**
  * @brief  Handle GET_DEVICE_INFO — gather all device state and respond.
  */
+#ifdef M1_USE_ESP_RPC
+/* Dynamic ESP firmware/compat string for Device Info + the ESP-Update window.
+ * Under Option C the ESP runs the native m1_link firmware, NOT AT. Report the
+ * real version if it answers over m1_link; otherwise say so clearly so the user
+ * knows the ESP isn't on compatible (m1_link) firmware. */
+static char     s_esp_fw_str[32];
+static bool     s_esp_fw_ok;      /* got a real version -> cache it permanently */
+static uint32_t s_esp_fw_last;    /* last probe tick (rate-limit retries) */
+
+static void esp_fw_status_str(char *out, size_t cap)
+{
+    if (cap == 0) return;
+    if (!m1_esp32_get_init_status()) {
+        /* ESP not brought up yet — state will change; don't cache. */
+        strncpy(out, "ESP not started", cap - 1); out[cap - 1] = '\0';
+        return;
+    }
+    /* Never probe over m1_link while the ESP is being flashed — it's in its ROM
+     * bootloader (not m1_link) so the probe fails AND contends with the flasher. */
+    if (s_esp_update.active) {
+        strncpy(out, s_esp_fw_ok ? s_esp_fw_str : "updating...", cap - 1);
+        out[cap - 1] = '\0';
+        return;
+    }
+    /* Probe once for a real version and cache ONLY on success. A transient miss
+     * (ESP busy mid-scan / handshake hiccup) shows "checking..." and retries —
+     * it must NOT stick as a false "No m1_link FW!". Rate-limited to 3s so a
+     * persistently-down ESP doesn't stall the USB task on every poll. */
+    if (!s_esp_fw_ok) {
+        uint32_t now = HAL_GetTick();
+        if (s_esp_fw_last == 0 || (now - s_esp_fw_last) >= 3000) {
+            s_esp_fw_last = now;
+            char ver[24] = {0};
+            if (m1_esp_client_fw_version(ver, sizeof(ver))) {
+                snprintf(s_esp_fw_str, sizeof(s_esp_fw_str), "m1_link %s", ver);
+                s_esp_fw_ok = true;
+            } else {
+                strncpy(s_esp_fw_str, "checking...", sizeof(s_esp_fw_str) - 1);
+                s_esp_fw_str[sizeof(s_esp_fw_str) - 1] = '\0';
+            }
+        }
+    }
+    strncpy(out, s_esp_fw_str, cap - 1); out[cap - 1] = '\0';
+}
+#endif
+
+/* Public accessor for the on-device System Info (About) screen. Reuses the same
+ * cached/rate-limited probe the qMonstatek Device-Info path uses, so both show
+ * the same ESP firmware string without a second blocking round-trip. The git
+ * hash is trimmed here so "m1_link X.Y.Z" fits the 128px display. */
+void m1_rpc_esp_fw_str(char *out, uint16_t cap)
+{
+    if (!out || cap == 0) return;
+#ifdef M1_USE_ESP_RPC
+    esp_fw_status_str(out, cap);
+    if (strncmp(out, "m1_link ", 8) == 0) {
+        char *sp = strchr(out + 8, ' ');
+        if (sp) *sp = '\0';
+    }
+#else
+    strncpy(out, "n/a", cap - 1);
+    out[cap - 1] = '\0';
+#endif
+}
+
 static void rpc_handle_get_device_info(const S_RPC_Frame *f)
 {
     S_RPC_DeviceInfo info;
     memset(&info, 0, sizeof(info));
 
-    /* Magic */
+    /* Magic — must match RPC_DEVICE_INFO_MAGIC or qMonstatek rejects */
     info.magic = RPC_DEVICE_INFO_MAGIC;
 
     /* Firmware version from flash config */
@@ -685,11 +855,13 @@ static void rpc_handle_get_device_info(const S_RPC_Frame *f)
 
     /* ESP32 */
     info.esp32_ready = m1_esp32_get_init_status();
-    /* ESP32 version string: not readily available from HAL.
-     * Set to build-time constant for now. */
+#ifdef M1_USE_ESP_RPC
+    esp_fw_status_str(info.esp32_version, sizeof(info.esp32_version));
+#else
     strncpy(info.esp32_version,
             info.esp32_ready ? "AT ready" : "offline",
             sizeof(info.esp32_version) - 1);
+#endif
 
     /* Operation mode & settings */
     info.ism_band_region = m1_fw_config.ism_band_region;
@@ -700,6 +872,7 @@ static void rpc_handle_get_device_info(const S_RPC_Frame *f)
     m1_rpc_send_frame(RPC_CMD_DEVICE_INFO_RESP, f->seq,
                       (const uint8_t *)&info, sizeof(info));
 }
+
 
 
 /**
@@ -850,8 +1023,21 @@ static void rpc_send_screen_frame(uint8_t seq)
         rpc_flip_buffer_180(s_screen_fb_copy, RPC_SCREEN_FB_SIZE);
     }
 
-    m1_rpc_send_frame(RPC_CMD_SCREEN_FRAME, seq,
-                      s_screen_fb_copy, RPC_SCREEN_FB_SIZE);
+    /* Over WiFi the ESP streams the screen on a SEPARATE UDP channel: push the raw
+     * framebuffer to the ESP (SCREEN_PUSH 0x0700), which drops it into its depth-1
+     * UDP mailbox and the isolated screen_tx task sends it. This keeps screen bytes
+     * off the ESP heartbeat task, so pings are always answered (the link-death was
+     * the ESP rpc_ctrl task being CPU-starved, now fixed by raising its priority).
+     * Over USB the desktop reads SCREEN_FRAME straight off the CDC. */
+    if (s_route_tcp)
+    {
+        m1_esp_client_screen_push(s_screen_fb_copy, RPC_SCREEN_FB_SIZE);
+    }
+    else
+    {
+        m1_rpc_send_frame(RPC_CMD_SCREEN_FRAME, seq,
+                          s_screen_fb_copy, RPC_SCREEN_FB_SIZE);
+    }
 }
 
 
@@ -944,6 +1130,23 @@ static void rpc_handle_button_click(const S_RPC_Frame *f)
         return;
     }
     rpc_inject_button_event(f->payload[0], BUTTON_EVENT_CLICK);
+    m1_rpc_send_ack(f->seq);
+}
+
+
+/**
+ * @brief  Handle SET_LOG_LEVEL — gate UART/CDC debug verbosity at runtime.
+ *         payload[0] = level (0=none .. 5=trace). qMonstatek uses this to keep
+ *         the device quiet by default and raise to INFO only when capturing.
+ */
+static void rpc_handle_set_log_level(const S_RPC_Frame *f)
+{
+    if (f->len < 1)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    m1_logdb_set_level((S_M1_LogDebugLevel_t)f->payload[0]);
     m1_rpc_send_ack(f->seq);
 }
 
@@ -1579,8 +1782,16 @@ static void rpc_handle_fw_info(const S_RPC_Frame *f)
  */
 static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
 {
+    M1_LOG_N(M1_LOGDB_TAG, "FW flash: START received\r\n");
+
+    /* Pause the WiFi relay for the whole M1 flash session: its 50ms SPI poll to
+     * the ESP must not contend with the flash (this is what wedged M1 flashes
+     * while WiFi was up). Resumed at every session-exit below + in FINISH. */
+    m1_qmon_relay_suspend(true);
+
     if (f->len < 8)
     {
+        m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
         return;
     }
@@ -1597,6 +1808,7 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
 
     if (total_size > FW_IMAGE_SIZE_MAX)
     {
+        m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_SIZE_TOO_LARGE);
         return;
     }
@@ -1630,6 +1842,7 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
     erase_init.Banks      = inactive_bank;
     erase_init.NbSectors  = 1;
 
+    uint32_t erase_t0 = HAL_GetTick();
     for (uint16_t i = 0; i < n_sectors; i++)
     {
         m1_wdt_reset();
@@ -1637,10 +1850,13 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
         if (HAL_FLASHEx_Erase(&erase_init, &sector_error) != HAL_OK)
         {
             HAL_FLASH_Lock();
+            m1_qmon_relay_suspend(false);
             m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
             return;
         }
     }
+    M1_LOG_N(M1_LOGDB_TAG, "FW flash: erase done in %lu ms (%u sectors)\r\n",
+             (unsigned long)(HAL_GetTick() - erase_t0), (unsigned)n_sectors);
 
     /* Initialize state */
     s_fw_update.active        = true;
@@ -1649,6 +1865,7 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
     s_fw_update.bytes_written = 0;
     s_fw_update.flash_addr    = (uint8_t *)inactive_base;
 
+    M1_LOG_N(M1_LOGDB_TAG, "FW flash: ACK sent\r\n");
     m1_rpc_send_ack(f->seq);
 }
 
@@ -1690,6 +1907,7 @@ static void rpc_handle_fw_update_data(const S_RPC_Frame *f)
     {
         HAL_FLASH_Lock();
         s_fw_update.active = false;
+        m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
         return;
     }
@@ -1730,6 +1948,7 @@ static void rpc_handle_fw_update_finish(const S_RPC_Frame *f)
         if (!bl_verify_bank_crc(inactive_base))
         {
             M1_LOG_E(M1_LOGDB_TAG, "FW update: post-write CRC verification FAILED\r\n");
+            m1_qmon_relay_suspend(false);
             m1_rpc_send_nack(f->seq, RPC_ERR_CRC_MISMATCH);
             return;
         }
@@ -1740,6 +1959,7 @@ static void rpc_handle_fw_update_finish(const S_RPC_Frame *f)
         M1_LOG_I(M1_LOGDB_TAG, "FW update: no CRC extension, skipping verification\r\n");
     }
 
+    m1_qmon_relay_suspend(false);
     m1_rpc_send_ack(f->seq);
 }
 
@@ -1870,10 +2090,14 @@ static void rpc_handle_esp_info(const S_RPC_Frame *f)
     /* First byte: ESP32 ready status */
     resp[0] = m1_esp32_get_init_status();
 
-    /* Bytes 1-32: version string */
+    /* Bytes 1-32: dynamic version / compatibility string */
+#ifdef M1_USE_ESP_RPC
+    esp_fw_status_str((char *)&resp[1], 32);
+#else
     strncpy((char *)&resp[1],
             resp[0] ? "AT ready" : "offline",
             32);
+#endif
 
     m1_rpc_send_frame(RPC_CMD_ESP_INFO_RESP, f->seq, resp, 33);
 }
@@ -1887,6 +2111,56 @@ static void rpc_handle_esp_info(const S_RPC_Frame *f)
  * DEFERRED to RPC task — connect_to_target() and esp_loader_flash_start()
  * are slow (erase can take 5-15 seconds) and would block the USB CDC task.
  */
+/* Quiet EVERY ESP radio before we reset it for a flash. A radio still live
+ * (WiFi/BLE/ESP-NOW/attack/sniffer) when the flasher yanks the ESP into reset
+ * does not quiesce cleanly and can corrupt the flash — a crashed/idle ESP flashes
+ * fine, the difference is whether a radio was active. Sent over the live m1_link
+ * BEFORE any SPI teardown; best-effort (a radio that isn't running just no-ops
+ * on the ESP). No-op unless the ESP-RPC (Option C) link is in use. */
+static void esp_quiet_all_radios(void)
+{
+#ifdef M1_USE_ESP_RPC
+    m1_esp_client_wifi_disconnect();
+    m1_esp_client_now_stop();
+    m1_esp_client_deauth_stop();
+    m1_esp_client_hs_stop();
+    m1_esp_client_beacon_stop();
+    m1_esp_client_zb_sniff_stop();
+    m1_esp_client_ble_hid_deinit();
+#endif
+}
+
+/* The M1 shares SPI3 with the ESP32 (SCK=PB3, MOSI=PB2 are M1-driven outputs to
+ * the ESP; MISO/CS handled separately). A merely-DISABLED SPI peripheral still
+ * idle-DRIVES its AF pins — it does not tristate them — so park SCK/MOSI as high-Z
+ * inputs for the flash window, then restore them to their SPI3 alternate function
+ * afterwards. Bodies are no-ops unless the ESP-RPC (Option C) SPI link is in use. */
+static void esp_spi3_pins_park(void)
+{
+#ifdef M1_USE_ESP_RPC
+    GPIO_InitTypeDef g = {0};
+    g.Mode  = GPIO_MODE_INPUT;
+    g.Pull  = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    g.Pin = ESP32_SPI3_MOSI_Pin; HAL_GPIO_Init(ESP32_SPI3_MOSI_GPIO_Port, &g);
+    g.Pin = ESP32_SPI3_SCK_Pin;  HAL_GPIO_Init(ESP32_SPI3_SCK_GPIO_Port,  &g);
+#endif
+}
+
+static void esp_spi3_pins_restore(void)
+{
+#ifdef M1_USE_ESP_RPC
+    GPIO_InitTypeDef g = {0};
+    g.Mode  = GPIO_MODE_AF_PP;
+    g.Pull  = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    g.Pin = ESP32_SPI3_MOSI_Pin; g.Alternate = GPIO_AF7_SPI3;
+    HAL_GPIO_Init(ESP32_SPI3_MOSI_GPIO_Port, &g);
+    g.Pin = ESP32_SPI3_SCK_Pin;  g.Alternate = GPIO_AF6_SPI3;
+    HAL_GPIO_Init(ESP32_SPI3_SCK_GPIO_Port, &g);
+#endif
+}
+
 static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -1926,6 +2200,43 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
         m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
         return;
     }
+
+    /* Pause the qMonstatek-over-WiFi relay: its 50ms SPI poll must not touch the
+     * ESP once we start the flash. Resumed at every session-exit below. */
+    m1_qmon_relay_suspend(true);
+
+    /* Stop every ESP radio while the link is still up, so nothing is transmitting
+     * when we reset the ESP into its bootloader below (see esp_quiet_all_radios). */
+    esp_quiet_all_radios();
+
+#ifdef M1_USE_ESP_RPC
+    /* --- Robust pre-flash quiesce (Option C stability) ---
+     * After heavy wireless use the shared M1<->ESP lines can be left in a state
+     * that stops the ESP from cleanly entering its ROM bootloader when the
+     * flasher resets it — the flasher then waits forever for a SYNC that never
+     * comes ("frozen flash", recoverable only by a reboot). Put everything in a
+     * known-clean state before the flasher takes over:
+     *   - deassert SPI3 CS and disable SPI3 so we stop driving the ESP's pins
+     *     (incl. GPIO15) during its bootloader strap sampling,
+     *   - tear down the ESP UART (clears any overrun-locked RX; it is re-inited
+     *     clean just below), and
+     *   - hard-hold the ESP in reset briefly for a clean power-on. */
+    HAL_GPIO_WritePin(ESP32_SPI3_NSS_GPIO_Port, ESP32_SPI3_NSS_Pin, GPIO_PIN_SET);
+    __HAL_SPI_DISABLE(&hspi_esp);
+    esp_spi3_pins_park();      /* stop driving SCK/MOSI so the ESP's straps are clean */
+    esp32_UART_deinit();
+    esp32_disable();
+    /* Hold the ESP in reset long enough to fully cool a WARM chip. A chip coming
+     * straight out of heavy WiFi (the "flashed right after using it" case) needs
+     * noticeably longer to settle than a cold one, or its ROM bootloader flakes
+     * out partway through the data phase (the ~30% hang that a reboot always
+     * cures). 800ms is still quick but covers the warm case. */
+    m1_wdt_reset();
+    HAL_Delay(400);
+    m1_wdt_reset();
+    HAL_Delay(400);
+    m1_wdt_reset();
+#endif
 
     /* Init esp-serial-flasher port */
     loader_stm32_config_t config = {
@@ -2004,6 +2315,8 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
         HAL_NVIC_EnableIRQ(EXTI1_IRQn);
         HAL_NVIC_EnableIRQ(EXTI7_IRQn);
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+        esp_spi3_pins_restore();
+        m1_qmon_relay_suspend(false);
         if (s_esp_update.screen_was_streaming)
             rpc_screen_stream.active = true;
         rpc_send_nack_sub(f->seq, RPC_ERR_ESP_FLASH, RPC_ESP_SUB_CONNECT);
@@ -2027,6 +2340,8 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
         HAL_NVIC_EnableIRQ(EXTI1_IRQn);
         HAL_NVIC_EnableIRQ(EXTI7_IRQn);
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+        esp_spi3_pins_restore();
+        m1_qmon_relay_suspend(false);
         if (s_esp_update.screen_was_streaming)
             rpc_screen_stream.active = true;
         rpc_send_nack_sub(f->seq, RPC_ERR_ESP_FLASH, RPC_ESP_SUB_ERASE);
@@ -2093,6 +2408,8 @@ static void rpc_handle_esp_update_data(const S_RPC_Frame *f)
         HAL_NVIC_EnableIRQ(EXTI1_IRQn);
         HAL_NVIC_EnableIRQ(EXTI7_IRQn);
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+        esp_spi3_pins_restore();
+        m1_qmon_relay_suspend(false);
         if (s_esp_update.screen_was_streaming)
             rpc_screen_stream.active = true;
         rpc_send_nack_sub(f->seq, RPC_ERR_ESP_FLASH, RPC_ESP_SUB_WRITE);
@@ -2175,6 +2492,8 @@ static void rpc_handle_esp_update_finish(const S_RPC_Frame *f)
             m1_rpc_send_frame(RPC_CMD_NACK, f->seq, diag, sizeof(diag));
         }
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+        esp_spi3_pins_restore();
+        m1_qmon_relay_suspend(false);
         if (s_esp_update.screen_was_streaming)
             rpc_screen_stream.active = true;
         return;
@@ -2201,6 +2520,8 @@ static void rpc_handle_esp_update_finish(const S_RPC_Frame *f)
     HAL_NVIC_EnableIRQ(EXTI7_IRQn);
 
     m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+    esp_spi3_pins_restore();
+    m1_qmon_relay_suspend(false);
     if (s_esp_update.screen_was_streaming)
         rpc_screen_stream.active = true;
     m1_rpc_send_ack(f->seq);
@@ -2378,8 +2699,10 @@ void m1_rpc_task(void *param)
             case RPC_CMD_SD_UNMOUNT:        rpc_handle_sd_unmount(&frame);        break;
             case RPC_CMD_SD_MOUNT:          rpc_handle_sd_mount(&frame);          break;
             case RPC_CMD_CLI_EXEC:          rpc_handle_cli_exec(&frame);          break;
+            case RPC_CMD_ESP_UART_SNOOP:    rpc_handle_esp_uart_snoop(&frame);    break;
             case RPC_CMD_ESP_UPDATE_START:  rpc_handle_esp_update_start(&frame);  break;
             case RPC_CMD_ESP_UPDATE_FINISH: rpc_handle_esp_update_finish(&frame); break;
+            case RPC_CMD_FW_UPDATE_START:   rpc_handle_fw_update_start(&frame);   break;
             default: break;
             }
         }
@@ -2387,15 +2710,20 @@ void m1_rpc_task(void *param)
         /* Screen streaming */
         if (rpc_screen_stream.active)
         {
+            uint32_t min_interval = pdMS_TO_TICKS(rpc_screen_stream.interval_ms);
+
             uint32_t now = xTaskGetTickCount();
             uint32_t elapsed = now - rpc_screen_stream.last_send_tick;
 
-            if (elapsed >= pdMS_TO_TICKS(rpc_screen_stream.interval_ms))
+            if (elapsed >= min_interval)
             {
                 rpc_send_screen_frame(screen_seq++);
-                rpc_screen_stream.last_send_tick = now;
+                rpc_screen_stream.last_send_tick = xTaskGetTickCount();
             }
         }
+
+        /* Flush any buffered log data to the host */
+        rpc_flush_log();
     }
 }
 

@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# Delonghi (model: Delonghi portable_Pinguino-Air-to-Air-PAC-N81_ac)
+name: Off
+type: parsed
+protocol: NECext
+address: 48 12 00 00
+command: 88 08 00 00
+#

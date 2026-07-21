@@ -1,0 +1,38 @@
+Filetype: IR library file
+Version: 1
+
+# Polk (model: Polk RE9114_1)
+name: Power
+type: parsed
+protocol: NECext
+address: C8 91 00 00
+command: 00 FF 00 00
+#
+# Polk (model: Polk RE9114_1)
+name: Mute
+type: parsed
+protocol: NECext
+address: C8 91 00 00
+command: 20 DF 00 00
+#
+# Polk (model: Polk RE9114_1)
+name: Prev
+type: parsed
+protocol: NECext
+address: C8 91 00 00
+command: 26 D9 00 00
+#
+# Polk (model: Polk RE9114_1)
+name: Pause
+type: parsed
+protocol: NECext
+address: C8 91 00 00
+command: 21 DE 00 00
+#
+# Polk (model: Polk RE9114_1)
+name: Next
+type: parsed
+protocol: NECext
+address: C8 91 00 00
+command: 24 DB 00 00
+#

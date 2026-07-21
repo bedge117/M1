@@ -1,0 +1,10 @@
+Filetype: IR library file
+Version: 1
+
+# Frico (model: Frico PA2510E08)
+name: Off
+type: raw
+frequency: 38000
+duty_cycle: 0.330000
+data: 272 76189 1130 2004 1129 2008 2141 2008 1127 966 1125 967 2138 992 1094 999 2101 1004 1085
+#

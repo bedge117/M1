@@ -119,4 +119,34 @@
 #define ESP32C6_AT_RES_STAIP_KEY		"+CIFSR:STAIP,"
 #define ESP32C6_AT_RES_STAMAC_KEY		"+CIFSR:STAMAC,"
 
+// TCP/IP Server (for WiFi RPC bridge)
+// AT+CIPMUX=1  — enable multiple connections
+#define ESP32C6_AT_REQ_CIPMUX          "AT+CIPMUX=1"
+// AT+CIPSERVER=1,<port>  — start TCP server
+#define ESP32C6_AT_REQ_CIPSERVER       "AT+CIPSERVER=1,"
+// AT+CIPSERVER=0  — stop TCP server
+#define ESP32C6_AT_REQ_CIPSERVER_STOP  "AT+CIPSERVER=0"
+// AT+CIPSEND=<link_id>,<len>  — send data to client
+#define ESP32C6_AT_REQ_CIPSEND         "AT+CIPSEND="
+// AT+CIPCLOSE=<link_id>  — close connection
+#define ESP32C6_AT_REQ_CIPCLOSE        "AT+CIPCLOSE="
+// AT+CIPRECVMODE=1  — passive receive mode
+#define ESP32C6_AT_REQ_CIPRECVMODE     "AT+CIPRECVMODE=1"
+// AT+CIPRECVDATA=<link_id>,<len>  — read buffered data
+#define ESP32C6_AT_REQ_CIPRECVDATA     "AT+CIPRECVDATA="
+// AT+CIPRECVLEN?  — query buffered data length
+#define ESP32C6_AT_REQ_CIPRECVLEN      "AT+CIPRECVLEN?"
+// AT+CIPSTO=<timeout>  — set server timeout (seconds)
+#define ESP32C6_AT_REQ_CIPSTO          "AT+CIPSTO="
+
+// Unsolicited TCP event patterns
+#define ESP32C6_AT_RES_IPD_KEY         "+IPD,"
+#define ESP32C6_AT_RES_CONNECT_EVENT   ",CONNECT"
+#define ESP32C6_AT_RES_CLOSED_EVENT    ",CLOSED"
+#define ESP32C6_AT_RES_CIPRECVDATA_KEY "+CIPRECVDATA,"
+
+// mDNS
+// AT+MDNS=<enable>,<hostname>,<service>,<port>
+#define ESP32C6_AT_REQ_MDNS            "AT+MDNS="
+
 #endif /* ESP32C6_AT_LIST_H_ */

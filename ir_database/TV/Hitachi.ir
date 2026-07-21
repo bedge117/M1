@@ -1,0 +1,38 @@
+Filetype: IR library file
+Version: 1
+
+# Hitachi (model: Hitachi 43140)
+name: Vol_up
+type: parsed
+protocol: RC5
+address: 03 00 00 00
+command: 10 00 00 00
+#
+# Hitachi (model: Hitachi 43140)
+name: Vol_dn
+type: parsed
+protocol: RC5
+address: 03 00 00 00
+command: 11 00 00 00
+#
+# Hitachi (model: Hitachi 43140)
+name: Mute
+type: parsed
+protocol: RC5
+address: 03 00 00 00
+command: 0D 00 00 00
+#
+# Hitachi (model: Hitachi 43140)
+name: Ch_next
+type: parsed
+protocol: RC5
+address: 03 00 00 00
+command: 20 00 00 00
+#
+# Hitachi (model: Hitachi 43140)
+name: Ch_prev
+type: parsed
+protocol: RC5
+address: 03 00 00 00
+command: 21 00 00 00
+#

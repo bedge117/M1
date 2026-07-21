@@ -19,15 +19,18 @@
 #include "stm32h5xx_hal.h"
 #include "main.h"
 #include "m1_settings.h"
+#include "m1_rpc.h"       /* m1_rpc_esp_fw_str — ESP coprocessor fw for About */
 #include "m1_buzzer.h"
 #include "m1_lcd.h"
 #include "m1_lp5814.h"
 #include "m1_display.h"
+#include "m1_scene.h"    /* m1_scene_draw_menu — portrait-aware list, for the orientation picker */
 #include "ff.h"
 #include "m1_log_debug.h"
 #include "m1_fw_update_bl.h"
 #include "m1_system.h"
 #include "m1_file_util.h"
+#include "m1_esp32_hal.h"  /* m1_esp32_init / m1_esp32_reboot / init status */
 
 /*************************** D E F I N E S ************************************/
 
@@ -57,7 +60,7 @@
 
 static const uint8_t s_brightness_values[] = { 0, 64, 128, 192, 255 };
 static const char *s_brightness_text[] = { "Off", "Low", "Med", "High", "Max" };
-static const char *s_orient_text[] = { "Normal", "Southpaw", "Remote" };
+static const char *s_orient_text[] = { "Normal", "Southpaw", "Portrait" };
 static const char *s_sleep_text[] = { "30s", "1 min", "5 min", "10 min", "15 min", "Never" };
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
@@ -101,12 +104,13 @@ void menu_settings_exit(void)
 
 
 
-/*============================================================================*/
-/**
-  * @brief  Apply screen orientation and sync m1_southpaw_mode
-  */
-/*============================================================================*/
-static void settings_apply_orientation(uint8_t orient)
+/* Nesting depth of active force-landscape scopes (leaf activities + forced
+ * nodes). Restore only returns to the chosen system orientation at depth 0. */
+static int s_orient_force_depth = 0;
+
+/* Apply a rotation to the LIVE display only (does not change the chosen
+ * system orientation). */
+static void orient_set_display(uint8_t orient)
 {
     m1_screen_orientation = orient;
     m1_southpaw_mode = (orient == M1_ORIENT_SOUTHPAW) ? 1 : 0;
@@ -117,6 +121,87 @@ static void settings_apply_orientation(uint8_t orient)
         u8g2_SetDisplayRotation(&m1_u8g2, U8G2_R1);
     else
         u8g2_SetDisplayRotation(&m1_u8g2, U8G2_R2);
+}
+
+/*============================================================================*/
+/**
+  * @brief  Canonical set-orientation: updates the chosen system orientation AND
+  *         the live display. Used at boot and for a direct set.
+  */
+/*============================================================================*/
+static void settings_apply_orientation(uint8_t orient)
+{
+    m1_system_orientation = orient;
+    orient_set_display(orient);
+}
+
+/* Record the user's chosen orientation. If a screen is currently forced to
+ * landscape (depth > 0), the live display is left alone — the choice takes
+ * effect when the force-scope unwinds (m1_orient_restore at depth 0). */
+void m1_set_system_orientation(uint8_t orient)
+{
+    m1_system_orientation = orient;
+    if (s_orient_force_depth == 0)
+        orient_set_display(orient);
+}
+
+/*============================================================================*/
+/**
+  * @brief  Enter a force-landscape scope for a bespoke screen that can't render
+  *         in 64px portrait. ONLY flips when the chosen orientation is Portrait —
+  *         Southpaw (180° landscape) and Normal are left alone. Nestable.
+  */
+/*============================================================================*/
+void m1_orient_enter_landscape(void)
+{
+    s_orient_force_depth++;
+    if (m1_system_orientation == M1_ORIENT_PORTRAIT && m1_screen_orientation != M1_ORIENT_NORMAL)
+        orient_set_display(M1_ORIENT_NORMAL);
+}
+
+/* Leave a force-landscape scope. When the outermost scope unwinds, restore the
+ * display to the chosen system orientation (which may have changed meanwhile). */
+void m1_orient_restore(void)
+{
+    if (s_orient_force_depth > 0) s_orient_force_depth--;
+    if (s_orient_force_depth == 0 && m1_screen_orientation != m1_system_orientation)
+        orient_set_display(m1_system_orientation);
+}
+
+/*============================================================================*/
+/**
+  * @brief  Orientation selector — highlight one and confirm with OK. Cycling in
+  *         place is a trap: Southpaw remaps Left/Right, so a second Right press
+  *         reads as Left and you can never pass it. A picker only applies on OK,
+  *         so navigation never rotates and the buttons never flip mid-selection.
+  */
+/*============================================================================*/
+static void settings_orientation_picker(void)
+{
+    static const char *const labels[] = { "Normal", "Southpaw", "Portrait" };
+    S_M1_Buttons_Status btn;
+    S_M1_Main_Q_t q_item;
+    uint8_t sel = (m1_system_orientation <= 2) ? m1_system_orientation : 0;
+    uint8_t redraw = 1;
+
+    for (;;)
+    {
+        if (redraw) { m1_scene_draw_menu("Orientation", labels, 3, sel, 0, 3); redraw = 0; }
+
+        if (xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY) != pdTRUE) continue;
+        if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+        if (xQueueReceive(button_events_q_hdl, &btn, 0) != pdTRUE) continue;
+
+        if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+            return;                              /* cancel — leave orientation as-is */
+        if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            m1_set_system_orientation(sel);      /* record choice; applied when the settings force-scope unwinds */
+            return;
+        }
+        if (btn.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)   { sel = (sel == 0) ? 2 : (sel - 1); redraw = 1; }
+        if (btn.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK) { sel = (sel + 1) % 3;               redraw = 1; }
+    }
 }
 
 
@@ -177,7 +262,7 @@ void settings_lcd_and_notifications(void)
                     break;
                 case LCD_SET_ORIENT:
                     label = "Orientation";
-                    value = s_orient_text[m1_screen_orientation];
+                    value = s_orient_text[m1_system_orientation];
                     break;
                 case LCD_SET_SLEEP:
                     label = "Sleep After";
@@ -225,6 +310,14 @@ void settings_lcd_and_notifications(void)
             break;
         }
 
+        /* OK — Orientation opens a highlight-to-select picker (no cycle trap) */
+        if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            if (sel == LCD_SET_ORIENT)
+                settings_orientation_picker();
+            needs_redraw = 1;
+        }
+
         /* Up/Down — navigate */
         if (this_button_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
         {
@@ -250,7 +343,7 @@ void settings_lcd_and_notifications(void)
             else if (sel == LCD_SET_LED)
                 m1_led_notify_on = !m1_led_notify_on;
             else if (sel == LCD_SET_ORIENT)
-                settings_apply_orientation((m1_screen_orientation == 0) ? 2 : (m1_screen_orientation - 1));
+                settings_orientation_picker();   /* highlight-to-select, not cycle */
             else if (sel == LCD_SET_SLEEP)
                 m1_sleep_timeout_idx = (m1_sleep_timeout_idx == 0) ? 5 : (m1_sleep_timeout_idx - 1);
             needs_redraw = 1;
@@ -272,7 +365,7 @@ void settings_lcd_and_notifications(void)
             else if (sel == LCD_SET_LED)
                 m1_led_notify_on = !m1_led_notify_on;
             else if (sel == LCD_SET_ORIENT)
-                settings_apply_orientation((m1_screen_orientation + 1) % 3);
+                settings_orientation_picker();   /* highlight-to-select, not cycle */
             else if (sel == LCD_SET_SLEEP)
                 m1_sleep_timeout_idx = (m1_sleep_timeout_idx >= 5) ? 0 : (m1_sleep_timeout_idx + 1);
             needs_redraw = 1;
@@ -317,8 +410,10 @@ void settings_power(void)
   * @retval
   */
 /*============================================================================*/
-static void settings_system_draw(void)
+static void settings_system_draw(uint8_t sel)
 {
+    static const char *items[3] = { "ESP32 at boot", "Initialize ESP32", "Reboot ESP32" };
+
     m1_u8g2_firstpage();
     u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
     u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
@@ -326,15 +421,22 @@ static void settings_system_draw(void)
     m1_draw_text(&m1_u8g2, 2, 10, 124, "System Settings", TEXT_ALIGN_CENTER);
 
     u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
-    m1_draw_text(&m1_u8g2, 4, 28, 72, "ESP32 at boot:", TEXT_ALIGN_LEFT);
+    for (uint8_t i = 0; i < 3; i++)
+    {
+        int y = 24 + i * 12;
+        if (i == sel)
+        {
+            u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+            u8g2_DrawBox(&m1_u8g2, 0, y - 9, 128, 12);
+            u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_BG);
+        }
+        m1_draw_text(&m1_u8g2, 4, y, 96, items[i], TEXT_ALIGN_LEFT);
+        if (i == 0)
+            m1_draw_text(&m1_u8g2, 96, y, 30, m1_esp32_auto_init ? "ON" : "OFF", TEXT_ALIGN_LEFT);
+        u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+    }
 
-    u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_B);
-    m1_draw_text(&m1_u8g2, 78, 28, 46, m1_esp32_auto_init ? "ON" : "OFF", TEXT_ALIGN_LEFT);
-
-    u8g2_SetFont(&m1_u8g2, M1_DISP_FUNC_MENU_FONT_N);
-    m1_draw_text(&m1_u8g2, 4, 42, 120, "Init WiFi/BT on boot", TEXT_ALIGN_CENTER);
-
-    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Toggle", arrowright_8x8);
+    m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "Select", arrowright_8x8);
     m1_u8g2_nextpage();
 }
 
@@ -343,8 +445,9 @@ void settings_system(void)
     S_M1_Buttons_Status this_button_status;
     S_M1_Main_Q_t q_item;
     BaseType_t ret;
+    uint8_t sel = 0;
 
-    settings_system_draw();
+    settings_system_draw(sel);
 
     while (1)
     {
@@ -364,13 +467,49 @@ void settings_system(void)
             xQueueReset(main_q_hdl);
             break;
         }
-        else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK ||
-                 this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK ||
-                 this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+        else if (this_button_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
         {
+            if (sel > 0) sel--;
+            settings_system_draw(sel);
+        }
+        else if (this_button_status.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            if (sel < 2) sel++;
+            settings_system_draw(sel);
+        }
+        else if (sel == 0 &&
+                 (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK ||
+                  this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK ||
+                  this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK))
+        {
+            /* ESP32 at boot: toggle ON/OFF */
             m1_esp32_auto_init = m1_esp32_auto_init ? 0 : 1;
             settings_save_to_sd();
-            settings_system_draw();
+            settings_system_draw(sel);
+        }
+        else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            if (sel == 1)
+            {
+                /* Initialize ESP32 (brings up the link if not already up) */
+                if (!m1_esp32_get_init_status())
+                {
+                    m1_esp32_init();
+                    m1_message_box(&m1_u8g2, "ESP32", "Initialized", "", " OK ");
+                }
+                else
+                {
+                    m1_message_box(&m1_u8g2, "ESP32", "Already", "initialized", " OK ");
+                }
+            }
+            else if (sel == 2)
+            {
+                /* Reboot ESP32 only (M1 keeps running) */
+                m1_esp32_reboot();
+                m1_message_box(&m1_u8g2, "ESP32", "Rebooted", "", " OK ");
+            }
+            xQueueReset(main_q_hdl);
+            settings_system_draw(sel);
         }
     }
 }
@@ -477,6 +616,15 @@ static void settings_about_display_choice(uint8_t choice)
 			u8g2_DrawStr(&m1_u8g2, 0, ABOUT_BOX_Y_POS_ROW_2, prn_name);
 			sprintf(prn_name, "Active bank: %d", (m1_device_stat.active_bank==BANK1_ACTIVE)?1:2);
 			u8g2_DrawStr(&m1_u8g2, 0, ABOUT_BOX_Y_POS_ROW_3, prn_name);
+			/* ESP32-C6 coprocessor firmware — same cached source qMonstatek uses,
+			 * so the version is visible on-device without the desktop app. */
+			{
+				char esp_ver[32];
+				char esp_line[40];
+				m1_rpc_esp_fw_str(esp_ver, sizeof(esp_ver));
+				snprintf(esp_line, sizeof(esp_line), "ESP: %s", esp_ver);
+				u8g2_DrawStr(&m1_u8g2, 0, ABOUT_BOX_Y_POS_ROW_4, esp_line);
+			}
 			break;
 
 		case 1: // Company info
@@ -525,7 +673,7 @@ void settings_save_to_sd(void)
     snprintf(buf, sizeof(buf), "led_notify=%d\n", m1_led_notify_on);
     f_write(&fp, buf, strlen(buf), &bw);
 
-    snprintf(buf, sizeof(buf), "orientation=%d\n", m1_screen_orientation);
+    snprintf(buf, sizeof(buf), "orientation=%d\n", m1_system_orientation);   /* persist the chosen orientation, not a temp-forced one */
     f_write(&fp, buf, strlen(buf), &bw);
 
     snprintf(buf, sizeof(buf), "sleep_timeout=%d\n", m1_sleep_timeout_idx);

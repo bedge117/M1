@@ -995,9 +995,6 @@ void SI446x_Select_Frontend(S_M1_SubGHz_Band network)
 {
 	switch (network)
 	{
-		case SUB_GHZ_BAND_150:
-		case SUB_GHZ_BAND_200:
-		case SUB_GHZ_BAND_250:
 		case SUB_GHZ_BAND_300:
 		case SUB_GHZ_BAND_310:
 		case SUB_GHZ_BAND_315:

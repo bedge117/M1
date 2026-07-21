@@ -35,7 +35,8 @@ typedef struct {
 } ieee802154_device_t;
 
 /* Menu entry functions */
-void zigbee_scan(void);
-void thread_scan(void);
+void zigbee_scan(void);          /* Zigbee-filtered (legacy / CLI) */
+void thread_scan(void);          /* Thread-filtered (legacy / CLI) */
+void ieee802154_scan_all(void);  /* unified scan: all devices, tagged Z/T/? */
 
 #endif /* M1_802154_H_ */

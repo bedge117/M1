@@ -38,6 +38,7 @@ void m1_esp32_reset_buffer(void);
 void m1_esp32_deinit(void);
 void esp32_enable(void);
 void esp32_disable(void);
+void m1_esp32_reboot(void);
 void m1_esp32_uart_tx(char *txdata);
 void esp32_uartrx_handler(uint8_t rx_byte);
 uint8_t m1_esp32_get_init_status(void);
