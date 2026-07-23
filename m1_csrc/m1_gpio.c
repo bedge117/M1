@@ -20,6 +20,7 @@
 #include "m1_gpio.h"
 #include "m1_usb_cdc_msc.h"   /* USB-UART bridge baud control (USART1 on header) */
 #include "m1_log_debug.h"     /* M1_LOG_I — log I2C scan results over USB */
+#include "ff.h"               /* FatFS — read the recovery image from SD (peer recover) */
 
 /*************************** D E F I N E S ************************************/
 
@@ -238,6 +239,743 @@ void m1_gpio_ext_app_release(void)
     g.Pull      = GPIO_PULLUP;
     g.Pin       = SWDIO_Pin;
     HAL_GPIO_Init(SWDIO_GPIO_Port, &g);
+}
+
+
+
+/*============================================================================*/
+/*        1 - W I R E   B I T - B A N G   P R I M I T I V E   (for apps)       */
+/*                                                                            */
+/* Microsecond-timed, IRQ-masked reset/read/write on one header pin, so apps  */
+/* can talk to 1-Wire devices (DS18B20, iButton, ...). The SDK has no us-      */
+/* accurate, IRQ-safe timing of its own, so it must come from here. Uses the  */
+/* pin as open-drain; an external 4.7k pull-up to +3.3V is required. Device-   */
+/* specific logic (command sequences, CRC, temperature math) stays in the app.*/
+/*============================================================================*/
+
+static GPIO_TypeDef *s_ow_port;
+static uint16_t      s_ow_pin;
+
+static void ow_dwt_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL   |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static void ow_delay_us(uint32_t us)
+{
+    uint32_t start = DWT->CYCCNT;
+    uint32_t ticks = us * (SystemCoreClock / 1000000U);
+    while ((DWT->CYCCNT - start) < ticks) { }
+}
+
+static inline void    ow_drive_low(void) { s_ow_port->BSRR = (uint32_t)s_ow_pin << 16; }
+static inline void    ow_release(void)   { s_ow_port->BSRR = (uint32_t)s_ow_pin; }
+static inline uint8_t ow_level(void)     { return (s_ow_port->IDR & s_ow_pin) ? 1 : 0; }
+
+/* Configure header pin `app_id` (0-based over the user pins) as an open-drain
+ * 1-Wire line. Needs an external 4.7k pull-up to +3.3V. */
+void m1_ow_init(uint8_t app_id)
+{
+    if (app_id >= m1_gpio_ext_app_count()) return;
+    uint8_t i = (uint8_t)(app_id + M1_EXT_GPIO_FIRST_ID);
+    s_ow_port = m1_ext_gpio[i].gpio_port;
+    s_ow_pin  = m1_ext_gpio[i].gpio_pin;
+
+    GPIO_InitTypeDef g = {0};
+    g.Pin   = s_ow_pin;
+    g.Mode  = GPIO_MODE_OUTPUT_OD;
+    g.Pull  = GPIO_PULLUP;   /* weak internal pull-up: backs up the external 4.7k
+                              * and makes a disconnected line read HIGH (idle),
+                              * so "no device" is detected instead of faked low */
+    g.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(s_ow_port, &g);
+    ow_release();
+    ow_dwt_init();
+}
+
+/* Reset pulse + presence detect. Returns 1 if a device responded, else 0. */
+int m1_ow_reset(void)
+{
+    int presence;
+    if (!s_ow_port) return 0;
+    __disable_irq();
+    ow_drive_low(); ow_delay_us(480);
+    ow_release();   ow_delay_us(70);
+    presence = ow_level() ? 0 : 1;   /* a device pulls the line low */
+    __enable_irq();
+    ow_delay_us(410);
+    return presence;
+}
+
+static void ow_write_bit(int bit)
+{
+    __disable_irq();
+    ow_drive_low();
+    if (bit) { ow_delay_us(6);  ow_release(); ow_delay_us(64); }
+    else     { ow_delay_us(60); ow_release(); ow_delay_us(10); }
+    __enable_irq();
+}
+
+static int ow_read_bit(void)
+{
+    int b;
+    __disable_irq();
+    ow_drive_low(); ow_delay_us(6);
+    ow_release();   ow_delay_us(9);
+    b = ow_level();
+    __enable_irq();
+    ow_delay_us(55);
+    return b;
+}
+
+void m1_ow_write_byte(uint8_t v)
+{
+    if (!s_ow_port) return;
+    for (int i = 0; i < 8; i++) { ow_write_bit(v & 1); v >>= 1; }
+}
+
+uint8_t m1_ow_read_byte(void)
+{
+    uint8_t v = 0;
+    if (!s_ow_port) return 0;
+    for (int i = 0; i < 8; i++) { v >>= 1; if (ow_read_bit()) v |= 0x80; }
+    return v;
+}
+
+/* Release the 1-Wire pin to a safe state. */
+void m1_ow_deinit(void)
+{
+    if (!s_ow_port) return;
+    GPIO_InitTypeDef g = {0};
+    g.Pin  = s_ow_pin;
+    g.Mode = GPIO_MODE_ANALOG;
+    g.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(s_ow_port, &g);
+    s_ow_port = 0;
+}
+
+
+
+/*============================================================================*/
+/*   P E E R   R E C O V E R Y  —  Phase 1: SWD connect + read IDCODE         */
+/*                                                                            */
+/* Turn this (good) M1 into a bit-bang SWD host (a mini ST-Link) for another  */
+/* M1's STM32 debug port. The SW-DP is alive whenever the target core is      */
+/* powered — it does NOT depend on the target's firmware — so this recovers a */
+/* fully bricked M1 (the interface the user has actually used to recover from */
+/* the pins before). Phase 1 only performs the SWD line-reset + JTAG-to-SWD   */
+/* handshake and reads DPIDR (the debug-port IDCODE) — ZERO flash writes — to */
+/* prove the link before we add halt/erase/program in later phases.           */
+/*                                                                            */
+/* Wiring (good M1 header -> target M1 header):                               */
+/*   good pin 2  (PE2) --> target pin 10 (PA14 SWCLK)                         */
+/*   good pin 3  (PE4) --> target pin 11 (PA13 SWDIO)                         */
+/*   good GND (pin 8/18) <-> target GND (pin 8/18)                            */
+/* Target just needs power (battery or USB); no DFU mode needed for SWD.      */
+/*============================================================================*/
+
+/* Header pins used as the SWD host lines (both on GPIOE). */
+#define SWDH_CLK_PORT   PE2_GPIO_Port
+#define SWDH_CLK_PIN    PE2_Pin        /* header pin 2  -> target SWCLK (pin 10) */
+#define SWDH_IO_PORT    PE2_GPIO_Port
+#define SWDH_IO_PIN     PE4_Pin        /* header pin 3  -> target SWDIO (pin 11) */
+
+/* Last transaction diagnostics, shown on-screen. */
+static uint32_t s_swd_idcode = 0;      /* DPIDR (debug-port IDCODE)            */
+static uint32_t s_swd_cpuid  = 0;      /* SCB CPUID @0xE000ED00 (mem read)    */
+static uint32_t s_swd_dhcsr  = 0;      /* DHCSR read-back after halt          */
+static uint8_t  s_swd_ack    = 0xFF;   /* 0xFF = no transaction yet           */
+static uint8_t  s_swd_pwr_ok = 0;      /* debug power-up acked                */
+static uint8_t  s_swd_halt_ok = 0;     /* core reported S_HALT                 */
+static int      s_swd_err = 0;         /* swdh_probe() return code (0 = OK)    */
+
+/* SWD register addresses. */
+#define SWD_DP_ABORT    0x0
+#define SWD_DP_CTRL     0x4    /* CTRL/STAT (DPBANKSEL=0)                       */
+#define SWD_DP_SELECT   0x8
+#define SWD_DP_RDBUFF   0xC
+#define SWD_AP_CSW      0x00
+#define SWD_AP_TAR      0x04
+#define SWD_AP_DRW      0x0C
+#define SWD_ACK_OK      0x1
+#define SWD_ACK_WAIT    0x2
+/* On STM32H5 the Cortex-M33 core AHB-AP is AP #1 (AP #0 is the APB-AP for
+ * DBGMCU etc.) — confirmed by OpenOCD's stm32h5x.cfg (-ap-num 1 for cortex_m). */
+#define SWD_AHB_AP      1
+
+/* --- STM32H5 target flash programming (over SWD/AHB-AP), from CMSIS/HAL --- */
+#define TGT_FLASH_BASE      0x08000000u
+#define TGT_FLASH_BANK_SZ   0x00100000u          /* 1 MB per bank             */
+#define TGT_SECT_SZ         0x00002000u          /* 8 KB sector               */
+#define TGT_SECT_PER_BANK   128u
+#define TGT_FLASH_R         0x40022000u          /* non-secure flash reg base */
+#define TGT_FL_NSKEYR       (TGT_FLASH_R + 0x04)
+#define TGT_FL_NSSR         (TGT_FLASH_R + 0x20)
+#define TGT_FL_NSCR         (TGT_FLASH_R + 0x28)
+#define TGT_FL_NSCCR        (TGT_FLASH_R + 0x30)
+#define TGT_FL_OPTSR_CUR    (TGT_FLASH_R + 0x50)
+#define TGT_FL_KEY1         0x45670123u
+#define TGT_FL_KEY2         0xCDEF89ABu
+#define TGT_CR_LOCK         (1u << 0)
+#define TGT_CR_PG           (1u << 1)
+#define TGT_CR_SER          (1u << 2)
+#define TGT_CR_START        (1u << 5)
+#define TGT_CR_SNB_POS      6
+#define TGT_CR_BKSEL        (1u << 31)
+#define TGT_SR_BSY          (1u << 0)
+#define TGT_SR_WBNE         (1u << 1)
+#define TGT_SR_ERRMASK      ((1u<<17)|(1u<<18)|(1u<<19)|(1u<<20))  /* WRP/PGS/STRB/INC */
+#define TGT_CCR_CLRALL      0x00FF0000u          /* clear EOP + all error flags */
+#define RECOVERY_IMG_PATH   "0:/recovery.bin"
+
+/* Flash-recovery progress, shown while programming. */
+static uint8_t s_fl_pct   = 0;
+
+/* Direct register line control (fast + jitter-free; bit-bang SWD is
+ * host-clocked so exact timing is not critical, only edge order). */
+static inline void swdh_clk(int v)
+{
+    SWDH_CLK_PORT->BSRR = v ? (uint32_t)SWDH_CLK_PIN
+                            : ((uint32_t)SWDH_CLK_PIN << 16);
+}
+static inline void swdh_io(int v)
+{
+    SWDH_IO_PORT->BSRR = v ? (uint32_t)SWDH_IO_PIN
+                           : ((uint32_t)SWDH_IO_PIN << 16);
+}
+static inline int swdh_get(void)
+{
+    return (SWDH_IO_PORT->IDR & SWDH_IO_PIN) ? 1 : 0;
+}
+
+/* Half-bit delay count. Reset to the reliable value at every connect; the
+ * bulk erase/program lowers it once the link is proven (see swdh_flash_recover).*/
+static int s_swd_dly = 40;
+
+static inline void swdh_delay(void)
+{
+    volatile int i;
+    for (i = 0; i < s_swd_dly; i++) __NOP();
+}
+
+/* Point the shared SWDIO line as host output (out=1) or target input (out=0). */
+static void swdh_io_dir(int out)
+{
+    GPIO_InitTypeDef gi = {0};
+    gi.Pin   = SWDH_IO_PIN;
+    gi.Mode  = out ? GPIO_MODE_OUTPUT_PP : GPIO_MODE_INPUT;
+    gi.Pull  = out ? GPIO_NOPULL         : GPIO_PULLUP;   /* idle-high while target drives */
+    gi.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(SWDH_IO_PORT, &gi);
+}
+
+/* Write one bit (host driving SWDIO): target samples on the rising edge. */
+static void swdh_wr_bit(int b)
+{
+    swdh_io(b);
+    swdh_clk(0); swdh_delay();
+    swdh_clk(1); swdh_delay();
+}
+/* Read one bit (target driving SWDIO): sample while clock is low, then rise. */
+static int swdh_rd_bit(void)
+{
+    int b;
+    swdh_clk(0); swdh_delay();
+    b = swdh_get();
+    swdh_clk(1); swdh_delay();
+    return b;
+}
+/* One clock with SWDIO left alone — used for the turnaround cycles. */
+static void swdh_trn(void)
+{
+    swdh_clk(0); swdh_delay();
+    swdh_clk(1); swdh_delay();
+}
+static void swdh_wr(uint32_t val, int n)
+{
+    while (n--) { swdh_wr_bit((int)(val & 1u)); val >>= 1; }
+}
+static uint32_t swdh_rd(int n)
+{
+    uint32_t v = 0; int i;
+    for (i = 0; i < n; i++) if (swdh_rd_bit()) v |= (1u << i);
+    return v;
+}
+
+/* >=50 clocks with SWDIO high resets the SWD line state machine. */
+static void swdh_line_reset(void)
+{
+    int i;
+    swdh_io_dir(1);
+    swdh_io(1);
+    for (i = 0; i < 56; i++) swdh_wr_bit(1);
+}
+
+/* Bring up the target debug port: line reset -> JTAG-to-SWD select (0xE79E)
+ * -> line reset -> a few idle bits, per ADIv5 SW-DP. */
+static void swdh_connect(void)
+{
+    GPIO_InitTypeDef gi = {0};
+
+    s_swd_dly = 40;            /* always handshake at the reliable slow speed */
+    gi.Pin   = SWDH_CLK_PIN;
+    gi.Mode  = GPIO_MODE_OUTPUT_PP;
+    gi.Pull  = GPIO_NOPULL;
+    gi.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(SWDH_CLK_PORT, &gi);
+    swdh_clk(1);
+
+    swdh_io_dir(1);
+    swdh_line_reset();
+    swdh_wr(0xE79E, 16);        /* JTAG-to-SWD switch sequence, LSB first */
+    swdh_line_reset();
+    swdh_io(0);
+    swdh_wr(0, 8);              /* idle cycles */
+}
+
+/* Generic SWD transfer. apndp: 0=DP,1=AP. rnw: 0=write,1=read. a=register
+ * address (bits[3:2] select the register). For reads, *data receives the
+ * result; for writes, *data supplies it. Returns the 3-bit ACK (OK=0b001). */
+static uint8_t swdh_xfer(int apndp, int rnw, uint8_t a, uint32_t *data)
+{
+    int a2 = (a >> 2) & 1, a3 = (a >> 3) & 1;
+    int par = (apndp ^ rnw ^ a2 ^ a3) & 1;
+    uint32_t req = 1u | ((uint32_t)apndp << 1) | ((uint32_t)rnw << 2)
+                 | ((uint32_t)a2 << 3) | ((uint32_t)a3 << 4)
+                 | ((uint32_t)par << 5) | (1u << 7);   /* Start .. Park */
+    uint8_t ack;
+    uint32_t d, calc = 0;
+    int i, rp;
+
+    swdh_io_dir(1);
+    swdh_wr(req, 8);
+
+    swdh_io_dir(0);
+    swdh_trn();                          /* turnaround host -> target */
+    ack = (uint8_t)swdh_rd(3);           /* ACK, LSB first */
+
+    if (ack != SWD_ACK_OK)
+    {
+        swdh_trn();                      /* return the bus, bail */
+        swdh_io_dir(1);
+        return ack;
+    }
+
+    if (rnw)                             /* READ: target keeps driving data */
+    {
+        d = swdh_rd(32);
+        rp = swdh_rd_bit();
+        swdh_trn();                      /* turnaround target -> host */
+        swdh_io_dir(1);
+        if (data) *data = d;
+        for (i = 0; i < 32; i++) calc ^= (d >> i) & 1u;
+        if ((calc & 1u) != (uint32_t)rp) return 0x8;   /* flag parity error */
+    }
+    else                                 /* WRITE: hand bus back, drive data */
+    {
+        swdh_trn();                      /* turnaround target -> host */
+        swdh_io_dir(1);
+        d = data ? *data : 0;
+        swdh_wr(d, 32);
+        for (i = 0; i < 32; i++) calc ^= (d >> i) & 1u;
+        swdh_wr_bit((int)(calc & 1u));
+    }
+    return ack;                          /* SWD_ACK_OK on success */
+}
+
+/* Retrying transfer: a fresh jumper link and the DAP right after power-up can
+ * answer WAIT (or miss a bit); re-issue until OK or the budget runs out. */
+static uint8_t swdh_try(int apndp, int rnw, uint8_t a, uint32_t *data)
+{
+    uint8_t ack = 0; int k;
+    for (k = 0; k < 8; k++)
+    {
+        ack = swdh_xfer(apndp, rnw, a, data);
+        if (ack == SWD_ACK_OK) break;
+    }
+    return ack;
+}
+
+static uint8_t swdh_dp_write(uint8_t a, uint32_t d) { return swdh_try(0, 0, a, &d); }
+static uint8_t swdh_dp_read (uint8_t a, uint32_t *d){ return swdh_try(0, 1, a, d);  }
+
+/* Point DP.SELECT at the core AHB-AP (APSEL = SWD_AHB_AP) with the AP-register
+ * bank in APBANKSEL. CSW/TAR/DRW are all in bank 0, so APBANKSEL = reg high nibble. */
+static void swdh_ap_select(uint8_t apreg)
+{
+    uint32_t sel = ((uint32_t)SWD_AHB_AP << 24) | (uint32_t)(apreg & 0xF0);
+    swdh_dp_write(SWD_DP_SELECT, sel);
+}
+static uint8_t swdh_ap_write(uint8_t apreg, uint32_t d)
+{
+    swdh_ap_select(apreg);
+    return swdh_try(1, 0, apreg, &d);
+}
+/* AP reads are pipelined one behind: issue the AP read, then take the real
+ * value from RDBUFF. */
+static uint8_t swdh_ap_read(uint8_t apreg, uint32_t *d)
+{
+    uint32_t dummy;
+    swdh_ap_select(apreg);
+    swdh_try(1, 1, apreg, &dummy);
+    return swdh_dp_read(SWD_DP_RDBUFF, d);
+}
+
+static uint8_t swdh_mem_read(uint32_t addr, uint32_t *val)
+{
+    swdh_ap_write(SWD_AP_TAR, addr);
+    return swdh_ap_read(SWD_AP_DRW, val);
+}
+static uint8_t swdh_mem_write(uint32_t addr, uint32_t val)
+{
+    swdh_ap_write(SWD_AP_TAR, addr);
+    return swdh_ap_write(SWD_AP_DRW, val);
+}
+
+/* Full Phase-2 bring-up: connect, read DPIDR, power the debug domain, read
+ * CPUID over the AHB-AP (proves memory READ), halt the core and read DHCSR
+ * back (proves memory WRITE), then release the core so a live target keeps
+ * running. Returns 0 on a fully successful link. */
+static int swdh_probe(void)
+{
+    uint32_t v;
+    int tries;
+
+    s_swd_idcode = s_swd_cpuid = s_swd_dhcsr = 0;
+    s_swd_ack = 0xFF; s_swd_pwr_ok = 0; s_swd_halt_ok = 0;
+
+    /* DP IDCODE is required as the first DP read after a line reset. A marginal
+     * jumper link can miss the very first attempt, so re-run the full connect a
+     * few times until we get a valid, non-empty IDCODE. */
+    for (tries = 0; tries < 12; tries++)
+    {
+        swdh_connect();
+        s_swd_ack = swdh_dp_read(0x0, &s_swd_idcode);
+        if (s_swd_ack == SWD_ACK_OK &&
+            s_swd_idcode != 0 && s_swd_idcode != 0xFFFFFFFF)
+            break;
+    }
+    if (s_swd_ack != SWD_ACK_OK ||
+        s_swd_idcode == 0 || s_swd_idcode == 0xFFFFFFFF)
+        return -1;
+
+    /* Clear any sticky error/overrun flags, then power up debug. */
+    swdh_dp_write(SWD_DP_ABORT, 0x1E);
+    swdh_dp_write(SWD_DP_SELECT, 0x0);          /* DPBANKSEL=0, APSEL=0 */
+    swdh_dp_write(SWD_DP_CTRL, 0x50000000u);    /* CDBGPWRUPREQ|CSYSPWRUPREQ */
+    for (tries = 0; tries < 50; tries++)
+    {
+        if (swdh_dp_read(SWD_DP_CTRL, &v) == SWD_ACK_OK &&
+            (v & 0xA0000000u) == 0xA0000000u)   /* CDBGPWRUPACK|CSYSPWRUPACK */
+        {
+            s_swd_pwr_ok = 1;
+            break;
+        }
+    }
+    if (!s_swd_pwr_ok) return -2;
+
+    /* Configure the core AHB-AP for 32-bit, auto-incrementing accesses with
+     * STM32H5 non-secure privileged Prot bits (SPROT=1). Value 0x4B000000 in
+     * the Prot field matches OpenOCD's non-secure apcsw for this part; low bits
+     * set Size=32-bit + AddrInc=single. */
+    if (swdh_ap_read(SWD_AP_CSW, &v) != SWD_ACK_OK) return -3;
+    v = (v & ~0x4F000037u) | 0x4B000012u;
+    swdh_ap_write(SWD_AP_CSW, v);
+
+    /* Memory READ: SCB CPUID (top bytes 0x410FD2xx = Cortex-M33). */
+    if (swdh_mem_read(0xE000ED00u, &s_swd_cpuid) != SWD_ACK_OK) return -4;
+
+    /* Memory WRITE: halt the core via DHCSR, then confirm S_HALT. */
+    swdh_mem_write(0xE000EDF0u, 0xA05F0003u);   /* DBGKEY|C_DEBUGEN|C_HALT */
+    for (tries = 0; tries < 20; tries++)
+    {
+        if (swdh_mem_read(0xE000EDF0u, &s_swd_dhcsr) == SWD_ACK_OK &&
+            (s_swd_dhcsr & (1u << 17)))          /* S_HALT */
+        {
+            s_swd_halt_ok = 1;
+            break;
+        }
+    }
+
+    /* Release the core (clear halt + debug enable) so a live test target keeps
+     * running. A truly bricked target won't run anyway; this is just courtesy. */
+    swdh_mem_write(0xE000EDF0u, 0xA05F0000u);
+
+    return s_swd_halt_ok ? 0 : -5;
+}
+
+/*----------------------------------------------------------------------------*/
+/*  Phase 3: erase + program the target's flash from an SD image over SWD.     */
+/*----------------------------------------------------------------------------*/
+
+/* Fast AP helpers for the flash loop: SELECT is left pointing at the AHB-AP
+ * (bank 0) the whole time, so TAR/DRW/CSW accesses skip the per-op re-select. */
+static void swdh_ap_lock(void)
+{
+    swdh_dp_write(SWD_DP_SELECT, ((uint32_t)SWD_AHB_AP << 24));
+}
+static uint8_t swdh_apw(uint8_t reg, uint32_t d) { return swdh_try(1, 0, reg, &d); }
+static uint8_t swdh_apr(uint8_t reg, uint32_t *d)
+{
+    uint32_t dummy;
+    swdh_try(1, 1, reg, &dummy);
+    return swdh_dp_read(SWD_DP_RDBUFF, d);
+}
+/* Single-word target memory access (SELECT already locked to the AHB-AP). */
+static uint8_t swdh_mw(uint32_t a, uint32_t v) { swdh_apw(SWD_AP_TAR, a); return swdh_apw(SWD_AP_DRW, v); }
+static uint8_t swdh_mr(uint32_t a, uint32_t *v){ swdh_apw(SWD_AP_TAR, a); return swdh_apr(SWD_AP_DRW, v); }
+
+/* Wait for the target flash to finish an operation (BSY + write-buffer clear). */
+static int tgt_flash_wait(void)
+{
+    uint32_t sr; int i;
+    for (i = 0; i < 200000; i++)
+    {
+        if (swdh_mr(TGT_FL_NSSR, &sr) == SWD_ACK_OK &&
+            !(sr & (TGT_SR_BSY | TGT_SR_WBNE)))
+            return (sr & TGT_SR_ERRMASK) ? -1 : 0;
+    }
+    return -2;   /* timeout */
+}
+
+/* Draw a one-line progress screen for the (blocking) flash operation. */
+static void tgt_flash_draw(const char *stage)
+{
+    char line[28];
+    m1_u8g2_firstpage();
+    do {
+        u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+        u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+        u8g2_DrawStr(&m1_u8g2, 2, 9, "Flashing peer...");
+        u8g2_DrawHLine(&m1_u8g2, 0, 12, 128);
+        u8g2_DrawStr(&m1_u8g2, 2, 30, stage);
+        snprintf(line, sizeof(line), "%u%%", (unsigned)s_fl_pct);
+        u8g2_DrawStr(&m1_u8g2, 2, 44, line);
+        u8g2_DrawStr(&m1_u8g2, 2, 61, "Do NOT disconnect");
+    } while (m1_u8g2_nextpage());
+}
+
+/* Erase both target banks, then program RECOVERY_IMG_PATH at 0x08000000 and
+ * reset the target. Returns 0 on success, else a negative stage code. Requires
+ * a halted core with the AHB-AP CSW already configured (call after swdh_probe).*/
+static int swdh_flash_recover(void)
+{
+    static uint32_t buf[256];     /* 1 KB SD read chunk (4-byte aligned)        */
+    uint8_t *b = (uint8_t *)buf;
+    FIL fp; UINT br; FRESULT fr;
+    uint32_t cr, fsize, addr, done, bank;
+    int s;
+
+    /* Re-establish the link and leave the core HALTED (probe releases it). */
+    s_fl_pct = 0;
+    if (swdh_probe() != 0) return -10;
+    swdh_ap_lock();
+    swdh_mw(0xE000EDF0u, 0xA05F0003u);       /* halt: DBGKEY|C_DEBUGEN|C_HALT   */
+
+    /* Link is proven — run the bulk erase/program at a faster clock. The next
+     * connect resets s_swd_dly to the reliable value. Safety: transfer retry +
+     * read-parity checks here, and the target's own boot-CRC after. */
+    s_swd_dly = 15;
+
+    /* Unlock the flash control register. */
+    tgt_flash_draw("Unlocking...");
+    swdh_mw(TGT_FL_NSKEYR, TGT_FL_KEY1);
+    swdh_mw(TGT_FL_NSKEYR, TGT_FL_KEY2);
+    if (swdh_mr(TGT_FL_NSCR, &cr) != SWD_ACK_OK || (cr & TGT_CR_LOCK)) return -11;
+
+    /* Erase both banks sector-by-sector (clean slate, swap-agnostic). */
+    for (s = 0; s < (int)(2 * TGT_SECT_PER_BANK); s++)
+    {
+        uint32_t sect = (uint32_t)(s % TGT_SECT_PER_BANK);
+        bank = (s < (int)TGT_SECT_PER_BANK) ? 0u : TGT_CR_BKSEL;
+        swdh_mw(TGT_FL_NSCR, TGT_CR_SER | (sect << TGT_CR_SNB_POS) | bank | TGT_CR_START);
+        if (tgt_flash_wait() != 0) return -12;
+        swdh_mw(TGT_FL_NSCCR, TGT_CCR_CLRALL);
+        s_fl_pct = (uint8_t)((s + 1) * 100 / (2 * TGT_SECT_PER_BANK));
+        if ((s & 7) == 0) tgt_flash_draw("Erasing...");
+    }
+    swdh_mw(TGT_FL_NSCR, 0);                  /* clear SER                       */
+
+    /* Program the image (128-bit quad-words; skip already-erased 0xFF groups). */
+    fr = f_open(&fp, RECOVERY_IMG_PATH, FA_READ);
+    if (fr != FR_OK) return -20;
+    fsize = (uint32_t)f_size(&fp);
+    if (fsize == 0 || fsize > TGT_FLASH_BANK_SZ) { f_close(&fp); return -21; }
+
+    s_fl_pct = 0;
+    swdh_mw(TGT_FL_NSCR, TGT_CR_PG);
+    addr = TGT_FLASH_BASE;
+    done = 0;
+    while (done < fsize)
+    {
+        UINT want = (fsize - done > sizeof(buf)) ? (UINT)sizeof(buf) : (UINT)(fsize - done);
+        UINT off;
+        if (f_read(&fp, b, want, &br) != FR_OK || br != want) { f_close(&fp); return -22; }
+        while (br & 15u) b[br++] = 0xFF;      /* pad tail up to a quad-word      */
+
+        for (off = 0; off < br; off += 16)
+        {
+            uint32_t *w = (uint32_t *)(b + off);
+            if (!(w[0]==0xFFFFFFFFu && w[1]==0xFFFFFFFFu &&
+                  w[2]==0xFFFFFFFFu && w[3]==0xFFFFFFFFu))
+            {
+                swdh_apw(SWD_AP_TAR, addr);
+                swdh_apw(SWD_AP_DRW, w[0]);
+                swdh_apw(SWD_AP_DRW, w[1]);
+                swdh_apw(SWD_AP_DRW, w[2]);
+                swdh_apw(SWD_AP_DRW, w[3]);
+                if (tgt_flash_wait() != 0) { f_close(&fp); return -23; }
+                /* No per-word flag clear: tgt_flash_wait() already aborts on any
+                 * error bit, and a leftover EOP doesn't block the next program. */
+            }
+            addr += 16;
+        }
+        done += want;
+        s_fl_pct = (uint8_t)(done * 100 / fsize);
+        tgt_flash_draw("Programming...");
+    }
+    swdh_mw(TGT_FL_NSCR, TGT_CR_LOCK);        /* clear PG + relock the flash     */
+
+    /* Sanity-verify the vector table: SP in RAM, reset vector in flash. */
+    tgt_flash_draw("Verifying...");
+    {
+        uint32_t sp = 0, rv = 0;
+        f_lseek(&fp, 0);
+        f_read(&fp, b, 8, &br);
+        (void)swdh_mr(TGT_FLASH_BASE + 0, &sp);
+        (void)swdh_mr(TGT_FLASH_BASE + 4, &rv);
+        f_close(&fp);
+        if (sp != buf[0] || rv != buf[1]) return -30;   /* readback mismatch     */
+        if ((sp & 0xFF000000u) != 0x20000000u) return -31;  /* SP not in SRAM    */
+    }
+
+    /* Release debug and reset the target so it boots the fresh firmware. */
+    s_fl_pct = 100;
+    swdh_mw(0xE000EDF0u, 0xA05F0000u);        /* clear halt + debug enable       */
+    swdh_mw(0xE000ED0Cu, 0x05FA0004u);        /* AIRCR SYSRESETREQ               */
+    return 0;
+}
+
+void tool_peer_recover(void)
+{
+    S_M1_Main_Q_t q_item;
+    S_M1_Buttons_Status btn;
+    BaseType_t ret;
+    int state = 0;   /* 0 instr, 1 linked, 2 confirm, 3 flash-result, -1 fail */
+    int fl_err = 0;           /* swdh_flash_recover() result                     */
+    char line[28];
+    bool redraw = true, do_probe = false;
+
+    while (1)
+    {
+        if (do_probe)
+        {
+            do_probe = false;
+            s_swd_err = swdh_probe();
+            state = (s_swd_err == 0) ? 1 : -1;
+            redraw = true;
+        }
+
+        if (redraw)
+        {
+            redraw = false;
+            m1_u8g2_firstpage();
+            do {
+                u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+                u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+                u8g2_DrawStr(&m1_u8g2, 2, 9, "Recover Peer (SWD)");
+                u8g2_DrawHLine(&m1_u8g2, 0, 12, 128);
+
+                if (state == 0)
+                {
+                    u8g2_DrawStr(&m1_u8g2, 2, 23, "P2>tgt10 P3>tgt11");
+                    u8g2_DrawStr(&m1_u8g2, 2, 34, "GND<->GND, tgt powered");
+                    u8g2_DrawStr(&m1_u8g2, 2, 45, "(no DFU needed)");
+                    u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:Connect  Back:Exit");
+                }
+                else if (state == 1)
+                {
+                    snprintf(line, sizeof(line), "ID :0x%08lX", (unsigned long)s_swd_idcode);
+                    u8g2_DrawStr(&m1_u8g2, 2, 23, line);
+                    snprintf(line, sizeof(line), "CPU:0x%08lX", (unsigned long)s_swd_cpuid);
+                    u8g2_DrawStr(&m1_u8g2, 2, 34, line);
+                    u8g2_DrawStr(&m1_u8g2, 2, 45, "Linked & halted OK");
+                    u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:Flash  Back:Exit");
+                }
+                else if (state == 2)
+                {
+                    u8g2_DrawStr(&m1_u8g2, 2, 24, "FLASH recovery.bin?");
+                    u8g2_DrawStr(&m1_u8g2, 2, 35, "ERASES target flash!");
+                    u8g2_DrawStr(&m1_u8g2, 2, 46, "SD: 0:/recovery.bin");
+                    u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:GO  Back:Cancel");
+                }
+                else if (state == 3)
+                {
+                    if (fl_err == 0) {
+                        u8g2_DrawStr(&m1_u8g2, 2, 26, "Flash OK! Target reset.");
+                        u8g2_DrawStr(&m1_u8g2, 2, 40, "Recovery complete.");
+                    } else {
+                        snprintf(line, sizeof(line), "Flash FAIL @ %d", fl_err);
+                        u8g2_DrawStr(&m1_u8g2, 2, 26, line);
+                        u8g2_DrawStr(&m1_u8g2, 2, 40,
+                            (fl_err <= -20 && fl_err > -30) ? "SD/file problem" :
+                            (fl_err <= -30) ? "verify mismatch" :
+                            (fl_err == -11) ? "flash unlock failed" :
+                            (fl_err == -12) ? "erase failed" :
+                            (fl_err == -23) ? "program failed" : "link lost");
+                    }
+                    u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:Menu  Back:Exit");
+                }
+                else
+                {
+                    snprintf(line, sizeof(line), "Fail@%d ack:0x%X pwr:%s",
+                             s_swd_err, (unsigned)s_swd_ack, s_swd_pwr_ok ? "OK" : "no");
+                    u8g2_DrawStr(&m1_u8g2, 2, 23, line);
+                    snprintf(line, sizeof(line), "ID :0x%08lX", (unsigned long)s_swd_idcode);
+                    u8g2_DrawStr(&m1_u8g2, 2, 34, line);
+                    snprintf(line, sizeof(line), "CPU:0x%08lX", (unsigned long)s_swd_cpuid);
+                    u8g2_DrawStr(&m1_u8g2, 2, 45, line);
+                    u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:Retry  Back:Exit");
+                }
+            } while (m1_u8g2_nextpage());
+        }
+
+        ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+        if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
+        {
+            xQueueReceive(button_events_q_hdl, &btn, 0);
+            if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+            {
+                if (state == 2)      { state = 1; redraw = true; }   /* cancel flash */
+                else                 { xQueueReset(main_q_hdl); break; }
+            }
+            else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+            {
+                if (state == 1)      { state = 2; redraw = true; }   /* -> flash confirm */
+                else if (state == 2)                                 /* flash confirmed  */
+                {
+                    fl_err = swdh_flash_recover();
+                    state = 3;
+                    redraw = true;
+                }
+                else if (state == 3) { state = 0; redraw = true; }   /* back to menu    */
+                else                 { do_probe = true; }            /* 0 / -1: probe   */
+            }
+        }
+    }
+
+    /* Park both host lines back to inputs so we stop driving the target's
+     * debug pins once we leave the tool. */
+    swdh_io_dir(0);
+    {
+        GPIO_InitTypeDef gi = {0};
+        gi.Pin  = SWDH_CLK_PIN;
+        gi.Mode = GPIO_MODE_INPUT;
+        gi.Pull = GPIO_NOPULL;
+        HAL_GPIO_Init(SWDH_CLK_PORT, &gi);
+    }
 }
 
 

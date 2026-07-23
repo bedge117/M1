@@ -212,10 +212,15 @@ S_M1_Menu_t menu_Tools_Field_Detect =
     "Field Detector", m1_field_detector_run, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
+S_M1_Menu_t menu_Tools_Peer_Recover =
+{
+    "Recover Peer", tool_peer_recover, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 S_M1_Menu_t menu_Tools =
 {
-    "Tools", NULL, NULL, NULL, 4, 0, menu_m1_icon_gpio, NULL,
-    {&menu_Tools_I2C_Scan, &menu_Tools_Pin_Reader, &menu_Tools_Peer_Link, &menu_Tools_Field_Detect}
+    "Tools", NULL, NULL, NULL, 5, 0, menu_m1_icon_gpio, NULL,
+    {&menu_Tools_I2C_Scan, &menu_Tools_Pin_Reader, &menu_Tools_Peer_Link, &menu_Tools_Field_Detect, &menu_Tools_Peer_Recover}
 };
 
 /*------------------------------- > Settings ---------------------------------*/
