@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "stm32h5xx_hal.h"
+#include "m1_compile_cfg.h"   /* M1_RECOVERY_BUILD gate for the recovery screen/task */
 #include "app_freertos.h"
 #include "m1_tasks.h"
 #include "m1_power_ctl.h"
@@ -896,6 +897,65 @@ void startup_info_screen_display(const char *scr_text)
 	m1_device_stat.op_mode = M1_OPERATION_MODE_DISPLAY_ON; // update new state
 	m1_device_stat.active_timestamp = HAL_GetTick(); // reset timeout
 } // void startup_info_screen_display(const char *scr_text)
+
+
+#ifdef M1_RECOVERY_BUILD
+/******************************************************************************/
+/**
+  * @brief  Draw the static "RECOVERY FW" screen (recovery-build only).
+  *         Landscape 128x64; tells the user how to restore firmware.
+  */
+/******************************************************************************/
+void m1_recovery_screen_show(void)
+{
+	char ver[12];
+	int  vw;
+
+	snprintf(ver, sizeof(ver), "C3.%d.%d", M1_RECOVERY_VER_MAJOR, M1_RECOVERY_VER_MINOR);
+
+	u8g2_SetPowerSave(&m1_u8g2, false);
+	m1_u8g2_firstpage();
+	do {
+		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+		u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_B);
+		u8g2_DrawStr(&m1_u8g2, 2, 11, "RECOVERY FW");
+		u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+		vw = u8g2_GetStrWidth(&m1_u8g2, ver);
+		u8g2_DrawStr(&m1_u8g2, M1_LCD_DISPLAY_WIDTH - vw - 2, 10, ver);
+		u8g2_DrawHLine(&m1_u8g2, 0, 14, M1_LCD_DISPLAY_WIDTH);
+		u8g2_DrawStr(&m1_u8g2, 2, 27, "Firmware restore mode");
+		u8g2_DrawStr(&m1_u8g2, 2, 39, "1. Remove SD card");
+		u8g2_DrawStr(&m1_u8g2, 2, 50, "2. Open qMonstatek USB");
+		u8g2_DrawStr(&m1_u8g2, 2, 61, "3. Flash a working FW");
+	} while (m1_u8g2_nextpage());
+
+	lp5814_backlight_on(M1_BACKLIGHT_BRIGHTNESS);
+	m1_device_stat.op_mode = M1_OPERATION_MODE_DISPLAY_ON;
+} // void m1_recovery_screen_show(void)
+
+
+/******************************************************************************/
+/**
+  * @brief  Recovery-build UI task: replaces the menu task. Draws the recovery
+  *         screen once, then just drains the main event queue (so it can't back
+  *         up on button presses) and idles. USB CDC + RPC run independently.
+  */
+/******************************************************************************/
+void m1_recovery_task(void *param)
+{
+	S_M1_Main_Q_t q_item;
+	(void)param;
+
+	m1_recovery_screen_show();
+
+	for (;;)
+	{
+		/* Discard any UI/button events so main_q_hdl never fills. */
+		while (xQueueReceive(main_q_hdl, &q_item, 0) == pdTRUE) { /* ignore */ }
+		vTaskDelay(pdMS_TO_TICKS(250));
+	}
+} // void m1_recovery_task(void *param)
+#endif /* M1_RECOVERY_BUILD */
 
 
 

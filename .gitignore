@@ -69,6 +69,7 @@ appsplan.md
 
 # Experimental build output (never commit firmware binaries)
 build-exp/
+build-rec/
 *.zip
 
 # Copyrighted / sensitive key material — NEVER commit

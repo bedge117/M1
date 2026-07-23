@@ -166,6 +166,31 @@ void m1_system_init_task(void *param)
 			and is called before osKernelStart() will disable interrupts.  This includes the usual MX_FREERTOS_Init() function.
 			So any code you have between MX_FREERTOS_Init() and osKernelStart() will run with interrupts disabled.
 			*/
+#ifdef M1_RECOVERY_BUILD
+			/* Recovery FW: minimal bring-up — display + USB/RPC only. Skip the
+			 * radio SPI bus (SPI2), battery service, SD card, and the post-update
+			 * welcome/rollback handler. The recovery task (created in
+			 * m1_tasks_init) draws the "RECOVERY FW" screen. */
+			startup_device_init();
+			m1_i2c_hal_init(&hi2c1);
+			lp5814_init();
+			m1_lcd_init(&hspi1);
+			/* Phase 1: keep SD init so composite USB-MSC behaves like the shipping
+			 * FW (MSC reports no-media safely). Phase 2 drops to CDC-only + no SD. */
+			m1_sdcard_init(&hsd1);
+
+			/* USART1 default config (kept for debug log) */
+			huart_logdb.Init.BaudRate = LOG_DEBUG_UART_BAUD;
+			huart_logdb.Init.WordLength = UART_WORDLENGTH_8B;
+			huart_logdb.Init.StopBits = UART_STOPBITS_1;
+			huart_logdb.Init.Parity = UART_PARITY_NONE;
+			m1_logdb_init();
+
+			m1_wdt_init();
+			m1_tasks_init();
+			M1_LOG_I(M1_LOGDB_TAG, "Recovery FW init done!\r\n");
+			vTaskDelete(NULL); // Delete this task
+#else
 			startup_device_init();
 			//  MX_X_CUBE_NFC6_Init();
 			m1_i2c_hal_init(&hi2c1);
@@ -188,6 +213,7 @@ void m1_system_init_task(void *param)
 			startup_config_handler();
 			M1_LOG_I(M1_LOGDB_TAG, "Power-up init done!\r\n");
 			vTaskDelete(NULL); // Delete this task
+#endif
 		} // if (osKernelGetState()==osKernelRunning)
 		else
 		{

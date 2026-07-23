@@ -88,12 +88,23 @@ void m1_tasks_init(void)
 	free_heap = xPortGetFreeHeapSize(); // xPortGetMinimumEverFreeHeapSize()
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
 
+#ifndef M1_RECOVERY_BUILD
 	ret = xTaskCreate(sdcard_detection_task, "sdcard_detection_task_n", M1_TASK_STACK_SIZE_DEFAULT, NULL, TASK_PRIORITY_SDCARD_HANDLER, &sdcard_task_hdl);
 	assert(ret==pdPASS);
 	assert(system_task_hdl!=NULL);
 	free_heap = xPortGetFreeHeapSize();
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
+#endif
 
+#ifdef M1_RECOVERY_BUILD
+	/* Recovery FW: the recovery task replaces the whole menu/subfunc UI. It draws
+	 * the "RECOVERY FW" screen and drains the event queue; USB/RPC run separately. */
+	ret = xTaskCreate(m1_recovery_task, "m1_recovery_task_n", M1_TASK_STACK_SIZE_1024, NULL, TASK_PRIORITY_MENU_MAIN_HANDLER, &menu_main_handler_task_hdl);
+	assert(ret==pdPASS);
+	assert(menu_main_handler_task_hdl!=NULL);
+	free_heap = xPortGetFreeHeapSize();
+	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
+#else
 	ret = xTaskCreate(menu_main_handler_task, "menu_main_handler_task_n", M1_TASK_STACK_SIZE_1024/*M1_TASK_STACK_SIZE_DEFAULT*/, NULL, TASK_PRIORITY_MENU_MAIN_HANDLER, &menu_main_handler_task_hdl);
 	assert(ret==pdPASS);
 	assert(menu_main_handler_task_hdl!=NULL);
@@ -105,6 +116,7 @@ void m1_tasks_init(void)
 	assert(subfunc_handler_task_hdl!=NULL);
 	free_heap = xPortGetFreeHeapSize();
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
+#endif
 
 	ret = xTaskCreate(log_db_handler_task, "log_db_handler_task_n", M1_TASK_STACK_SIZE_1024, NULL, TASK_PRIORITY_LOG_DB_HANDLER, &log_db_task_hdl);
 	assert(ret==pdPASS);
@@ -135,7 +147,7 @@ void m1_tasks_init(void)
 	m1_rpc_init();
 	free_heap = xPortGetFreeHeapSize();
 	assert(free_heap >= M1_LOW_FREE_HEAP_WARNING_SIZE);
-#if defined(M1_APP_WIFI_CONNECT_ENABLE)
+#if defined(M1_APP_WIFI_CONNECT_ENABLE) && !defined(M1_RECOVERY_BUILD)
 	wifi_rpc_init();
 #endif
 #endif

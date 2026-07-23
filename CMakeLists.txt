@@ -20,11 +20,22 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# Set the project name
-set(CMAKE_PROJECT_NAME M1_v0800_C3.124)
+# Recovery FW build variant — OFF by default. Enable with -DRECOVERY=ON (use
+# do_build_recovery.ps1, which builds into the SEPARATE build-rec/ dir). This
+# produces the stripped minimal Recovery FW; a normal build is unaffected.
+option(RECOVERY "Build the separate minimal Recovery FW (M1_Recovery_C3.x.y)" OFF)
 
-# C3 fork revision — must match M1_C3_REVISION in m1_fw_update_bl.h
-set(M1_C3_REVISION 124)
+# Set the project name + C3 revision. Recovery FW uses its own version line
+# (C3.<maj>.<min>, see M1_RECOVERY_VER_* in m1_fw_update_bl.h); the working FW
+# uses the single-integer C3.N line. Keep M1_C3_REVISION here in sync with the
+# matching value in m1_fw_update_bl.h.
+if(RECOVERY)
+    set(CMAKE_PROJECT_NAME M1_Recovery_C3.1.0)
+    set(M1_C3_REVISION 1)
+else()
+    set(CMAKE_PROJECT_NAME M1_v0800_C3.124)
+    set(M1_C3_REVISION 124)
+endif()
 
 # Include toolchain file
 include("cmake/gcc-arm-none-eabi.cmake")
@@ -90,6 +101,13 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # skipped verification entirely and reported success on a truncated/dropped flash.
     MD5_ENABLED
 )
+
+# Recovery FW variant: define M1_RECOVERY_BUILD globally so the recovery #ifdef
+# gates (minimal init, recovery screen/task, version) activate. Only set when
+# -DRECOVERY=ON; normal builds never see it.
+if(RECOVERY)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE M1_RECOVERY_BUILD)
+endif()
 
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}

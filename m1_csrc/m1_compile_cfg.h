@@ -83,4 +83,18 @@ extern void assert_failed();
 #define M1_APP_GAMES_ENABLE            /* Enable built-in Games menu */
 #define M1_APP_APPS_ENABLE             /* Enable Apps menu (ELF loader from SD card) */
 
+/*============================================================================*/
+/*			R E C O V E R Y   F I R M W A R E   B U I L D					*/
+/*============================================================================*/
+/* M1_RECOVERY_BUILD is deliberately NOT defined here. It is set only by the
+ * CMake build option -DRECOVERY=ON (see CMakeLists.txt + do_build_recovery.ps1),
+ * which produces the SEPARATE minimal Recovery FW (artifact M1_Recovery_C3.x.y,
+ * its own build dir build-rec/, its own version line C3.<maj>.<min>).
+ *
+ * A normal build (do_build.ps1 -> build-exp/) never defines it, so every
+ * recovery #ifdef block compiles out and the working FW is byte-for-byte
+ * unaffected. This keeps the two firmwares from ever mingling: the recovery
+ * image is only ever produced on purpose, and the core FW is never modified by
+ * building it. */
+
 #endif /* M1_COMPILE_CFG_H_ */

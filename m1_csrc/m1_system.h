@@ -192,6 +192,8 @@ void startup_device_init(void);
 void startup_config_handler(void);
 void startup_config_write(uint8_t config_byte, uint8_t config_val);
 void startup_info_screen_display(const char *scr_text);
+void m1_recovery_screen_show(void);   /* recovery build only (defined under M1_RECOVERY_BUILD) */
+void m1_recovery_task(void *param);   /* recovery build only */
 
 typedef struct {
     uint16_t year;    /* 2024..2099 */

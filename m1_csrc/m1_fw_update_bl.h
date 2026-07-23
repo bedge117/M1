@@ -73,7 +73,17 @@ typedef struct {
 #define FW_VERSION_BUILD   			0
 #define FW_VERSION_RC   			0
 
-#define M1_C3_REVISION				124
+/* Recovery FW: its own independent version line — "C3.<major>.<minor>", no
+ * Monstatek base version. Separate from the working FW's single-integer C3.N.
+ * (Only used when M1_RECOVERY_BUILD is set by the CMake -DRECOVERY=ON option.) */
+#define M1_RECOVERY_VER_MAJOR		1
+#define M1_RECOVERY_VER_MINOR		0
+
+#ifdef M1_RECOVERY_BUILD
+#define M1_C3_REVISION				1     /* Recovery FW line — see M1_RECOVERY_VER_* */
+#else
+#define M1_C3_REVISION				124   /* working FW line */
+#endif
 
 #define FW_CONFIG_MAGIC_NUMBER_1	((uint32_t)0x4D493235)
 #define FW_CONFIG_MAGIC_NUMBER_2    ((uint32_t)0x534A1F41)
