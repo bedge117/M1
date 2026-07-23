@@ -67,10 +67,6 @@ build_lfrfid.txt
 build_lfrfid2.txt
 appsplan.md
 
-# Claude / AI assistant
-.claude/
-CLAUDE.md
-
 # Experimental build output (never commit firmware binaries)
 build-exp/
 *.zip

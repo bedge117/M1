@@ -282,6 +282,19 @@ void m1_app_api_init(void)
         { "HAL_GPIO_ReadPin",      (void *)HAL_GPIO_ReadPin },
         { "HAL_GPIO_WritePin",     (void *)HAL_GPIO_WritePin },
         { "HAL_GPIO_TogglePin",    (void *)HAL_GPIO_TogglePin },
+        /* App-friendly header GPIO control (0-based pin ids, hides power pins) */
+        { "m1_gpio_ext_app_count",   (void *)m1_gpio_ext_app_count },
+        { "m1_gpio_ext_app_name",    (void *)m1_gpio_ext_app_name },
+        { "m1_gpio_ext_app_mode",    (void *)m1_gpio_ext_app_mode },
+        { "m1_gpio_ext_app_write",   (void *)m1_gpio_ext_app_write },
+        { "m1_gpio_ext_app_read",    (void *)m1_gpio_ext_app_read },
+        { "m1_gpio_ext_app_release", (void *)m1_gpio_ext_app_release },
+        /* Generic 1-Wire bit-bang primitive (DS18B20, iButton, ... in apps) */
+        { "m1_ow_init",       (void *)m1_ow_init },
+        { "m1_ow_reset",      (void *)m1_ow_reset },
+        { "m1_ow_write_byte", (void *)m1_ow_write_byte },
+        { "m1_ow_read_byte",  (void *)m1_ow_read_byte },
+        { "m1_ow_deinit",     (void *)m1_ow_deinit },
 
         /* ===== I2C ===== */
         { "m1_i2c_hal_trans_req",  (void *)m1_i2c_hal_trans_req },
