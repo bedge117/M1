@@ -50,6 +50,11 @@ const osTimerAttr_t dumyTimer_attributes = {
 QueueHandle_t	main_q_hdl;
 QueueHandle_t	sdcard_det_q_hdl;
 TaskHandle_t	runonce_task_hdl;
+#ifdef M1_RECOVERY_BUILD
+/* Normally defined in m1_menu.c, which is stripped from the recovery build.
+ * The recovery task reuses this handle slot. */
+TaskHandle_t	menu_main_handler_task_hdl;
+#endif
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 

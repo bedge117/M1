@@ -65,7 +65,9 @@ extern void assert_failed();
 /*					D E B U G   D I R E C T I V E S		  					*/
 /*============================================================================*/
 
+#ifndef M1_RECOVERY_BUILD
 #define M1_DEBUG_CLI_ENABLE	// Enable the CLI function for debugging and testing
+#endif
 
 /*============================================================================*/
 /*				E N H A N C E D   F I R M W A R E   F L A G S				*/

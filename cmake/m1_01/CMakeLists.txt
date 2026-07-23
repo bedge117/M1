@@ -68,7 +68,7 @@ target_include_directories(m1_01 INTERFACE
     ../../USB/Core/Src
 )
 
-target_sources(m1_01 INTERFACE
+set(M1_SRCS
     ../../Battery/battery.c
     ../../Core/Src/FreeRTOS_CLI.c
     ../../Core/Src/app_freertos.c
@@ -638,6 +638,191 @@ target_sources(m1_01 INTERFACE
     ../../m1_csrc/m1_app_manager.c
     ../../m1_csrc/m1_field_detect.c
 )
+
+# ============================================================================
+# Recovery FW (-DRECOVERY=ON): strip every feature subsystem from the build so
+# the image is small. Only the boot + display + USB-CDC/RPC + flash path stays.
+# REMOVE_ITEM on a non-matching path is a harmless no-op, so this can never
+# break the normal (working-FW) build. Residual references from kept glue files
+# (m1_rpc/m1_int_hdl/etc.) are gated with #ifdef M1_RECOVERY_BUILD.
+# ============================================================================
+if(RECOVERY)
+    list(REMOVE_ITEM M1_SRCS
+        # --- CLI ---
+        ../../Core/Src/FreeRTOS_CLI.c
+        ../../Core/Src/cli_app.c
+        ../../m1_csrc/m1_cli.c
+        ../../m1_csrc/m1_cli_help.c
+        # --- NFC / RFID / amiibo (ST25R3916 + rfal + drivers) ---
+        ../../Drivers/BSP/Components/ST25R3916/rfal_rfst25r3916.c
+        ../../Drivers/BSP/Components/ST25R3916/st25r3916.c
+        ../../Drivers/BSP/Components/ST25R3916/st25r3916_aat.c
+        ../../Drivers/BSP/Components/ST25R3916/st25r3916_com.c
+        ../../Drivers/BSP/Components/ST25R3916/st25r3916_irq.c
+        ../../Drivers/BSP/Components/ST25R3916/st25r3916_led.c
+        ../../Drivers/BSP/Components/ST25R3916/timer.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_analogConfig.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_cd.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_crc.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_dpo.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_iso15693_2.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_isoDep.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_nfc.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_nfcDep.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_nfca.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_nfcb.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_nfcf.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_nfcv.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_st25tb.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_st25xv.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_t1t.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_t2t.c
+        ../../NFC/Middlewares/ST/rfal/Src/rfal_t4t.c
+        ../../NFC/NFC_drv/common/nfc_ctx.c
+        ../../NFC/NFC_drv/common/nfc_file.c
+        ../../NFC/NFC_drv/common/nfc_fileio.c
+        ../../NFC/NFC_drv/common/nfc_storage.c
+        ../../NFC/NFC_drv/legacy/nfc_driver.c
+        ../../NFC/NFC_drv/legacy/nfc_listener.c
+        ../../NFC/amiibo/amiibo.c
+        ../../NFC/amiibo/keygen.c
+        ../../NFC/amiibo/drbg.c
+        ../../NFC/amiibo/mbedtls_shim.c
+        ../../NFC/amiibo/tiny_aes.c
+        ../../NFC/amiibo/sha256.c
+        ../../NFC/amiibo/m1_amiibo.c
+        ../../NFC/NFC_drv/legacy/nfc_poller.c
+        ../../NFC/NFC_drv/legacy/mfc_crypto1.c
+        ../../NFC/NFC_drv/legacy/picopass/picopass_cipher.c
+        ../../NFC/NFC_drv/legacy/picopass/picopass_poller.c
+        ../../NFC/NFC_drv/legacy/picopass/picopass_listener.c
+        ../../NFC/app_x-cube-nfcx.c
+        ../../m1_csrc/m1_nfc.c
+        ../../m1_csrc/m1_rfid.c
+        ../../m1_csrc/m1_field_detect.c
+        ../../m1_csrc/m1_field_detector.c
+        ../../m1_csrc/flipper_nfc.c
+        ../../m1_csrc/flipper_rfid.c
+        # --- LF RFID ---
+        ../../lfrfid/bit_lib.c
+        ../../lfrfid/lfrfid.c
+        ../../lfrfid/lfrfid_file.c
+        ../../lfrfid/lfrfid_hal.c
+        ../../lfrfid/lfrfid_protocol.c
+        ../../lfrfid/lfrfid_protocol_em4100.c
+        ../../lfrfid/lfrfid_protocol_h10301.c
+        ../../lfrfid/lfrfid_protocol_hid_generic.c
+        ../../lfrfid/lfrfid_protocol_indala26.c
+        ../../lfrfid/lfrfid_manchester.c
+        ../../lfrfid/lfrfid_protocol_awid.c
+        ../../lfrfid/lfrfid_protocol_pyramid.c
+        ../../lfrfid/lfrfid_protocol_paradox.c
+        ../../lfrfid/lfrfid_protocol_ioprox.c
+        ../../lfrfid/lfrfid_protocol_fdx_a.c
+        ../../lfrfid/lfrfid_protocol_hid_ex.c
+        ../../lfrfid/lfrfid_protocol_viking.c
+        ../../lfrfid/lfrfid_protocol_fdx_b.c
+        ../../lfrfid/lfrfid_protocol_electra.c
+        ../../lfrfid/lfrfid_protocol_gallagher.c
+        ../../lfrfid/lfrfid_protocol_jablotron.c
+        ../../lfrfid/lfrfid_protocol_pac_stanley.c
+        ../../lfrfid/lfrfid_protocol_securakey.c
+        ../../lfrfid/lfrfid_protocol_gproxii.c
+        ../../lfrfid/lfrfid_protocol_noralsy.c
+        ../../lfrfid/lfrfid_protocol_idteck.c
+        ../../lfrfid/lfrfid_protocol_keri.c
+        ../../lfrfid/lfrfid_protocol_nexwatch.c
+        ../../lfrfid/t5577.c
+        # --- Infrared ---
+        ../../Infrared/irmp.c
+        ../../Infrared/irmpextlog.c
+        ../../Infrared/irsnd.c
+        ../../m1_csrc/m1_infrared.c
+        ../../m1_csrc/m1_ir_universal.c
+        ../../m1_csrc/flipper_ir.c
+        # --- ESP32 / WiFi / BLE / peer link ---
+        ../../Esp32_serial_flasher/app/common/app_common.c
+        ../../Esp32_serial_flasher/port/stm32_port.c
+        ../../Esp32_serial_flasher/src/esp_loader.c
+        ../../Esp32_serial_flasher/src/esp_stubs.c
+        ../../Esp32_serial_flasher/src/esp_targets.c
+        ../../Esp32_serial_flasher/src/md5_hash.c
+        ../../Esp32_serial_flasher/src/protocol_serial.c
+        ../../Esp32_serial_flasher/src/protocol_uart.c
+        ../../Esp32_serial_flasher/src/slip.c
+        ../../Esp_spi_at/esp-idf/components/esp_driver_spi/src/gpspi/spi_master.c
+        ../../Esp_spi_at/examples/at_spi_master/spi/stm32/main/esp_app_main.c
+        ../../m1_csrc/m1_esp32_fw_update.c
+        ../../m1_csrc/m1_esp32_hal.c
+        ../../m1_csrc/m1_esp_hosted_dummy.c
+        ../../m1_csrc/m1_esp_rpc.c
+        ../../m1_csrc/m1_link.c
+        ../../m1_csrc/m1_esp_client.c
+        ../../m1_csrc/m1_qmon_relay.c
+        ../../m1_csrc/m1_wifi.c
+        ../../m1_csrc/m1_wifi_rpc.c
+        ../../m1_csrc/m1_wifi_cred.c
+        ../../m1_csrc/m1_bt.c
+        ../../m1_csrc/m1_802154.c
+        ../../m1_csrc/m1_peer_link.c
+        ../../m1_csrc/m1_crypto.c
+        # --- Sub-GHz (radio + protocols + scene engine) ---
+        ../../m1_csrc/m1_sub_ghz.c
+        ../../m1_csrc/m1_scene.c
+        ../../m1_csrc/m1_rf_spi.c
+        ../../m1_csrc/subghz_autosave.c
+        ../../m1_csrc/subghz_freq_presets.c
+        ../../m1_csrc/flipper_subghz.c
+        # --- Games / apps / BadUSB / BadBT ---
+        ../../USB/Class/HID/Src/usbd_hid.c
+        ../../m1_csrc/m1_badusb.c
+        ../../m1_csrc/m1_badbt.c
+        ../../m1_csrc/m1_games.c
+        ../../m1_csrc/game_snake.c
+        ../../m1_csrc/game_tetris.c
+        ../../m1_csrc/game_trex.c
+        ../../m1_csrc/game_pong.c
+        ../../m1_csrc/game_dice.c
+        ../../m1_csrc/game_flappy.c
+        ../../m1_csrc/game_coin_flip.c
+        ../../m1_csrc/game_rps.c
+        ../../m1_csrc/game_tamagotchi.c
+        ../../m1_csrc/game_peer_ttt.c
+        ../../m1_csrc/m1_elf_loader.c
+        ../../m1_csrc/m1_app_api.c
+        ../../m1_csrc/m1_app_manager.c
+        # --- Menu / UI shells / file browser / settings ---
+        ../../m1_csrc/m1_menu.c
+        ../../m1_csrc/m1_submenu.c
+        ../../m1_csrc/m1_virtual_kb.c
+        ../../m1_csrc/m1_file_browser.c
+        ../../m1_csrc/m1_file_util.c
+        ../../m1_csrc/m1_settings.c
+        ../../m1_csrc/m1_flipper_integration.c
+        ../../m1_csrc/flipper_file.c
+        ../../m1_csrc/m1_protocol.c
+        ../../m1_csrc/privateprofilestring.c
+        ../../m1_csrc/uiView.c
+        ../../m1_csrc/m1_buzzer.c
+        ../../m1_csrc/m1_low_power.c
+        ../../m1_csrc/m1_fusb302.c
+        ../../m1_csrc/m1_md5_hash.c
+    )
+    # All Sub_Ghz/ tree files (protocols, scene, encoders) + the m1_subghz_* UI.
+    file(GLOB _RECOV_SUBGHZ
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Sub_Ghz/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Sub_Ghz/protocols/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../m1_csrc/m1_subghz_*.c")
+    foreach(_f ${_RECOV_SUBGHZ})
+        file(RELATIVE_PATH _rel "${CMAKE_CURRENT_SOURCE_DIR}" "${_f}")
+        list(REMOVE_ITEM M1_SRCS "${_rel}")
+    endforeach()
+    # Stub file: satisfies the few linker references from kept IRQ/RPC code to
+    # the stripped subsystems (never executed at run time).
+    list(APPEND M1_SRCS ../../m1_csrc/m1_recovery_stubs.c)
+endif()
+
+target_sources(m1_01 INTERFACE ${M1_SRCS})
 
 target_link_directories(m1_01 INTERFACE
 )

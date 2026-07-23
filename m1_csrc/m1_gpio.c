@@ -20,6 +20,8 @@
 #include "m1_gpio.h"
 #include "m1_usb_cdc_msc.h"   /* USB-UART bridge baud control (USART1 on header) */
 #include "m1_log_debug.h"     /* M1_LOG_I — log I2C scan results over USB */
+#include "m1_watchdog.h"      /* m1_wdt_reset — kick IWDG during the long SWD flash */
+#include "m1_file_browser.h"  /* SD file picker for Recover Peer (working FW only) */
 #include "ff.h"               /* FatFS — read the recovery image from SD (peer recover) */
 
 /*************************** D E F I N E S ************************************/
@@ -760,13 +762,16 @@ static void tgt_flash_draw(const char *stage)
 /* Erase both target banks, then program RECOVERY_IMG_PATH at 0x08000000 and
  * reset the target. Returns 0 on success, else a negative stage code. Requires
  * a halted core with the AHB-AP CSW already configured (call after swdh_probe).*/
-static int swdh_flash_recover(void)
+static int swdh_flash_recover(const char *path)
 {
-    static uint32_t buf[256];     /* 1 KB SD read chunk (4-byte aligned)        */
+    static uint32_t buf[256];     /* 1 KB SD read chunk (4-byte aligned) — matches
+                                   * the codebase's proven FW_IMAGE_CHUNK_SIZE; larger
+                                   * reads crashed on this SDMMC/FatFS setup.       */
     uint8_t *b = (uint8_t *)buf;
     FIL fp; UINT br; FRESULT fr;
     uint32_t cr, fsize, addr, done, bank;
     int s;
+    uint8_t last_pct = 0xFF;      /* only redraw the screen when % actually changes */
 
     /* Re-establish the link and leave the core HALTED (probe releases it). */
     s_fl_pct = 0;
@@ -793,13 +798,14 @@ static int swdh_flash_recover(void)
         swdh_mw(TGT_FL_NSCR, TGT_CR_SER | (sect << TGT_CR_SNB_POS) | bank | TGT_CR_START);
         if (tgt_flash_wait() != 0) return -12;
         swdh_mw(TGT_FL_NSCCR, TGT_CCR_CLRALL);
+        m1_wdt_reset();          /* keep the IWDG alive through the tight loop */
         s_fl_pct = (uint8_t)((s + 1) * 100 / (2 * TGT_SECT_PER_BANK));
         if ((s & 7) == 0) tgt_flash_draw("Erasing...");
     }
     swdh_mw(TGT_FL_NSCR, 0);                  /* clear SER                       */
 
     /* Program the image (128-bit quad-words; skip already-erased 0xFF groups). */
-    fr = f_open(&fp, RECOVERY_IMG_PATH, FA_READ);
+    fr = f_open(&fp, path, FA_READ);
     if (fr != FR_OK) return -20;
     fsize = (uint32_t)f_size(&fp);
     if (fsize == 0 || fsize > TGT_FLASH_BANK_SZ) { f_close(&fp); return -21; }
@@ -818,6 +824,7 @@ static int swdh_flash_recover(void)
         for (off = 0; off < br; off += 16)
         {
             uint32_t *w = (uint32_t *)(b + off);
+            if ((off & 0x1FFu) == 0) m1_wdt_reset();   /* kick IWDG every 512 B */
             if (!(w[0]==0xFFFFFFFFu && w[1]==0xFFFFFFFFu &&
                   w[2]==0xFFFFFFFFu && w[3]==0xFFFFFFFFu))
             {
@@ -834,7 +841,7 @@ static int swdh_flash_recover(void)
         }
         done += want;
         s_fl_pct = (uint8_t)(done * 100 / fsize);
-        tgt_flash_draw("Programming...");
+        if (s_fl_pct != last_pct) { last_pct = s_fl_pct; tgt_flash_draw("Programming..."); }
     }
     swdh_mw(TGT_FL_NSCR, TGT_CR_LOCK);        /* clear PG + relock the flash     */
 
@@ -858,6 +865,46 @@ static int swdh_flash_recover(void)
     return 0;
 }
 
+#ifndef M1_RECOVERY_BUILD
+/* Browse the SD card and pick a firmware .bin to flash to the peer. Fills 'out'
+ * with the full path and returns 1; returns 0 if the user backs out. Only in the
+ * working FW (the recovery FW strips the file browser and never runs this tool). */
+static int tool_pick_flash_file(char *out, size_t cap)
+{
+    S_M1_Main_Q_t q_item;
+    S_M1_Buttons_Status btn;
+    S_M1_file_info *fi;
+
+    m1_fb_init(&m1_u8g2);
+    m1_fb_set_dir("0:/");
+    m1_fb_display(NULL);
+
+    for (;;)
+    {
+        if (xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY) != pdTRUE) continue;
+        if (q_item.q_evt_type != Q_EVENT_KEYPAD) continue;
+        if (xQueueReceive(button_events_q_hdl, &btn, 0) != pdTRUE) continue;
+
+        if (btn.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            m1_fb_deinit();
+            return 0;                    /* cancelled */
+        }
+
+        fi = m1_fb_display(&btn);
+        if (fi->status == FB_OK && fi->file_is_selected)
+        {
+            size_t n = strlen(fi->file_name);
+            if (n < 4 || strncmp(&fi->file_name[n - 4], ".bin", 4) != 0)
+                continue;                /* not a .bin — keep browsing */
+            snprintf(out, cap, "%s/%s", fi->dir_name, fi->file_name);
+            m1_fb_deinit();
+            return 1;
+        }
+    }
+}
+#endif /* !M1_RECOVERY_BUILD */
+
 void tool_peer_recover(void)
 {
     S_M1_Main_Q_t q_item;
@@ -865,6 +912,7 @@ void tool_peer_recover(void)
     BaseType_t ret;
     int state = 0;   /* 0 instr, 1 linked, 2 confirm, 3 flash-result, -1 fail */
     int fl_err = 0;           /* swdh_flash_recover() result                     */
+    char flash_path[64] = RECOVERY_IMG_PATH;   /* file to flash (picked in working FW) */
     char line[28];
     bool redraw = true, do_probe = false;
 
@@ -902,13 +950,16 @@ void tool_peer_recover(void)
                     snprintf(line, sizeof(line), "CPU:0x%08lX", (unsigned long)s_swd_cpuid);
                     u8g2_DrawStr(&m1_u8g2, 2, 34, line);
                     u8g2_DrawStr(&m1_u8g2, 2, 45, "Linked & halted OK");
-                    u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:Flash  Back:Exit");
+                    u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:Pick FW  Back:Exit");
                 }
                 else if (state == 2)
                 {
-                    u8g2_DrawStr(&m1_u8g2, 2, 24, "FLASH recovery.bin?");
+                    const char *fn = strrchr(flash_path, '/');
+                    fn = fn ? fn + 1 : flash_path;
+                    u8g2_DrawStr(&m1_u8g2, 2, 24, "FLASH this file?");
                     u8g2_DrawStr(&m1_u8g2, 2, 35, "ERASES target flash!");
-                    u8g2_DrawStr(&m1_u8g2, 2, 46, "SD: 0:/recovery.bin");
+                    snprintf(line, sizeof(line), "%s", fn);
+                    u8g2_DrawStr(&m1_u8g2, 2, 46, line);
                     u8g2_DrawStr(&m1_u8g2, 2, 61, "OK:GO  Back:Cancel");
                 }
                 else if (state == 3)
@@ -953,10 +1004,21 @@ void tool_peer_recover(void)
             }
             else if (btn.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
             {
-                if (state == 1)      { state = 2; redraw = true; }   /* -> flash confirm */
+                if (state == 1)
+                {
+#ifndef M1_RECOVERY_BUILD
+                    /* Pick the firmware .bin to flash (blocks in the file browser).
+                     * Cancel returns to the linked screen. */
+                    if (tool_pick_flash_file(flash_path, sizeof(flash_path)))
+                        state = 2;
+                    redraw = true;
+#else
+                    state = 2; redraw = true;
+#endif
+                }
                 else if (state == 2)                                 /* flash confirmed  */
                 {
-                    fl_err = swdh_flash_recover();
+                    fl_err = swdh_flash_recover(flash_path);
                     state = 3;
                     redraw = true;
                 }

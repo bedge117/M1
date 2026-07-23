@@ -923,10 +923,10 @@ void m1_recovery_screen_show(void)
 		vw = u8g2_GetStrWidth(&m1_u8g2, ver);
 		u8g2_DrawStr(&m1_u8g2, M1_LCD_DISPLAY_WIDTH - vw - 2, 10, ver);
 		u8g2_DrawHLine(&m1_u8g2, 0, 14, M1_LCD_DISPLAY_WIDTH);
-		u8g2_DrawStr(&m1_u8g2, 2, 27, "Firmware restore mode");
+		u8g2_DrawStr(&m1_u8g2, 2, 27, "Restore firmware:");
 		u8g2_DrawStr(&m1_u8g2, 2, 39, "1. Remove SD card");
-		u8g2_DrawStr(&m1_u8g2, 2, 50, "2. Open qMonstatek USB");
-		u8g2_DrawStr(&m1_u8g2, 2, 61, "3. Flash a working FW");
+		u8g2_DrawStr(&m1_u8g2, 2, 50, "2. Open qMonstatek");
+		u8g2_DrawStr(&m1_u8g2, 2, 61, "3. Flash working FW");
 	} while (m1_u8g2_nextpage());
 
 	lp5814_backlight_on(M1_BACKLIGHT_BRIGHTNESS);
