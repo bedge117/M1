@@ -66,6 +66,8 @@
 #define RPC_CMD_FILE_MKDIR      0x38
 #define RPC_CMD_SD_UNMOUNT      0x3B
 #define RPC_CMD_SD_MOUNT        0x3C
+#define RPC_CMD_FILE_RENAME     0x3D    /* payload: old-path '\0' new-path (both 0:/...); rename or move */
+#define RPC_CMD_FILE_DELETE_TREE 0x3E   /* payload: path — recursive delete (folder + all contents) */
 
 /* ── Firmware Commands (0x40–0x4F) ── */
 #define RPC_CMD_FW_INFO         0x40
@@ -111,6 +113,7 @@
 #define RPC_ERR_SIZE_TOO_LARGE  0x09
 #define RPC_ERR_BANK_EMPTY      0x0A
 #define RPC_ERR_ESP_FLASH       0x0B
+#define RPC_ERR_DIR_NOT_EMPTY   0x0C
 
 /* ESP32 flash sub-error codes (sent as 2nd NACK payload byte) */
 #define RPC_ESP_SUB_CONNECT     0x01   /* connect_to_target() failed */

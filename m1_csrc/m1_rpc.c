@@ -224,6 +224,8 @@ static void rpc_handle_file_write_start(const S_RPC_Frame *f);
 static void rpc_handle_file_write_data(const S_RPC_Frame *f);
 static void rpc_handle_file_write_finish(const S_RPC_Frame *f);
 static void rpc_handle_file_delete(const S_RPC_Frame *f);
+static void rpc_handle_file_delete_tree(const S_RPC_Frame *f);
+static void rpc_handle_file_rename(const S_RPC_Frame *f);
 static void rpc_handle_file_mkdir(const S_RPC_Frame *f);
 static void rpc_handle_sd_unmount(const S_RPC_Frame *f);
 static void rpc_handle_sd_mount(const S_RPC_Frame *f);
@@ -644,6 +646,8 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
     case RPC_CMD_FILE_WRITE_DATA:
     case RPC_CMD_FILE_WRITE_FINISH:
     case RPC_CMD_FILE_DELETE:
+    case RPC_CMD_FILE_DELETE_TREE:
+    case RPC_CMD_FILE_RENAME:
     case RPC_CMD_FILE_MKDIR:
     case RPC_CMD_SD_UNMOUNT:
     case RPC_CMD_SD_MOUNT:
@@ -1537,7 +1541,133 @@ static void rpc_handle_file_delete(const S_RPC_Frame *f)
     FRESULT res = f_unlink(path);
     if (res != FR_OK)
     {
+        /* FR_DENIED on a directory means it still has contents (or is R/O) —
+         * report that distinctly so the host can offer a recursive delete. */
+        m1_rpc_send_nack(f->seq,
+            (res == FR_DENIED) ? RPC_ERR_DIR_NOT_EMPTY : RPC_ERR_FILE_NOT_FOUND);
+        return;
+    }
+
+    m1_rpc_send_ack(f->seq);
+}
+
+
+/**
+ * @brief  Recursively delete a directory tree (files + sub-dirs), then the
+ *         directory itself. `path` is used as a scratch buffer and is modified
+ *         in place; on return it holds the original path again.
+ */
+static FRESULT rpc_delete_tree(char *path, size_t path_sz, FILINFO *fno)
+{
+    FRESULT fr;
+    DIR dir;
+    size_t i, j;
+
+    fr = f_opendir(&dir, path);
+    if (fr != FR_OK)
+        return f_unlink(path);   /* not a directory — delete as a plain file */
+
+    for (i = 0; path[i]; i++) ;              /* find end of current path */
+    if (i + 1 < path_sz) path[i++] = '/';    /* append separator */
+
+    for (;;)
+    {
+        fr = f_readdir(&dir, fno);
+        if (fr != FR_OK || fno->fname[0] == 0)
+            break;                            /* error or end of directory */
+
+        /* Append the child name */
+        for (j = 0; fno->fname[j] && (i + j + 1) < path_sz; j++)
+            path[i + j] = fno->fname[j];
+        path[i + j] = '\0';
+
+        if (fno->fattrib & AM_DIR)
+            fr = rpc_delete_tree(path, path_sz, fno);
+        else
+            fr = f_unlink(path);
+
+        if (fr != FR_OK)
+            break;
+    }
+
+    if (i > 0) path[i - 1] = '\0';           /* strip back to the directory path */
+    f_closedir(&dir);
+
+    if (fr == FR_OK)
+        fr = f_unlink(path);                 /* remove the now-empty directory */
+    return fr;
+}
+
+
+/**
+ * @brief  Handle FILE_DELETE_TREE — recursively delete a folder + its contents.
+ */
+static void rpc_handle_file_delete_tree(const S_RPC_Frame *f)
+{
+    if (f->len < 1)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    if (!m1_sd_detected())
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_SD_NOT_READY);
+        return;
+    }
+
+    static char path[256];
+    static FILINFO fno;
+    rpc_build_sd_path(path, sizeof(path), f->payload, f->len);
+
+    FRESULT res = rpc_delete_tree(path, sizeof(path), &fno);
+    if (res != FR_OK)
+    {
         m1_rpc_send_nack(f->seq, RPC_ERR_FILE_NOT_FOUND);
+        return;
+    }
+
+    m1_rpc_send_ack(f->seq);
+}
+
+
+/**
+ * @brief  Handle FILE_RENAME — rename or move a file/folder (f_rename).
+ *         Payload: old-path '\0' new-path (both host-form paths).
+ */
+static void rpc_handle_file_rename(const S_RPC_Frame *f)
+{
+    if (f->len < 3)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    if (!m1_sd_detected())
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_SD_NOT_READY);
+        return;
+    }
+
+    /* Split payload on the '\0' separator into old / new. */
+    uint16_t sep = 0;
+    while (sep < f->len && f->payload[sep] != 0x00) sep++;
+    if (sep == 0 || sep >= f->len - 1)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+
+    char old_path[256];
+    char new_path[256];
+    rpc_build_sd_path(old_path, sizeof(old_path), f->payload, sep);
+    rpc_build_sd_path(new_path, sizeof(new_path),
+                      f->payload + sep + 1, f->len - sep - 1);
+
+    /* f_rename() snips any drive number off the new path itself. */
+    FRESULT res = f_rename(old_path, new_path);
+    if (res != FR_OK)
+    {
+        m1_rpc_send_nack(f->seq,
+            (res == FR_EXIST) ? RPC_ERR_DIR_NOT_EMPTY : RPC_ERR_FILE_NOT_FOUND);
         return;
     }
 
@@ -2695,6 +2825,8 @@ void m1_rpc_task(void *param)
             case RPC_CMD_FILE_WRITE_DATA:   rpc_handle_file_write_data(&frame);   break;
             case RPC_CMD_FILE_WRITE_FINISH: rpc_handle_file_write_finish(&frame); break;
             case RPC_CMD_FILE_DELETE:       rpc_handle_file_delete(&frame);       break;
+            case RPC_CMD_FILE_DELETE_TREE:  rpc_handle_file_delete_tree(&frame);  break;
+            case RPC_CMD_FILE_RENAME:       rpc_handle_file_rename(&frame);       break;
             case RPC_CMD_FILE_MKDIR:        rpc_handle_file_mkdir(&frame);        break;
             case RPC_CMD_SD_UNMOUNT:        rpc_handle_sd_unmount(&frame);        break;
             case RPC_CMD_SD_MOUNT:          rpc_handle_sd_mount(&frame);          break;
