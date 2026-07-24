@@ -6,6 +6,8 @@ Enhanced firmware for the [Monstatek M1](https://monstatek.com) multi-tool devic
 
 > **This is a community project and is not affiliated with or endorsed by Monstatek.**
 
+> ⚙️ **ESP32 firmware compatibility:** the M1 and its ESP32-C6 co-processor must run matching firmware. See **[COMPATIBILITY.md](COMPATIBILITY.md)** for which ESP32 image goes with which M1 firmware.
+
 ## What's New in C3
 
 ### Flipper Zero Compatibility
