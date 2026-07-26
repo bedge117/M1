@@ -59,6 +59,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 # Core project settings
 project(${CMAKE_PROJECT_NAME})
 
+# Strip the absolute build path from __FILE__ (assert) strings and debug info so
+# released/bundled binaries don't embed the local build directory. Uses the CMake
+# variable (not a literal path) so this file stays portable and leak-free.
+add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}/=")
+
 # Resolve toolchain utilities to full paths so post-build steps work
 # regardless of PATH at build time (bare names from toolchain file fail
 # inside nested cmd.exe / ninja subprocesses)
