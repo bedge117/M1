@@ -188,6 +188,13 @@ void m1_system_init_task(void *param)
 
 			m1_wdt_init();
 			m1_tasks_init();
+#ifdef M1_RESTORE_HOST
+			/* Restore Host: bring up the ESP UART + SPI3 peripherals so the
+			 * Factory Restore ESP-flash path runs in the same state as the
+			 * normal FW (otherwise hspi_esp/huart_esp are NULL and the flash
+			 * NULL-derefs). Plain Recovery does NOT do this. */
+			m1_esp32_flash_hw_init();
+#endif
 			M1_LOG_I(M1_LOGDB_TAG, "Recovery FW init done!\r\n");
 			vTaskDelete(NULL); // Delete this task
 #else

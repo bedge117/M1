@@ -910,6 +910,35 @@ void m1_recovery_screen_show(void)
 {
 	char ver[12];
 	int  vw;
+	/* If the previous reset was a HardFault, the handler stashed the post-mortem
+	 * regs in TAMP backup registers (see stm32h5xx_it.c). Surface the faulting PC
+	 * + CFSR + BFAR right on the screen so an ESP-flash crash can be pinpointed
+	 * without SWD. Magic 0xFA017C0D marks a valid capture. */
+	uint8_t fault = (TAMP->BKP2R == 0xFA017C0DU);
+	char f1[22], f2[22], f3[22];
+	if (fault) {
+		snprintf(f1, sizeof(f1), "PC  %08lX", (unsigned long)TAMP->BKP3R);
+		snprintf(f2, sizeof(f2), "CFSR%08lX", (unsigned long)TAMP->BKP5R);
+		snprintf(f3, sizeof(f3), "BFAR%08lX", (unsigned long)TAMP->BKP6R);
+	}
+
+	/* m1_wdt_init() (runs before this screen) reads the reset flags and records
+	 * whether the IWDG watchdog caused the last reset, THEN clears RCC->RSR — so
+	 * RCC->RSR is already 0 here. Use its captured flag instead: it's the reliable
+	 * signal for whether the flash-write stall tripped the watchdog. */
+	char rline[24];
+	snprintf(rline, sizeof(rline), "RST:%s",
+	         m1_device_stat.dev_reset_by_wdt ? "WATCHDOG (IWDG)" : "OTHER (not WDT)");
+
+	/* If an M1-flash quad-word program hung and the IWDG rebooted us, bl_flash_if_write
+	 * left the target address in BKP9R (marker 0xF1A54ADD in BKP8R). Show it. */
+	uint8_t phang = (TAMP->BKP8R == 0xF1A54ADDU);   /* quad-word PROGRAM stall */
+	uint8_t ehang = (TAMP->BKP8R == 0xE1A54ADDU);   /* sector ERASE stall */
+	uint8_t fhang = phang || ehang;
+	char faline[22];
+	if (fhang)
+		snprintf(faline, sizeof(faline), "%s:%08lX",
+		         ehang ? "EA" : "FA", (unsigned long)TAMP->BKP9R);
 
 	snprintf(ver, sizeof(ver), "C3.%d.%d", M1_RECOVERY_VER_MAJOR, M1_RECOVERY_VER_MINOR);
 
@@ -918,16 +947,32 @@ void m1_recovery_screen_show(void)
 	do {
 		u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 		u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_B);
-		u8g2_DrawStr(&m1_u8g2, 2, 11, "RECOVERY FW");
+		u8g2_DrawStr(&m1_u8g2, 2, 11, fhang ? "M1 FLASH HUNG" : (fault ? "LAST FAULT" : "RECOVERY FW"));
 		u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
 		vw = u8g2_GetStrWidth(&m1_u8g2, ver);
 		u8g2_DrawStr(&m1_u8g2, M1_LCD_DISPLAY_WIDTH - vw - 2, 10, ver);
 		u8g2_DrawHLine(&m1_u8g2, 0, 14, M1_LCD_DISPLAY_WIDTH);
-		u8g2_DrawStr(&m1_u8g2, 2, 27, "Restore firmware:");
-		u8g2_DrawStr(&m1_u8g2, 2, 39, "1. Remove SD card");
-		u8g2_DrawStr(&m1_u8g2, 2, 50, "2. Open qMonstatek");
-		u8g2_DrawStr(&m1_u8g2, 2, 61, "3. Flash working FW");
+		if (fhang) {
+			u8g2_DrawStr(&m1_u8g2, 2, 27, faline);
+			u8g2_DrawStr(&m1_u8g2, 2, 39, rline);
+			u8g2_DrawStr(&m1_u8g2, 2, 61, "Reboot to clear");
+		} else if (fault) {
+			u8g2_DrawStr(&m1_u8g2, 2, 27, f1);
+			u8g2_DrawStr(&m1_u8g2, 2, 39, f2);
+			u8g2_DrawStr(&m1_u8g2, 2, 50, f3);
+			u8g2_DrawStr(&m1_u8g2, 2, 61, rline);
+		} else {
+			u8g2_DrawStr(&m1_u8g2, 2, 27, rline);
+			u8g2_DrawStr(&m1_u8g2, 2, 39, "1. Remove SD card");
+			u8g2_DrawStr(&m1_u8g2, 2, 50, "2. Open qMonstatek");
+			u8g2_DrawStr(&m1_u8g2, 2, 61, "3. Flash working FW");
+		}
 	} while (m1_u8g2_nextpage());
+
+	if (fault)
+		TAMP->BKP2R = 0;   /* clear so a normal reboot shows the usual screen */
+	if (fhang)
+		TAMP->BKP8R = 0;   /* clear the flash-hang marker after showing it */
 
 	lp5814_backlight_on(M1_BACKLIGHT_BRIGHTNESS);
 	m1_device_stat.op_mode = M1_OPERATION_MODE_DISPLAY_ON;

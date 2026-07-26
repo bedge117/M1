@@ -79,7 +79,9 @@ static IRMP_DATA s_tx_irmp_data;
 /* Raw IR TX support */
 #define IR_RAW_OTA_BUFFER_MAX  FLIPPER_IR_RAW_MAX_SAMPLES
 static char s_raw_tx_filepath[IR_UNIVERSAL_PATH_MAX_LEN];
-static uint16_t s_raw_ota_buffer[IR_RAW_OTA_BUFFER_MAX];
+/* +1: the TX ISR reads pir_ota_data_tx_buffer[++counter], which touches
+ * element [len] on the final period; len can equal IR_RAW_OTA_BUFFER_MAX. */
+static uint16_t s_raw_ota_buffer[IR_RAW_OTA_BUFFER_MAX + 1];
 static flipper_ir_signal_t s_raw_tx_signal;
 
 /* Dashboard menu text (item 4 is dynamic: Remote/Normal Mode) */
@@ -367,6 +369,15 @@ static void draw_list_screen(const char *title, uint16_t count, uint16_t selecti
 	uint16_t visible;
 	uint8_t y;
 
+	/* Clamp selection into [0,count). A stale/empty list can arrive with
+	 * selection==65535 (unsigned wrap of "count-1" when count==0); without this
+	 * `count - start_idx` underflows and the loop indexes s_browse_names[] far
+	 * out of bounds (~4MB read -> BusFault). count==0 -> selection 0 -> visible 0. */
+	if (count == 0)
+		selection = 0;
+	else if (selection >= count)
+		selection = count - 1;
+
 	/* Calculate which items are visible in the scroll window */
 	if (selection < LIST_VISIBLE_ITEMS)
 		start_idx = 0;
@@ -503,7 +514,11 @@ static bool is_ir_file(const char *fname)
 	if (len < 4)
 		return false;
 
-	return (strcmp(&fname[len - 3], IR_FILE_EXTENSION) == 0);
+	/* Case-insensitive: .IR files (common from Windows-extracted DBs) must match. */
+	const char *ext = &fname[len - 3];
+	return (ext[0] == '.' &&
+	        (ext[1] == 'i' || ext[1] == 'I') &&
+	        (ext[2] == 'r' || ext[2] == 'R'));
 } // static bool is_ir_file(...)
 
 
@@ -706,7 +721,14 @@ static void browse_directory(const char *path)
 
 						if (is_directory)
 						{
-							/* Save current state and recurse into subdirectory */
+							/* Save current state and recurse into subdirectory.
+							 * The child overwrites s_browse_page/selection, so save
+							 * them too — restoring only s_current_path left the parent
+							 * re-scanned at the child's page, which for a parent with
+							 * fewer pages returns count 0 and set up the OOB in
+							 * draw_list_screen on the next UP. */
+							uint16_t saved_page = s_browse_page;
+							uint16_t saved_sel  = s_browse_selection;
 							strncpy(saved_path, s_current_path, IR_UNIVERSAL_PATH_MAX_LEN - 1);
 							saved_path[IR_UNIVERSAL_PATH_MAX_LEN - 1] = '\0';
 
@@ -715,9 +737,18 @@ static void browse_directory(const char *path)
 							/* Restore state after returning */
 							strncpy(s_current_path, saved_path, IR_UNIVERSAL_PATH_MAX_LEN - 1);
 							s_current_path[IR_UNIVERSAL_PATH_MAX_LEN - 1] = '\0';
+							s_browse_page      = saved_page;
+							s_browse_selection = saved_sel;
 							s_browse_count = scan_directory_page(s_current_path, s_browse_page, BROWSE_NAMES_MAX);
-							if (s_browse_selection >= s_browse_count && s_browse_count > 0)
-								s_browse_selection = s_browse_count - 1;
+							/* Saved page gone stale (parent shorter than child) -> page 0 */
+							if (s_browse_count == 0 && s_browse_page > 0)
+							{
+								s_browse_page = 0;
+								s_browse_selection = 0;
+								s_browse_count = scan_directory_page(s_current_path, 0, BROWSE_NAMES_MAX);
+							}
+							if (s_browse_selection >= s_browse_count)
+								s_browse_selection = s_browse_count ? s_browse_count - 1 : 0;
 						}
 						else if (is_ir_file(s_browse_names[s_browse_selection]))
 						{
@@ -895,10 +926,15 @@ static bool parse_ir_signal_block(flipper_file_t *ff, ir_universal_cmd_t *cmd)
 
 	if (got_name && got_type)
 	{
-		if (is_parsed && cmd->protocol != 0)
+		if (is_parsed)
 		{
 			cmd->is_raw = false;
 			cmd->flags = 0; /* Full frame (not repeat) */
+			/* Keep the block even when the protocol didn't map (protocol==0 ==
+			 * IRMP_UNKNOWN_PROTOCOL): mark it valid so the button still appears in
+			 * the list. transmit_command() shows the "Unsupported protocol" screen
+			 * when tapped instead of the button silently vanishing (which made that
+			 * screen dead code). */
 			cmd->valid = true;
 			return true;
 		}
@@ -1038,6 +1074,11 @@ static void show_commands(const char *ir_file_path)
 
 				if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 				{
+					/* A TX may still be in flight (user hit BACK before Q_EVENT_IRRED_TX).
+					 * Tear the encoder down and stop the LED so the TIM/IRQ and blink
+					 * don't stay running after we leave. Both calls are idempotent. */
+					infrared_encode_sys_deinit();
+					m1_led_fast_blink(LED_BLINK_ON_RGB, LED_FASTBLINK_PWM_OFF, LED_FASTBLINK_ONTIME_OFF);
 					xQueueReset(main_q_hdl);
 					return; /* Exit to caller */
 				}
@@ -1603,6 +1644,20 @@ static void show_favorites_screen(void)
 					if (selection < s_favorite_count)
 					{
 						show_commands(s_favorites[selection]);
+							/* show_commands() overwrote s_browse_names/s_browse_count with the
+							 * opened file's command list — rebuild the favorites list so the
+							 * redraw shows favorites, not that file. */
+							{
+								uint8_t fi;
+								for (fi = 0; fi < s_favorite_count && fi < BROWSE_NAMES_MAX; fi++)
+								{
+									const char *fn = s_favorites[fi], *q = s_favorites[fi];
+									while (*q) { if (*q == '/') fn = q + 1; q++; }
+									strncpy(s_browse_names[fi], fn, BROWSE_NAME_MAX_LEN - 1);
+									s_browse_names[fi][BROWSE_NAME_MAX_LEN - 1] = '\0';
+								}
+								s_browse_count = (s_favorite_count < BROWSE_NAMES_MAX) ? s_favorite_count : BROWSE_NAMES_MAX;
+							}
 						/* Refresh display after returning */
 					}
 				}
@@ -1704,6 +1759,20 @@ static void show_recent_screen(void)
 					if (selection < s_recent_count)
 					{
 						show_commands(s_recent[selection]);
+							/* show_commands() overwrote s_browse_names/s_browse_count with the
+							 * opened file's command list — rebuild the recent list so the
+							 * redraw shows recents, not that file. */
+							{
+								uint8_t ri;
+								for (ri = 0; ri < s_recent_count && ri < BROWSE_NAMES_MAX; ri++)
+								{
+									const char *fn = s_recent[ri], *q = s_recent[ri];
+									while (*q) { if (*q == '/') fn = q + 1; q++; }
+									strncpy(s_browse_names[ri], fn, BROWSE_NAME_MAX_LEN - 1);
+									s_browse_names[ri][BROWSE_NAME_MAX_LEN - 1] = '\0';
+								}
+								s_browse_count = (s_recent_count < BROWSE_NAMES_MAX) ? s_recent_count : BROWSE_NAMES_MAX;
+							}
 					}
 				}
 

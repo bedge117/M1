@@ -812,6 +812,7 @@ static bool sub_ghz_custom_freq_entry(void)
 		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
 		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
+			memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
 			xQueueReceive(button_events_q_hdl, &this_button_status, 0);
 
 			if (this_button_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
@@ -1947,6 +1948,14 @@ static uint8_t subghz_replay_flipper_to_tmp(const char *sub_path)
 {
 #define FLIPPER_SUB_LINE_MAX  4096
 #define FLIPPER_SUB_OUT_MAX   256
+/* One f_gets buffer (FLIPPER_SUB_LINE_MAX chars) holds at most ~LINE_MAX/2
+ * space-separated samples ("1 " = 2 chars). Size the parse batch to cover a full
+ * buffer so no timings are dropped mid-line. The previous fixed 64 silently
+ * truncated every RAW_Data line to its first 64 samples — a 512-sample capture
+ * transmitted only ~13% of its waveform, which is why replayed RAW signals often
+ * did nothing. Static (not stack): 8KB is too large for this task's stack. */
+#define FLIPPER_SUB_MAX_SAMPLES  (FLIPPER_SUB_LINE_MAX / 2)
+static uint32_t s_raw_sample_batch[FLIPPER_SUB_MAX_SAMPLES];
 
 	FIL f_sub, f_sgh;
 	FRESULT fr;
@@ -2023,9 +2032,9 @@ static uint8_t subghz_replay_flipper_to_tmp(const char *sub_path)
 		/* Continuation of a long RAW_Data line that was split by f_gets */
 		if (in_raw_continuation)
 		{
-			uint32_t samples[64];
+			uint32_t *samples = s_raw_sample_batch;
 			uint16_t nsamples = subghz_parse_raw_data_line(
-				line_buf, line_complete, &raw_line_state, samples, 64);
+				line_buf, line_complete, &raw_line_state, samples, FLIPPER_SUB_MAX_SAMPLES);
 
 			if (nsamples > 0)
 			{
@@ -2203,9 +2212,9 @@ static uint8_t subghz_replay_flipper_to_tmp(const char *sub_path)
 			 * Uses the extracted raw line parser for cross-buffer handling. */
 			subghz_raw_line_state_init(&raw_line_state);
 
-			uint32_t samples[64];
+			uint32_t *samples = s_raw_sample_batch;
 			uint16_t nsamples = subghz_parse_raw_data_line(
-				line_buf + 9, line_complete, &raw_line_state, samples, 64);
+				line_buf + 9, line_complete, &raw_line_state, samples, FLIPPER_SUB_MAX_SAMPLES);
 
 			if (nsamples > 0)
 			{
@@ -3480,7 +3489,8 @@ static uint8_t sub_ghz_raw_samples_init(void)
 		key_len = SUB_GHZ_DATAFILE_KEY_FORMAT_N;
 		i = 0;
 		token = strtok(psdcard_dat_buffer, "\r\n"); // Tokenize this duplicated buffer
-		if ( strstr(token, subghz_datfile_keywords[i]) )
+		/* token is NULL for an empty / CRLF-only file -> strstr(NULL) HardFaults */
+		if ( token && strstr(token, subghz_datfile_keywords[i]) )
 		{
 			if ( strstr(token, SUB_GHZ_DATAFILE_FILETYPE_NOISE) )
 				key_len = SUB_GHZ_DATAFILE_RAW_FORMAT_N;
@@ -4339,6 +4349,7 @@ void sub_ghz_spectrum_analyzer(void)
         ret = xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(100));
         if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
         {
+            memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
             ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
             if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
             {
@@ -4495,6 +4506,7 @@ void sub_ghz_weather_station(void)
         ret = xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(200));
         if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
         {
+            memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
             ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
             if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
             {
@@ -4627,6 +4639,7 @@ void sub_ghz_brute_force(void)
         ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
         if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
         {
+            memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
             ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
             if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
             {
@@ -4757,7 +4770,8 @@ void sub_ghz_brute_force(void)
             ret = xQueueReceive(main_q_hdl, &q_item, 0);
             if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
             {
-                ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+                memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
+            ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
                 if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
                 {
                     running = false;
@@ -4793,7 +4807,8 @@ void sub_ghz_brute_force(void)
             ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
             if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
             {
-                ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+                memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
+            ret = xQueueReceive(button_events_q_hdl, &this_button_status, 0);
                 if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
                     break;
             }
@@ -4913,6 +4928,7 @@ void sub_ghz_rssi_meter(void)
         ret = xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(150));
         if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
         {
+            memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
             xQueueReceive(button_events_q_hdl, &this_button_status, 0);
 
             if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
@@ -5127,6 +5143,7 @@ void sub_ghz_freq_scanner(void)
         ret = xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(100));
         if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
         {
+            memset(&this_button_status, 0, sizeof(this_button_status)); /* zero so a failed recv reads as no-event */
             xQueueReceive(button_events_q_hdl, &this_button_status, 0);
 
             if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)

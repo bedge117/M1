@@ -163,6 +163,25 @@ void m1_esp32_init(void)
 
 /******************************************************************************/
 /**
+  * @brief  Hardware-only ESP init for the Restore Host (Factory Restore).
+  *         The Restore Host never runs the full m1_esp32_init (no brain link /
+  *         client / relay tasks), so hspi_esp / huart_esp / the RX ring buffer
+  *         are left NULL — and the ESP-flash path then NULL-derefs them. This
+  *         brings up ONLY the UART + SPI3 peripherals (no client/relay/EXTI), so
+  *         the flash path runs in the same peripheral state as the normal FW.
+  *         Also drives ESP32_EN high so the module is powered for the flash.
+  */
+/******************************************************************************/
+void m1_esp32_flash_hw_init(void)
+{
+	esp32_UART_init();   /* sets huart_esp.Instance, RX ring buffer, semaphore */
+	esp32_SPI3_init();   /* sets hspi_esp.Instance so the SPI quiesce is safe   */
+	esp32_enable();      /* power the ESP module (EN high)                      */
+}
+
+
+/******************************************************************************/
+/**
   * @brief Enables ESP32 module
   * @param None
   * @retval None

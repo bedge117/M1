@@ -34,6 +34,7 @@ extern SemaphoreHandle_t sem_esp32_trans;
 extern S_M1_RingBuffer esp32_rb_hdl;
 
 void m1_esp32_init(void);
+void m1_esp32_flash_hw_init(void);   /* Restore Host: UART+SPI3 only, for Factory Restore */
 void m1_esp32_reset_buffer(void);
 void m1_esp32_deinit(void);
 void esp32_enable(void);

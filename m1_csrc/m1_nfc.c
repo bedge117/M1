@@ -2623,6 +2623,7 @@ static void nfc_tool_fuzzer(void)
 					break;
 				}
 			}
+			continue;   /* an event woke us, not the timer — don't advance the UID */
 		}
 
 		/* Timeout = step to next UID */
@@ -2663,7 +2664,7 @@ static void nfc_tool_unlock_read(void)
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
 	char pwd_buf[12]; /* "00 00 00 00" + null */
-	uint8_t pwd_bytes[4];
+	uint8_t pwd_bytes[4] = {0};	/* zero-init: may be displayed even if the sscanf parse fails */
 
 	/* Check if a captured password is available and pre-fill */
 	uint8_t cap_pwd[4];
@@ -4136,7 +4137,7 @@ static void nfc_extra_read_ul(void)
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
 	char pwd_buf[12];
-	uint8_t pwd_bytes[4];
+	uint8_t pwd_bytes[4] = {0};	/* zero-init: may be displayed even if the sscanf parse fails */
 
 	/* Prompt for optional password */
 	strcpy(pwd_buf, "00 00 00 00");
@@ -4248,7 +4249,7 @@ static void nfc_extra_unlock_slix(void)
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
 	char pwd_buf[12];
-	uint8_t pwd_bytes[4];
+	uint8_t pwd_bytes[4] = {0};	/* zero-init: may be displayed even if the sscanf parse fails */
 
 	/* Prompt for 4-byte SLIX password */
 	strcpy(pwd_buf, "00 00 00 00");
@@ -4535,7 +4536,10 @@ void nfc_add_manually(void)
 			unsigned int val;
 			if (sscanf(p, "%02X", &val) != 1) break;
 			uid[uid_byte_count++] = (uint8_t)val;
-			p += 2;
+			/* Advance over the 1-2 hex digits actually present. A blind p+=2 on a
+			 * trailing single digit jumps past the NUL -> 1-byte OOB read next loop. */
+			if (*p) p++;
+			if (*p && *p != ' ') p++;
 		}
 	}
 

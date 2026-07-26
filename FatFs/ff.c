@@ -5370,7 +5370,9 @@ FRESULT f_getlabel (
 					WCHAR hs;
 					UINT nw;
 
-					for (si = di = hs = 0; si < dj.dir[XDIR_NumLabel]; si++) {	/* Extract volume label from 83 entry */
+					UINT nl = dj.dir[XDIR_NumLabel];	/* raw byte off the card */
+					if (nl > 11) nl = 11;	/* exFAT label max is 11; clamp so a malformed NumLabel can't overflow label[] */
+					for (si = di = hs = 0; si < nl; si++) {	/* Extract volume label from 83 entry */
 						wc = ld_word(dj.dir + XDIR_Label + si * 2);
 						if (hs == 0 && IsSurrogate(wc)) {	/* Is the code a surrogate? */
 							hs = wc; continue;

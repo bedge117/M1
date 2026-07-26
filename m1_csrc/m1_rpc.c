@@ -83,6 +83,7 @@ typedef struct {
     uint32_t expected_crc32;
     uint32_t bytes_written;
     uint8_t *flash_addr;         /* Next write address in inactive bank */
+    uint32_t last_activity_tick; /* stall-timeout watchdog (see m1_rpc_task) */
 } S_RPC_FwUpdateState;
 
 /* ESP32 update state — direct flash via esp-serial-flasher */
@@ -92,7 +93,14 @@ typedef struct {
     uint32_t start_addr;
     uint32_t bytes_written;
     bool     screen_was_streaming;  /* restore screen stream after flash */
+    uint32_t last_activity_tick;    /* stall-timeout watchdog (see m1_rpc_task) */
 } S_RPC_EspUpdateState;
+
+/* If a flash session goes idle this long (host unplugged / crashed / cancelled
+ * after START but before FINISH), m1_rpc_task tears it down so the device isn't
+ * left wedged in flash-mode (SPI3 down, EXTIs off, relay + WDT-supervision
+ * suspended) until a reboot. Normal chunk cadence is well under a second. */
+#define RPC_FLASH_STALL_TIMEOUT_MS   10000U
 
 /* File write state */
 typedef struct {
@@ -873,6 +881,16 @@ static void rpc_handle_get_device_info(const S_RPC_Frame *f)
     info.southpaw_mode   = m1_southpaw_mode;
     info.c3_revision     = M1_C3_REVISION;
 
+    /* Firmware variant so qMonstatek can tell Restore Host from plain Recovery
+     * (both share the C3.1.0 version line). */
+#if defined(M1_RESTORE_HOST)
+    info.fw_variant = 2;   /* Restore Host */
+#elif defined(M1_RECOVERY_BUILD)
+    info.fw_variant = 1;   /* Recovery */
+#else
+    info.fw_variant = 0;   /* normal working FW */
+#endif
+
     m1_rpc_send_frame(RPC_CMD_DEVICE_INFO_RESP, f->seq,
                       (const uint8_t *)&info, sizeof(info));
 }
@@ -1227,6 +1245,16 @@ static void rpc_handle_file_list(const S_RPC_Frame *f)
     FRESULT res;
 
     res = f_opendir(&dir, path);
+    if (res == FR_DISK_ERR || res == FR_NOT_READY)
+    {
+        /* SD wedged (heavy concurrent access can leave the SDMMC/mount bad).
+         * Force a driver re-init and retry once so a qM 'refresh' self-heals it,
+         * instead of the list staying blank until a reboot or SD reinsert. */
+        M1_LOG_I(M1_LOGDB_TAG, "FILE_LIST: opendir disk err %d — re-initing SD\r\n", res);
+        m1_sdcard_set_status(SD_access_NotReady);
+        m1_sdcard_init_retry();
+        res = f_opendir(&dir, path);
+    }
     if (res != FR_OK)
     {
         M1_LOG_I(M1_LOGDB_TAG, "FILE_LIST: f_opendir FAILED res=%d\r\n", res);
@@ -1919,8 +1947,28 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
      * while WiFi was up). Resumed at every session-exit below + in FINISH. */
     m1_qmon_relay_suspend(true);
 
+    /* Suspend the buttons-handler watchdog supervision for the whole M1 flash
+     * session. The long flash starves system_periodic_task's check-in; the WDT
+     * supervisor then treats the missed window as a task failure and forces an
+     * IWDG reboot mid-flash (random %, no flash marker). The ESP flash path
+     * already does this — the M1 flash path must too. Resumed at every exit. */
+    m1_wdt_suspend_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+
+#ifdef M1_RESTORE_HOST
+    /* Factory Restore flashes the ESP immediately before the M1. The freshly-
+     * flashed ESP boots and floods the M1's (still-enabled) ESP UART/EXTI lines;
+     * those high-priority ISRs starve the watchdog feed during the M1 flash, so
+     * the IWDG reboots the M1 at a random % point. The Restore Host needs nothing
+     * from the ESP during the M1 write — hold it in reset and mask its IRQs. */
+    esp32_disable();                        /* hold ESP in reset (EN low)   */
+    HAL_NVIC_DisableIRQ(UART4_IRQn);        /* stop ESP UART RX flood        */
+    HAL_NVIC_DisableIRQ(EXTI1_IRQn);        /* ESP DataReady                 */
+    HAL_NVIC_DisableIRQ(EXTI7_IRQn);        /* ESP Handshake                 */
+#endif
+
     if (f->len < 8)
     {
+        m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
         return;
@@ -1936,8 +1984,11 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
                             ((uint32_t)f->payload[6] << 16) |
                             ((uint32_t)f->payload[7] << 24);
 
-    if (total_size > FW_IMAGE_SIZE_MAX)
+    if (total_size == 0 || total_size > FW_IMAGE_SIZE_MAX)
     {
+        /* total_size==0 would compute n_sectors==0 -> nothing erased -> later DATA
+         * programs into un-erased flash. Reject it (bl_flash_start guards this too). */
+        m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_SIZE_TOO_LARGE);
         return;
@@ -1980,6 +2031,7 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
         if (HAL_FLASHEx_Erase(&erase_init, &sector_error) != HAL_OK)
         {
             HAL_FLASH_Lock();
+            m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
             m1_qmon_relay_suspend(false);
             m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
             return;
@@ -1994,6 +2046,7 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
     s_fw_update.expected_crc32 = expected_crc;
     s_fw_update.bytes_written = 0;
     s_fw_update.flash_addr    = (uint8_t *)inactive_base;
+    s_fw_update.last_activity_tick = xTaskGetTickCount();
 
     M1_LOG_N(M1_LOGDB_TAG, "FW flash: ACK sent\r\n");
     m1_rpc_send_ack(f->seq);
@@ -2027,6 +2080,22 @@ static void rpc_handle_fw_update_data(const S_RPC_Frame *f)
                       ((uint32_t)f->payload[3] << 24);
 
     uint16_t data_len = f->len - 4;
+
+    /* Bound the write to the declared image size in the inactive bank. Without
+     * this a corrupt/desynced offset (e.g. 0xFFF00000) wraps write_addr into the
+     * RUNNING bank and bricks both banks. total_size was already validated against
+     * FW_IMAGE_SIZE_MAX at START. */
+    if (offset > s_fw_update.total_size ||
+        data_len > s_fw_update.total_size - offset)
+    {
+        HAL_FLASH_Lock();
+        s_fw_update.active = false;
+        m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+        m1_qmon_relay_suspend(false);
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+
     uint8_t *write_addr = s_fw_update.flash_addr + offset;
 
     m1_wdt_reset();
@@ -2037,12 +2106,14 @@ static void rpc_handle_fw_update_data(const S_RPC_Frame *f)
     {
         HAL_FLASH_Lock();
         s_fw_update.active = false;
+        m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
         return;
     }
 
     s_fw_update.bytes_written += data_len;
+    s_fw_update.last_activity_tick = xTaskGetTickCount();
     m1_rpc_send_ack(f->seq);
 }
 
@@ -2068,16 +2139,32 @@ static void rpc_handle_fw_update_finish(const S_RPC_Frame *f)
      * for backward compatibility. */
     uint32_t inactive_base = FW_START_ADDRESS + M1_FLASH_BANK_SIZE;
     uint32_t crc_ext_offset = FW_CRC_EXT_BASE - FW_START_ADDRESS;
-    const S_M1_FW_CRC_EXT_t *crc_ext =
-        (const S_M1_FW_CRC_EXT_t *)(inactive_base + crc_ext_offset);
 
-    if (crc_ext->magic == FW_CRC_EXT_MAGIC_VALUE)
+    /* Read the CRC-ext magic through the ECC-safe reader: the inactive bank may
+     * hold corrupted flash from an interrupted write, and a raw dereference of a
+     * double-ECC word takes the NMI -> while(1) -> IWDG reset mid-finish. magic
+     * is at offset 0 of the CRC-ext block (matches bl_get_* readers). */
+    uint32_t crc_ext_magic = 0;
+    bool magic_ok = bl_safe_flash_read_u32(inactive_base + crc_ext_offset, &crc_ext_magic);
+
+    if (!magic_ok)
+    {
+        /* The freshly-written bank isn't even readable — treat as corruption. */
+        M1_LOG_E(M1_LOGDB_TAG, "FW update: inactive-bank CRC-ext read FAULTED\r\n");
+        m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+        m1_qmon_relay_suspend(false);
+        m1_rpc_send_nack(f->seq, RPC_ERR_CRC_MISMATCH);
+        return;
+    }
+
+    if (crc_ext_magic == FW_CRC_EXT_MAGIC_VALUE)
     {
         /* CRC extension present — verify it */
         m1_wdt_reset();
         if (!bl_verify_bank_crc(inactive_base))
         {
             M1_LOG_E(M1_LOGDB_TAG, "FW update: post-write CRC verification FAILED\r\n");
+            m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
             m1_qmon_relay_suspend(false);
             m1_rpc_send_nack(f->seq, RPC_ERR_CRC_MISMATCH);
             return;
@@ -2089,6 +2176,7 @@ static void rpc_handle_fw_update_finish(const S_RPC_Frame *f)
         M1_LOG_I(M1_LOGDB_TAG, "FW update: no CRC extension, skipping verification\r\n");
     }
 
+    m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
     m1_qmon_relay_suspend(false);
     m1_rpc_send_ack(f->seq);
 }
@@ -2112,10 +2200,18 @@ static void rpc_handle_fw_bank_swap(const S_RPC_Frame *f)
     {
         uint32_t inactive_base = FW_START_ADDRESS + M1_FLASH_BANK_SIZE;
         uint32_t crc_ext_offset = FW_CRC_EXT_BASE - FW_START_ADDRESS;
-        const S_M1_FW_CRC_EXT_t *crc_ext =
-            (const S_M1_FW_CRC_EXT_t *)(inactive_base + crc_ext_offset);
 
-        if (crc_ext->magic == FW_CRC_EXT_MAGIC_VALUE) {
+        /* ECC-safe read — the inactive bank may be corrupt; a raw deref of a
+         * double-ECC word takes the NMI -> while(1) -> IWDG reset. magic is at
+         * offset 0 of the CRC-ext block. Refuse the swap if it can't be read. */
+        uint32_t crc_ext_magic = 0;
+        if (!bl_safe_flash_read_u32(inactive_base + crc_ext_offset, &crc_ext_magic)) {
+            M1_LOG_E(M1_LOGDB_TAG, "Bank swap refused: inactive-bank CRC-ext read FAULTED\r\n");
+            m1_rpc_send_nack(f->seq, RPC_ERR_CRC_MISMATCH);
+            return;
+        }
+
+        if (crc_ext_magic == FW_CRC_EXT_MAGIC_VALUE) {
             m1_wdt_reset();
             if (!bl_verify_bank_crc(inactive_base)) {
                 M1_LOG_E(M1_LOGDB_TAG, "Bank swap refused: inactive bank CRC mismatch\r\n");
@@ -2133,6 +2229,12 @@ static void rpc_handle_fw_bank_swap(const S_RPC_Frame *f)
      * in known states.  Without this, ESP32 flashing after bank swap
      * fails because the ESP32 is left in an indeterminate state. */
     m1_system_GPIO_init();
+
+    /* Hold ESP32_EN low long enough to actually cold-start a warm ESP before the
+     * swap's reset. bl_swap_banks() reaches the option-byte launch within µs, so
+     * without this delay EN is low far under the ~300ms the ESP needs to settle,
+     * leaving it half-reset after the M1 comes back on the new bank. */
+    osDelay(300);
 
     bl_swap_banks();
     /* bl_swap_banks triggers a system reset — we won't return here.
@@ -2267,14 +2369,16 @@ static void esp_quiet_all_radios(void)
  * afterwards. Bodies are no-ops unless the ESP-RPC (Option C) SPI link is in use. */
 static void esp_spi3_pins_park(void)
 {
-#ifdef M1_USE_ESP_RPC
-    GPIO_InitTypeDef g = {0};
-    g.Mode  = GPIO_MODE_INPUT;
-    g.Pull  = GPIO_NOPULL;
-    g.Speed = GPIO_SPEED_FREQ_LOW;
-    g.Pin = ESP32_SPI3_MOSI_Pin; HAL_GPIO_Init(ESP32_SPI3_MOSI_GPIO_Port, &g);
-    g.Pin = ESP32_SPI3_SCK_Pin;  HAL_GPIO_Init(ESP32_SPI3_SCK_GPIO_Port,  &g);
-#endif
+    /* NO-OP as of C3.127. Floating MOSI/SCK to inputs here previously BRICKED an
+     * ESP: a floated line settled a boot strap to the wrong level, so the ROM
+     * bootloader latched the wrong mode and the flash corrupted mid-write (see
+     * the flash-lock investigation; this technique was reverted once in C3.62 and
+     * silently re-introduced via the brain merge). The proven flash path is the
+     * on-device SD flasher, which never floats these lines — it leaves them driven
+     * by SPI3's AF. The real corruption fix is quiescing the radios before reset
+     * (esp_quiet_all_radios), which happens above. Keep the pins driven; keep this
+     * function + its call sites so the change is one edit to revert if a brain-era
+     * board is ever proven to need strap isolation. */
 }
 
 static void esp_spi3_pins_restore(void)
@@ -2289,6 +2393,46 @@ static void esp_spi3_pins_restore(void)
     g.Pin = ESP32_SPI3_SCK_Pin;  g.Alternate = GPIO_AF6_SPI3;
     HAL_GPIO_Init(ESP32_SPI3_SCK_GPIO_Port, &g);
 #endif
+}
+
+/* Recover an ESP-flash session the host abandoned after START (unplug / crash /
+ * cancel). Mirrors the proven ESP_UPDATE_DATA error-path cleanup so the device
+ * returns to a normal, link-up state without a reboot. Called only from
+ * m1_rpc_task on RPC_FLASH_STALL_TIMEOUT_MS of inactivity. */
+static void esp_flash_session_teardown(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin   = BUTTON_RIGHT_Pin;
+    gpio.Mode  = GPIO_MODE_INPUT;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(BUTTON_RIGHT_GPIO_Port, &gpio);
+
+    esp32_UART_change_baudrate(ESP32_UART_BAUDRATE);
+    m1_ringbuffer_reset(&esp32_rb_hdl);
+    esp_loader_reset_target();
+    HAL_Delay(100);
+    esp32_UART_deinit();
+
+    HAL_NVIC_SetPriority(UART4_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 0);
+    HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+    HAL_NVIC_EnableIRQ(EXTI7_IRQn);
+    m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+    esp_spi3_pins_restore();
+    m1_qmon_relay_suspend(false);
+    if (s_esp_update.screen_was_streaming)
+        rpc_screen_stream.active = true;
+    s_esp_update.active = false;
+}
+
+/* Recover an M1 self-flash session the host abandoned after START: the inactive-
+ * bank erase left flash unlocked and the buttons-task WDT supervision suspended. */
+static void fw_flash_session_teardown(void)
+{
+    HAL_FLASH_Lock();
+    m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
+    m1_qmon_relay_suspend(false);
+    s_fw_update.active = false;
 }
 
 static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
@@ -2339,6 +2483,9 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
      * when we reset the ESP into its bootloader below (see esp_quiet_all_radios). */
     esp_quiet_all_radios();
 
+/* The Restore Host now brings up the ESP UART + SPI3 at boot (m1_esp32_flash_hw_init),
+ * so hspi_esp/huart_esp are valid here and this quiesce runs safely, exactly as in
+ * the normal FW. */
 #ifdef M1_USE_ESP_RPC
     /* --- Robust pre-flash quiesce (Option C stability) ---
      * After heavy wireless use the shared M1<->ESP lines can be left in a state
@@ -2480,6 +2627,7 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
 
     s_esp_update.bytes_written = 0;
     s_esp_update.active = true;
+    s_esp_update.last_activity_tick = xTaskGetTickCount();
 
     m1_wdt_reset();
     m1_rpc_send_ack(f->seq);
@@ -2547,6 +2695,7 @@ static void rpc_handle_esp_update_data(const S_RPC_Frame *f)
     }
 
     s_esp_update.bytes_written += data_len;
+    s_esp_update.last_activity_tick = xTaskGetTickCount();
     m1_wdt_reset();
     m1_rpc_send_ack(f->seq);
 }
@@ -2837,6 +2986,26 @@ void m1_rpc_task(void *param)
             case RPC_CMD_FW_UPDATE_START:   rpc_handle_fw_update_start(&frame);   break;
             default: break;
             }
+        }
+
+        /* Stall-timeout: if a flash session was started but the host stopped
+         * sending (unplug / crash / cancel), tear it down so the device isn't
+         * wedged in flash-mode until a reboot. START runs to completion (deferred
+         * on this task) before active is set, so this only fires once we are back
+         * in the loop awaiting DATA/FINISH that never arrive. */
+        if (s_esp_update.active &&
+            (xTaskGetTickCount() - s_esp_update.last_activity_tick)
+                > pdMS_TO_TICKS(RPC_FLASH_STALL_TIMEOUT_MS))
+        {
+            M1_LOG_E(M1_LOGDB_TAG, "ESP flash session stalled - tearing down\r\n");
+            esp_flash_session_teardown();
+        }
+        if (s_fw_update.active &&
+            (xTaskGetTickCount() - s_fw_update.last_activity_tick)
+                > pdMS_TO_TICKS(RPC_FLASH_STALL_TIMEOUT_MS))
+        {
+            M1_LOG_E(M1_LOGDB_TAG, "M1 flash session stalled - tearing down\r\n");
+            fw_flash_session_teardown();
         }
 
         /* Screen streaming */

@@ -177,6 +177,10 @@ typedef struct __attribute__((packed)) {
     uint8_t  batt_health;       /* BQ27421 state-of-health 0-100% */
     uint8_t  charge_state;      /* BQ25896 stat: 0=off, 1=pre, 2=fast, 3=done */
     uint8_t  charge_fault;      /* BQ25896 fault code */
+
+    /* Firmware variant (appended for backward compat):
+     * 0 = normal working FW, 1 = Recovery FW, 2 = Restore Host FW */
+    uint8_t  fw_variant;
 } S_RPC_DeviceInfo;
 
 /* Firmware bank info (packed) */

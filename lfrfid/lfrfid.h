@@ -110,7 +110,14 @@ typedef struct {
 
 typedef struct
 {
-	uint8_t 	uid[5];
+	/* 16 (was 5): several protocols carry more than 5 decoded data bytes —
+	 * Pyramid=13, GProxII/HID-Ex/Noralsy=12, FDX-B=11, FDX-A=10, AWID=9. With the
+	 * old uid[5] every save/display/verify of those types read past the field into
+	 * adjacent struct members (wrong data) and multi-byte cards could not round-trip.
+	 * The struct is only ever copied whole (struct-to-struct) and never persisted
+	 * with a fixed byte layout (.rfid stores variable-length hex text), so widening
+	 * is layout-safe. Keep >= the largest protocol data_size. */
+	uint8_t 	uid[16];
 	uint8_t     protocol;
 	uint16_t	bitrate;
 	uint8_t		modulation;

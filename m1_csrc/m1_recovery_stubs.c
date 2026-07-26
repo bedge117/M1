@@ -36,19 +36,24 @@ TIM_HandleTypeDef  Timerhdl_IrRx;
 TIM_HandleTypeDef  Timerhdl_IrTx;
 TIM_HandleTypeDef  timerhdl_subghz_rx;
 TIM_HandleTypeDef  timerhdl_subghz_tx;
-SPI_HandleTypeDef  hspi_esp;
-UART_HandleTypeDef huart_esp;
 DMA_HandleTypeDef  hdma_subghz_tx;
-DMA_HandleTypeDef  hgpdma1_channel5_tx;
 EXTI_HandleTypeDef H_EXTI_0;
 EXTI_HandleTypeDef si4463_exti_hdl;
+QueueHandle_t      esp_spi_msg_queue;
+osThreadId_t       cmdLineTaskHandle;
+S_M1_RingBuffer    subghz_rx_rawdata_rb;
+
+/* These ESP HAL handles are REAL globals in m1_esp32_hal.c, which the Restore
+ * Host variant compiles — so their stub storage must not exist there. */
+#ifndef M1_RESTORE_HOST
+SPI_HandleTypeDef  hspi_esp;
+UART_HandleTypeDef huart_esp;
+DMA_HandleTypeDef  hgpdma1_channel5_tx;
 EXTI_HandleTypeDef esp32_exti_handshake;
 EXTI_HandleTypeDef esp32_exti_dataready;
 SemaphoreHandle_t  sem_esp32_trans;
-QueueHandle_t      esp_spi_msg_queue;
-osThreadId_t       cmdLineTaskHandle;
 S_M1_RingBuffer    esp32_rb_hdl;
-S_M1_RingBuffer    subghz_rx_rawdata_rb;
+#endif /* !M1_RESTORE_HOST */
 volatile uint8_t   radio_state_flag;
 volatile uint8_t   si446x_nIRQ_active;
 uint8_t            subghz_tx_tc_flag;
@@ -63,6 +68,11 @@ uint8_t            subghz_decenc_ctl[512];   /* was SubGHz_DecEnc_t   */
 volatile uint8_t   IrRx_Edge_Det[8];         /* was S_M1_IR_Det       */
 
 /* ---- functions (never called; linked by name only) ---- */
+
+/* ESP UART-flash path: REAL sources are compiled in the Restore Host variant
+ * (M1_RESTORE_HOST), so these stubs must NOT exist there or they'd duplicate the
+ * real symbols. In plain recovery they stay as no-op stubs. */
+#ifndef M1_RESTORE_HOST
 void    esp32_enable(void)                        { }
 void    esp32_disable(void)                       { }
 void    esp32_UART_init(void)                     { }
@@ -70,7 +80,6 @@ void    esp32_UART_deinit(void)                   { }
 void    esp32_UART_change_baudrate(uint32_t b)    { (void)b; }
 void    esp32_uartrx_handler(uint8_t rx)          { (void)rx; }
 uint8_t m1_esp32_get_init_status(void)            { return 0; }
-void    m1_qmon_relay_suspend(bool s)             { (void)s; }
 int     connect_to_target(uint32_t b)             { (void)b; return -1; }
 int     esp_loader_flash_start(uint32_t o, uint32_t i, uint32_t bs) { (void)o; (void)i; (void)bs; return -1; }
 int     esp_loader_flash_write(void *p, uint32_t s){ (void)p; (void)s; return -1; }
@@ -78,6 +87,9 @@ int     esp_loader_flash_verify(void)             { return -1; }
 void    esp_loader_reset_target(void)             { }
 void    esp_loader_get_md5_diagnostic(uint8_t *e, uint8_t *a, uint32_t o, uint32_t s) { (void)e; (void)a; (void)o; (void)s; }
 int     loader_port_stm32_init(void *cfg)         { (void)cfg; return -1; }
+#endif /* !M1_RESTORE_HOST */
+
+void    m1_qmon_relay_suspend(bool s)             { (void)s; }
 bool    m1_esp_client_screen_push(const uint8_t *fb, uint16_t len) { (void)fb; (void)len; return false; }
 bool    m1_esp_client_fw_version(char *o, uint16_t c) { (void)o; (void)c; return false; }
 bool    m1_esp_client_beacon_stop(void)           { return false; }

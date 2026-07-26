@@ -39,6 +39,9 @@ DSTATUS disk_status (
 {
   DSTATUS stat;
 
+  /* The driver can be unlinked (disk.drv[pdrv]=0) by the SD-detect task the
+   * instant a card is pulled, while a lower-priority task is mid-I/O here. */
+  if (pdrv >= FF_VOLUMES || disk.drv[pdrv] == 0) return STA_NOINIT;
   stat = disk.drv[pdrv]->disk_status(disk.lun[pdrv]);
   return stat;
 }
@@ -54,6 +57,7 @@ DSTATUS disk_initialize (
 {
   DSTATUS stat = RES_OK;
 
+  if (pdrv >= FF_VOLUMES || disk.drv[pdrv] == 0) return STA_NOINIT;
   if(disk.is_initialized[pdrv] == 0)
   {
     stat = disk.drv[pdrv]->disk_initialize(disk.lun[pdrv]);
@@ -83,6 +87,7 @@ DRESULT disk_read (
 {
   DRESULT res;
 
+  if (pdrv >= FF_VOLUMES || disk.drv[pdrv] == 0) return RES_NOTRDY;
   res = disk.drv[pdrv]->disk_read(disk.lun[pdrv], buff, sector, count);
   return res;
 }
@@ -105,6 +110,7 @@ DRESULT disk_write (
 {
   DRESULT res;
 
+  if (pdrv >= FF_VOLUMES || disk.drv[pdrv] == 0) return RES_NOTRDY;
   res = disk.drv[pdrv]->disk_write(disk.lun[pdrv], buff, sector, count);
   return res;
 }
@@ -126,6 +132,7 @@ DRESULT disk_ioctl (
 {
   DRESULT res;
 
+  if (pdrv >= FF_VOLUMES || disk.drv[pdrv] == 0) return RES_NOTRDY;
   res = disk.drv[pdrv]->disk_ioctl(disk.lun[pdrv], cmd, buff);
   return res;
 }

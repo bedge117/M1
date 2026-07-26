@@ -104,9 +104,19 @@ bool lfrfid_profile_load(const S_M1_file_info *f, const char* ext)
 		if(lfrfid_tag_info.protocol == (uint8_t)PROTOCOL_NO)
 			return false;
 
-		GetPrivateProfileHex(&data,RFID_DATAFILE_DATA_KEYWORD, file_path);
+		if(!GetPrivateProfileHex(&data,RFID_DATAFILE_DATA_KEYWORD, file_path))
+			return false;
 
-		memcpy(lfrfid_tag_info.uid, data.buf, data.v.hex.out_len);
+		/* Clamp to the destination size: data.buf holds up to data.max_len (200)
+		 * bytes but uid[] is only 5. Any .rfid with >5 data bytes (every legit
+		 * multi-byte protocol: HID=6, AWID=9, FDX-B=11, GProxII=12, ...) would
+		 * otherwise smash protocol/bitrate/filename/filepath and adjacent .bss. */
+		{
+			size_t n = data.v.hex.out_len;
+			if(n > sizeof(lfrfid_tag_info.uid))
+				n = sizeof(lfrfid_tag_info.uid);
+			memcpy(lfrfid_tag_info.uid, data.buf, n);
+		}
 
 		if(lfrfid_tag_info.protocol == 0)
 			lfrfid_tag_info.bitrate = 64;

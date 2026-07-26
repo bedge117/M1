@@ -861,6 +861,7 @@ static void lfrfid_read_emulate_update(uint8_t param)
 {
 	char szString[24];
 	const char* protocol = protocol_get_name(lfrfid_tag_info.protocol);
+	if (!protocol) protocol = "?";	/* NULL for an uninitialised (255) protocol -> strcpy(,NULL) HardFault */
 	strcpy(szString, protocol);
 
 	u8g2_FirstPage(&m1_u8g2); // This call required for page drawing in mode 1
@@ -1488,6 +1489,7 @@ static void lfrfid_saved_emulate_update(uint8_t param)
 {
 	char szString[32];
 	const char* protocol = protocol_get_name(lfrfid_tag_info.protocol);
+	if (!protocol) protocol = "?";	/* NULL for an uninitialised (255) protocol -> strcpy(,NULL) HardFault */
 	strcpy(szString, protocol);
 
 	u8g2_FirstPage(&m1_u8g2); // This call required for page drawing in mode 1
@@ -2741,7 +2743,7 @@ static void lfrfid_util_clone(void)
 
 		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
-			xQueueReceive(button_events_q_hdl, &bs, 0);
+			memset(&bs, 0, sizeof(bs)); xQueueReceive(button_events_q_hdl, &bs, 0); /* zero so a failed recv reads as no-event */
 
 			if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 			{
@@ -2916,7 +2918,7 @@ static void lfrfid_util_erase(void)
 
 		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
-			xQueueReceive(button_events_q_hdl, &bs, 0);
+			memset(&bs, 0, sizeof(bs)); xQueueReceive(button_events_q_hdl, &bs, 0); /* zero so a failed recv reads as no-event */
 
 			if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 			{
@@ -3049,7 +3051,7 @@ static void lfrfid_util_t5577_info(void)
 
 		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
-			xQueueReceive(button_events_q_hdl, &bs, 0);
+			memset(&bs, 0, sizeof(bs)); xQueueReceive(button_events_q_hdl, &bs, 0); /* zero so a failed recv reads as no-event */
 
 			if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 			{
@@ -3249,7 +3251,7 @@ static void lfrfid_util_fuzzer(void)
 
 		if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
-			xQueueReceive(button_events_q_hdl, &bs, 0);
+			memset(&bs, 0, sizeof(bs)); xQueueReceive(button_events_q_hdl, &bs, 0); /* zero so a failed recv reads as no-event */
 
 			if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 			{
@@ -3415,7 +3417,7 @@ static void lfrfid_util_brute_force_fc(void)
 
 				if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 				{
-					xQueueReceive(button_events_q_hdl, &bs, 0);
+					memset(&bs, 0, sizeof(bs)); xQueueReceive(button_events_q_hdl, &bs, 0); /* zero so a failed recv reads as no-event */
 					if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 					{
 						m1_app_send_q_message(lfrfid_q_hdl, Q_EVENT_UI_LFRFID_WRITE_STOP);
@@ -3455,7 +3457,7 @@ bf_wait_buttons:
 
 		if (q_item.q_evt_type == Q_EVENT_KEYPAD)
 		{
-			xQueueReceive(button_events_q_hdl, &bs, 0);
+			memset(&bs, 0, sizeof(bs)); xQueueReceive(button_events_q_hdl, &bs, 0); /* zero so a failed recv reads as no-event */
 
 			if (bs.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK)
 			{
@@ -3589,6 +3591,7 @@ static void lfrfid_write_screen_draw(int param, char* filename)
     {
     	char szString[24];
     	const char* protocol = protocol_get_name(lfrfid_tag_info.protocol);
+    	if (!protocol) protocol = "?";	/* guard NULL (uninitialised protocol) */
     	strcpy(szString, protocol);
 
     	u8g2_SetFont(&m1_u8g2, M1_DISP_RUN_MENU_FONT_B);

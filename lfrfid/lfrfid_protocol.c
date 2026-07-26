@@ -290,7 +290,11 @@ void protocol_render_data(uint16_t protocol_index, char* szstring)
 			if(lfrfid_protocols[protocol_index]->render_data)
 				return lfrfid_protocols[protocol_index]->render_data(NULL,szstring);
 	}
-	(szstring = NULL);
+	/* Out-of-range/absent protocol: empty the caller's buffer. The old
+	 * `(szstring = NULL);` only reassigned the local param (a no-op), leaving the
+	 * caller's stack buffer uninitialised for the strtok/strstr that follows. */
+	if (szstring)
+		szstring[0] = '\0';
 }
 
 
@@ -303,7 +307,7 @@ void protocol_render_data(uint16_t protocol_index, char* szstring)
 /*============================================================================*/
 void lfrfid_GetTagInfo(PLFRFID_TAG_INFO pTaginfo)
 {
-	memcpy(pTaginfo->uid, lfrfid_tag_info.uid,5);
+	memcpy(pTaginfo->uid, lfrfid_tag_info.uid, sizeof(pTaginfo->uid));	/* full uid field, not a hardcoded 5 */
 	pTaginfo->bitrate = lfrfid_tag_info.bitrate;
 	pTaginfo->protocol = lfrfid_tag_info.protocol;
 }

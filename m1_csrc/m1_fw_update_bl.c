@@ -261,6 +261,14 @@ static uint16_t bl_flash_if_erase(uint32_t add)
 
 	m1_wdt_reset();
 
+#ifdef M1_RESTORE_HOST
+	/* Diagnostic: mark that we're about to ERASE (distinct magic from the
+	 * program path). If the erase stalls and the IWDG reboots, the recovery
+	 * screen shows EA:addr instead of FA:addr. */
+	TAMP->BKP8R = 0xE1A54ADDU;
+	TAMP->BKP9R = add;
+#endif
+
 	status = HAL_FLASHEx_Erase(&EraseInitStruct, &sectornb);
 
 	if (status != HAL_OK)
@@ -284,15 +292,30 @@ static uint16_t bl_flash_if_erase(uint32_t add)
 /*============================================================================*/
 uint8_t bl_flash_if_write(uint8_t *src, uint8_t *dest, uint32_t len)
 {
-	uint16_t i, j;
+	uint32_t i, j;
 	uint32_t *src_chk, *dst_chk;
 
 	src_chk = (uint32_t *)src;
 	dst_chk = (uint32_t *)dest;
-	for (i=0; i<len; i+=16)
+	/* Only iterate over COMPLETE 16-byte quad-words from src. A non-16-multiple
+	 * len (a final chunk of 4/8/12 bytes) is handled as a padded tail below —
+	 * the old `i<len` loop read up to 15 bytes past src and programmed them.
+	 * (i/j widened from uint16_t: len can exceed 65535 for on-device flashing.) */
+	for (i=0; i+16u<=len; i+=16)
 	{
-	    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, (uint32_t)dst_chk,
-	    		(uint32_t)src_chk)==HAL_OK)
+	    HAL_StatusTypeDef st;
+#ifdef M1_RESTORE_HOST
+	    /* Diagnostic: stash the address we're about to program in a TAMP backup
+	     * reg. If this program hangs and the IWDG reboots, the recovery screen
+	     * shows this address (FA:) so we can see exactly where it stalled.
+	     * Refresh the watchdog before each quad-word so a normal (fast) program
+	     * loop never trips the IWDG; a genuine BSY stall will still be caught. */
+	    TAMP->BKP8R = 0xF1A54ADDU;
+	    TAMP->BKP9R = (uint32_t)dst_chk;
+	    m1_wdt_reset();
+#endif
+	    st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, (uint32_t)dst_chk, (uint32_t)src_chk);
+	    if (st==HAL_OK)
 	    {
 	    	for (j=0; j<4; j++)
 	    	{
@@ -311,8 +334,38 @@ uint8_t bl_flash_if_write(uint8_t *src, uint8_t *dest, uint32_t len)
 	    	/* Error occurred while writing data in Flash memory */
 	    	return BL_WRITE_ERROR;
 	    }
-	} // for (i=0; i<len; i+=16)
+	} // for (i=0; i+16<=len; i+=16)
 
+	/* Final partial quad-word (len not a multiple of 16). STM32H5 can only
+	 * program a full 16-byte line, so copy the remaining <16 real bytes into a
+	 * 0xFF-padded buffer (0xFF == erased flash) and program that. Verify only
+	 * the real bytes. */
+	if (i < len)
+	{
+	    uint8_t tail[16];
+	    uint32_t rem = len - i;
+	    memset(tail, 0xFF, sizeof(tail));
+	    memcpy(tail, (const uint8_t *)src_chk, rem);
+
+#ifdef M1_RESTORE_HOST
+	    TAMP->BKP8R = 0xF1A54ADDU;
+	    TAMP->BKP9R = (uint32_t)dst_chk;
+	    m1_wdt_reset();
+#endif
+	    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD,
+	                          (uint32_t)dst_chk, (uint32_t)tail) != HAL_OK)
+	    {
+	    	return BL_WRITE_ERROR;
+	    }
+	    if (memcmp((const void *)dst_chk, tail, rem) != 0)
+	    {
+	    	return BL_CODE_CHK_ERROR;
+	    }
+	}
+
+#ifdef M1_RESTORE_HOST
+	TAMP->BKP8R = 0;   /* this chunk fully programmed OK — clear stall marker */
+#endif
 	return BL_CODE_OK;
 } // uint8_t bl_flash_if_write(uint8_t * src, uint8_t * dest, uint32_t Len)
 
@@ -1015,7 +1068,11 @@ void boot_recovery_check(void)
             FLASH->OPTSR_PRG = optsr | FLASH_OPTSR_SWAP_BANK;
         }
         FLASH->OPTCR |= FLASH_OPTCR_OPTSTART;
-        while (FLASH->NSSR & FLASH_SR_BSY) {}
+        /* Bounded: this runs in SystemInit before the IWDG exists, so an
+         * unbounded spin on a stuck BSY would hang the device forever with no
+         * recovery. Fall through to the NVIC_SystemReset() below on timeout. */
+        for (volatile uint32_t bsy_to = 0;
+             (FLASH->NSSR & FLASH_SR_BSY) && bsy_to < 0x02000000U; bsy_to++) {}
         NVIC_SystemReset();
         /* Never returns */
     }
@@ -1054,19 +1111,39 @@ void boot_recovery_check(void)
     CRC->CR = CRC_CR_RESET;
     __NOP(); __NOP(); __NOP(); __NOP();
 
-    /* Feed firmware data word-by-word */
+    /* Feed firmware data word-by-word, guarded against a double-ECC (uncorrectable)
+     * flash fault. Without the guard, a single bad word anywhere in a ~1MB image
+     * takes the NMI, which — this early in SystemInit, before the IWDG exists —
+     * falls through to while(1): a black screen with no recovery. The guard makes
+     * the NMI skip the faulting ldr.w and set g_flash_read_faulted; we then treat
+     * a fault as a CRC mismatch and fall into the existing bank-swap recovery.
+     * Flags are WRITTEN explicitly here because bss/data are not yet initialised
+     * at this boot stage — we never rely on their static initialisers. */
     uint32_t num_words = fw_image_size / 4;
-    volatile uint32_t *data_ptr = (volatile uint32_t *)FW_START_ADDRESS;
+    g_flash_read_faulted = false;
+    g_flash_read_protected = true;
+    __DSB();
+    __ISB();
     for (uint32_t i = 0; i < num_words; i++) {
-        CRC->DR = data_ptr[i];
+        uint32_t word;
+        __ASM volatile (
+            "ldr.w %0, [%1]"
+            : "=r" (word)
+            : "r" (FW_START_ADDRESS + i * 4)
+            : "memory"
+        );
+        CRC->DR = word;
     }
+    g_flash_read_protected = false;
+    __DSB();
+    bool crc_read_faulted = g_flash_read_faulted;
     calc_crc = CRC->DR;
 
     /* Disable CRC clock */
     RCC->AHB1ENR &= ~RCC_AHB1ENR_CRCEN;
 
-    /* CRC matches - firmware is good */
-    if (calc_crc == stored_crc) {
+    /* CRC matches AND no ECC fault occurred - firmware is good */
+    if (!crc_read_faulted && calc_crc == stored_crc) {
         /* Clear any previous boot fail marker */
         PWR->DBPCR |= PWR_DBPCR_DBP;  /* Enable backup domain access */
         if (TAMP->BKP1R == BOOT_FAIL_SIGNATURE) {

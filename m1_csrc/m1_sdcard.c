@@ -316,6 +316,7 @@ S_M1_SDCard_Init_Status m1_sdcard_init_ex(void)
 	{
 		M1_LOG_E(M1_LOGDB_TAG, "FATFS_LinkDriver() failed!\r\n");
 		m1_sdcard_error_handler();
+		return SD_RET_ERROR;   /* driver not linked — don't proceed to mount */
 	}
 
 #if ( osCMSIS < 0x20000 )
@@ -433,6 +434,7 @@ static void m1_sd_hardware_init(void)
     if ( ret!=HAL_OK )
     {
     	m1_sdcard_error_handler();
+    	return;   /* SDMMC clock not configured — skip peripheral/GPIO bring-up */
     }
 
     /* Peripheral clock enable */
@@ -677,7 +679,9 @@ void m1_sdcard_mount(void)
 	else
 	{
 		f_mount(0, sdcard_ctl.sdpath, 0); // unmount
-		if ( sd_fres!=FR_DISK_ERR )
+		if ( sd_fres==FR_DISK_ERR )
+			sdcard_ctl.status = SD_access_NotReady;  /* wedged low-level I/O — let init_retry re-init */
+		else
 			sdcard_ctl.status = SD_access_UnMounted;
 	} // else
 	sdcard_ctl.timestamp = HAL_GetTick();
@@ -829,6 +833,7 @@ static uint8_t m1_sdcard_checkstatus_ex(uint32_t timeout)
 		{
 			return 0;
 		}
+		osDelay(1); /* yield so the lower-prio watchdog task can check in during a slow card */
 	} // while (osKernelGetTickCount() - timer < timeout)
 
 	return 1;
@@ -981,6 +986,10 @@ DRESULT m1_sdcard_read(uint8_t param, uint8_t *buff, DWORD sector, UINT count)
 		return res;
 	}
 
+	/* Discard any stale completion left by a previously timed-out DMA, so we
+	 * can't pop the wrong event and return RES_OK while this DMA is still live. */
+	xQueueReset(sdcard_cb_q_hdl);
+
 	if (HAL_SD_ReadBlocks_DMA(phsd, buff, (uint32_t)sector, count)==HAL_OK)
 	{
 		status = xQueueReceive(sdcard_cb_q_hdl, (void *)&event, SD_DATATIMEOUT);
@@ -995,8 +1004,18 @@ DRESULT m1_sdcard_read(uint8_t param, uint8_t *buff, DWORD sector, UINT count)
 					res = RES_OK;
 					break;
 				}
+				osDelay(1); /* yield: let the lower-prio WDT task run; no-op when the card is already ready */
 			} // while ( (osKernelGetTickCount() - timer) < SD_DATATIMEOUT )
         } // if ((status==pdTRUE) && (event==SDCARD_CB_READ_CPLT_MSG))
+		else
+		{
+			/* Timeout or wrong event: abort the stranded DMA so it can't later
+			 * corrupt a reused buffer and so HAL doesn't stay stuck BUSY. Flag the
+			 * card NotReady so init_retry re-inits it instead of staying wedged
+			 * until a reboot/reinsert. */
+			HAL_SD_Abort(phsd);
+			m1_sdcard_set_status(SD_access_NotReady);
+		}
 	} // if (HAL_SD_ReadBlocks_DMA(phsd, buff, (uint32_t)sector, count)==HAL_OK)
 
 	return res;
@@ -1027,6 +1046,9 @@ DRESULT m1_sdcard_write(uint8_t param, const uint8_t *buff, DWORD sector, UINT c
 		return res;
 	}
 
+	/* Discard any stale completion left by a previously timed-out DMA. */
+	xQueueReset(sdcard_cb_q_hdl);
+
 	if ( HAL_SD_WriteBlocks_DMA(phsd, buff, (uint32_t)sector, count)==HAL_OK )
 	{
 		status = xQueueReceive(sdcard_cb_q_hdl, (void *)&event, SD_DATATIMEOUT);
@@ -1041,8 +1063,15 @@ DRESULT m1_sdcard_write(uint8_t param, const uint8_t *buff, DWORD sector, UINT c
 					res = RES_OK;
 					break;
 				}
+				osDelay(1); /* yield: let the lower-prio WDT task run; no-op when the card is already ready */
 			} // while ( (osKernelGetTickCount() - timer) < SD_DATATIMEOUT )
-        } // if ((status==pdTRUE) && (event==SDCARD_CB_READ_CPLT_MSG))
+        } // if ((status==pdTRUE) && (event==SDCARD_CB_WRITE_CPLT_MSG))
+		else
+		{
+			/* Abort the stranded DMA (see read path) + flag for re-init. */
+			HAL_SD_Abort(phsd);
+			m1_sdcard_set_status(SD_access_NotReady);
+		}
 	} // if ( HAL_SD_WriteBlocks_DMA(phsd, buff, (uint32_t)sector, count)==HAL_OK )
 
 	return res;
@@ -1113,11 +1142,13 @@ DRESULT m1_sdcard_ioctl(uint8_t param, uint8_t cmd, void *buff)
 /*============================================================================*/
 static void m1_sdcard_error_handler(void)
 {
+	/* Do NOT hang. This used to spin in while(1) Error_Handler() (IRQs off), so a
+	 * persistent SD/clock fault let the IWDG reboot the device, which then re-hit
+	 * this on every boot = permanent boot-loop brick. Degrade instead: mark the
+	 * card not-ready and return; the callers abort SD init and the rest of the
+	 * device boots normally without SD. */
 	m1_sdcard_set_status(SD_access_NotReady);
-	while (1)
-	{
-		Error_Handler();
-	}
+	M1_LOG_E(M1_LOGDB_TAG, "SD init failed - continuing without SD\r\n");
 } // static void m1_sdcard_error_handler(void)
 
 

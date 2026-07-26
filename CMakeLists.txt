@@ -25,16 +25,29 @@ endif()
 # produces the stripped minimal Recovery FW; a normal build is unaffected.
 option(RECOVERY "Build the separate minimal Recovery FW (M1_Recovery_C3.x.y)" OFF)
 
+# Restore Host variant — the Recovery FW PLUS the ESP + M1 flash paths kept in,
+# so it can act as the clean minimal host for Factory Restore (flash the stock
+# ESP image, then the stock M1 image). Enable with -DRESTORE_HOST=ON. It is a
+# superset of RECOVERY, so it forces RECOVERY on.
+option(RESTORE_HOST "Build the Restore Host FW (recovery + ESP/M1 flash for Factory Restore)" OFF)
+if(RESTORE_HOST)
+    set(RECOVERY ON)
+endif()
+
 # Set the project name + C3 revision. Recovery FW uses its own version line
 # (C3.<maj>.<min>, see M1_RECOVERY_VER_* in m1_fw_update_bl.h); the working FW
 # uses the single-integer C3.N line. Keep M1_C3_REVISION here in sync with the
 # matching value in m1_fw_update_bl.h.
 if(RECOVERY)
-    set(CMAKE_PROJECT_NAME M1_Recovery_C3.1.0)
+    if(RESTORE_HOST)
+        set(CMAKE_PROJECT_NAME M1_RestoreHost_C3.1.0)
+    else()
+        set(CMAKE_PROJECT_NAME M1_Recovery_C3.1.0)
+    endif()
     set(M1_C3_REVISION 1)
 else()
-    set(CMAKE_PROJECT_NAME M1_v0800_C3.126)
-    set(M1_C3_REVISION 126)
+    set(CMAKE_PROJECT_NAME M1_v0800_C3.129)
+    set(M1_C3_REVISION 129)
 endif()
 
 # Include toolchain file
@@ -107,6 +120,9 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 # -DRECOVERY=ON; normal builds never see it.
 if(RECOVERY)
     target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE M1_RECOVERY_BUILD)
+endif()
+if(RESTORE_HOST)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE M1_RESTORE_HOST)
 endif()
 
 # Add linked libraries

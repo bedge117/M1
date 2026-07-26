@@ -264,8 +264,10 @@ set(M1_SRCS
     ../../FatFs/diskio.c
     ../../FatFs/ff.c
     ../../FatFs/ff_gen_drv.c
-    ../../FatFs/ffsystem.c
-    ../../FatFs/ffsystem_baremetal.c
+    # FatFs sync provider: with FF_FS_REENTRANT=1 exactly ONE ffsystem*.c may
+    # define ff_mutex_*. ffsystem_cmsis_os.c provides the CMSIS-OS2 recursive
+    # mutex handlers; ffsystem.c would duplicate them and ffsystem_baremetal.c
+    # #errors when reentrancy is on. So only the CMSIS one is compiled.
     ../../FatFs/ffsystem_cmsis_os.c
     ../../FatFs/ffunicode.c
     ../../Infrared/irmp.c
@@ -820,6 +822,28 @@ if(RECOVERY)
     # Stub file: satisfies the few linker references from kept IRQ/RPC code to
     # the stripped subsystems (never executed at run time).
     list(APPEND M1_SRCS ../../m1_csrc/m1_recovery_stubs.c)
+
+    # Restore Host variant: put the ESP UART flasher + M1 flash-update path back
+    # (the blanket strip above removed them). This lets the Restore Host flash the
+    # stock ESP image and the stock M1 image. The SPI-AT runtime + radio features
+    # stay stripped — only the UART flash path is needed. The matching stubs in
+    # m1_recovery_stubs.c are #ifndef M1_RESTORE_HOST so there are no duplicates.
+    if(RESTORE_HOST)
+        list(APPEND M1_SRCS
+            ../../Esp32_serial_flasher/app/common/app_common.c
+            ../../Esp32_serial_flasher/port/stm32_port.c
+            ../../Esp32_serial_flasher/src/esp_loader.c
+            ../../Esp32_serial_flasher/src/esp_stubs.c
+            ../../Esp32_serial_flasher/src/esp_targets.c
+            ../../Esp32_serial_flasher/src/md5_hash.c
+            ../../Esp32_serial_flasher/src/protocol_serial.c
+            ../../Esp32_serial_flasher/src/protocol_uart.c
+            ../../Esp32_serial_flasher/src/slip.c
+            ../../m1_csrc/m1_esp32_fw_update.c
+            ../../m1_csrc/m1_esp32_hal.c
+            ../../m1_csrc/m1_md5_hash.c
+        )
+    endif()
 endif()
 
 target_sources(m1_01 INTERFACE ${M1_SRCS})
