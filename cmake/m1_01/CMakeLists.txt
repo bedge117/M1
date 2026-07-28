@@ -466,6 +466,7 @@ set(M1_SRCS
     ../../m1_csrc/m1_power_ctl.c
     ../../m1_csrc/m1_rf_spi.c
     ../../m1_csrc/m1_rfid.c
+    ../../m1_csrc/m1_rng.c
     ../../m1_csrc/m1_ring_buffer.c
     ../../m1_csrc/m1_sdcard.c
     ../../m1_csrc/m1_sdcard_man.c

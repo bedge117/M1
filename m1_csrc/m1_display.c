@@ -487,6 +487,9 @@ uint8_t m1_gui_submenu_update(const char *phmenu[], uint8_t num_items, uint8_t s
 
 	if ( menu_level_id==0 )
 	{
+		// Battery indicator, top-left above the logo (landscape only — this path
+		// is never reached in portrait, which returns earlier).
+		m1_draw_battery_icon(MAIN_MENU_LOGO_LEFT_POS_X, 1);
 		// Draw logo for main menu
 		u8g2_DrawXBMP(&m1_u8g2, MAIN_MENU_LOGO_LEFT_POS_X, MAIN_MENU_LOGO_TOP_POS_Y, MAIN_MENU_LOGO_WIDTH, MAIN_MENU_LOGO_HEIGHT, m1_logo_26x14);
 		u8g2_SetFont(&m1_u8g2, MAIN_MENU_LOGO_FONT);
@@ -778,6 +781,75 @@ void m1_draw_icon(uint8_t color, u8g2_uint_t x, u8g2_uint_t y, u8g2_uint_t w, u8
     u8g2_DrawXBMP(&m1_u8g2, x, y, w, h, bitmap);
     u8g2_NextPage(&m1_u8g2);
 }
+
+/* Battery indicator cache (see m1_display.h) — written by the periodic battery
+ * task, read by the draw helper. Simple bytes; a torn read is cosmetically
+ * harmless on a status icon. */
+volatile uint8_t m1_batt_level = 0;
+volatile uint8_t m1_batt_stat  = 0;
+volatile uint8_t m1_batt_valid = 0;
+
+/* 5x7 lightning bolt for the "charging" indicator — a crisp hand-drawn XBM
+ * (LSB = leftmost pixel), far cleaner than filling triangles at this size. */
+static const uint8_t m1_bolt_5x7[] = {
+    0x18,  /* ...##  */
+    0x0C,  /* ..##.  */
+    0x06,  /* .##..  */
+    0x1F,  /* #####  */
+    0x0C,  /* ..##.  */
+    0x06,  /* .##..  */
+    0x03,  /* ##...  */
+};
+
+/*============================================================================*/
+/**
+  * @brief Draw a small cell-phone-style battery at (x,y) into the current page.
+  *        Body 18x9 + a 2x5 terminal nub; proportional fill by charge level, or
+  *        a full body with a lightning cut-out while charging. No-op until the
+  *        first cached reading is available. Leaves the draw color at TXT.
+  * @note  Call between u8g2_FirstPage and u8g2_NextPage of an existing draw.
+  */
+/*============================================================================*/
+void m1_draw_battery_icon(u8g2_uint_t x, u8g2_uint_t y)
+{
+    if ( !m1_batt_valid )
+        return;
+
+    uint8_t lvl = m1_batt_level;
+    if ( lvl > 100 )
+        lvl = 100;
+    /* stat != 0 == plugged in (pre-charge / fast / done). Matches the "charging"
+     * signal qM shows on its virtual device screen. */
+    uint8_t plugged = ( m1_batt_stat != 0 );
+
+    const u8g2_uint_t body_w = 18, body_h = 9;
+    const u8g2_uint_t inner_max = body_w - 4;   /* 14 px usable fill width */
+
+    /* ── Battery icon: outline + terminal nub + proportional fill ── */
+    u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+    u8g2_DrawFrame(&m1_u8g2, x, y, body_w, body_h);
+    u8g2_DrawBox(&m1_u8g2, x + body_w, y + 2, 2, body_h - 4);
+    uint8_t fillw = (uint8_t)(((uint16_t)lvl * inner_max + 50) / 100);
+    if ( fillw > 0 )
+        u8g2_DrawBox(&m1_u8g2, x + 2, y + 2, fillw, body_h - 4);
+
+    /* ── Numeric percentage to the right (manual itoa — no stdio dependency) ── */
+    char buf[4];
+    if ( lvl >= 100 )     { buf[0]='1'; buf[1]='0'; buf[2]='0'; buf[3]=0; }
+    else if ( lvl >= 10 ) { buf[0]='0'+(lvl/10); buf[1]='0'+(lvl%10); buf[2]=0; }
+    else                  { buf[0]='0'+lvl; buf[1]=0; }
+
+    u8g2_SetFont(&m1_u8g2, u8g2_font_4x6_tr);
+    u8g2_uint_t tx = x + body_w + 4;   /* past the nub + a small gap */
+    u8g2_DrawStr(&m1_u8g2, tx, y + 7, buf);
+    u8g2_uint_t nw = u8g2_GetStrWidth(&m1_u8g2, buf);
+
+    /* ── Charging bolt to the right of the number (crisp XBM ⚡) ── */
+    if ( plugged )
+    {
+        u8g2_DrawXBMP(&m1_u8g2, tx + nw + 3, y + 1, 5, 7, m1_bolt_5x7);
+    }
+} // void m1_draw_battery_icon(u8g2_uint_t x, u8g2_uint_t y)
 
 /*============================================================================*/
 /**

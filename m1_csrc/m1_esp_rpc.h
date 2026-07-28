@@ -182,6 +182,8 @@ typedef enum {
     M1ESP_BLE_DISCONNECT      = 0x040A,
     M1ESP_BLE_HID_DEINIT      = 0x040B, /* stop advertising / tear down HID */
     M1ESP_BLE_HID_STATUS      = 0x040C, /* REQ -> RESP u8 connected */
+    M1ESP_BLE_SPAM_START      = 0x040D, /* REQ u8 mode -> RESP u8 status (adv-spam popups) */
+    M1ESP_BLE_SPAM_STOP       = 0x040E, /* REQ (none) -> RESP u8 status */
 
     /* ---- Zigbee / 802.15.4 0x0500-0x05FF ---- */
     M1ESP_ZB_INIT             = 0x0500,
@@ -189,6 +191,9 @@ typedef enum {
     M1ESP_ZB_SNIFF_START      = 0x0502, /* REQ u8 channel (11-26) -> RESP u8 status */
     M1ESP_ZB_SNIFF_STOP       = 0x0503, /* REQ (none) -> RESP u8 status */
     M1ESP_ZB_SNIFF_GET        = 0x0504, /* REQ (none) -> RESP [count:1] then per-frame [ch:1][rssi:i8][len:2][bytes] */
+    M1ESP_ZB_FLOOD_START      = 0x0505, /* REQ u8 channel (0=sweep 11-26) -> RESP u8 status (beacon-request flood) */
+    M1ESP_ZB_FLOOD_STOP       = 0x0506, /* REQ (none) -> RESP u8 status */
+    M1ESP_ZB_INJECT           = 0x0507, /* REQ raw MPDU (no FCS) -> RESP u8 status */
     M1ESP_THREAD_SCAN         = 0x0510,
 
     /* ---- ESP-NOW peer-to-peer M1<->M1 link 0x0600-0x06FF ---- */
@@ -279,6 +284,8 @@ typedef enum {
 #define M1ESP_CAP_PMKID         (UINT64_C(1) << 18)
 #define M1ESP_CAP_HANDSHAKE     (UINT64_C(1) << 19)
 #define M1ESP_CAP_OTA           (UINT64_C(1) << 20)
+#define M1ESP_CAP_BLE_SPAM      (UINT64_C(1) << 21)
+#define M1ESP_CAP_802154_TX     (UINT64_C(1) << 22)
 
 #define M1ESP_FW_NAME_LEN   32
 

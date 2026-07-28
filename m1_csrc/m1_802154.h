@@ -38,5 +38,6 @@ typedef struct {
 void zigbee_scan(void);          /* Zigbee-filtered (legacy / CLI) */
 void thread_scan(void);          /* Thread-filtered (legacy / CLI) */
 void ieee802154_scan_all(void);  /* unified scan: all devices, tagged Z/T/? */
+void zigbee_beacon_flood(void);  /* offensive: beacon-request flood */
 
 #endif /* M1_802154_H_ */

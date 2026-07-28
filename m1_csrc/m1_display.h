@@ -183,4 +183,13 @@ void m1_draw_text_box(u8g2_t *u8g2,
                     const char *text,
                     S_M1_text_align_t align);
 
+/* Cached battery status for the top-left indicator. Updated by the periodic
+ * battery task (battery_indicator_update) so the GUI never touches I2C itself. */
+extern volatile uint8_t m1_batt_level;   /* 0-100 % */
+extern volatile uint8_t m1_batt_stat;    /* 0 = not charging, 1/2 = charging, 3 = done */
+extern volatile uint8_t m1_batt_valid;   /* 0 until the first reading arrives */
+
+/* Draw a small cell-phone-style battery icon at (x,y) from the cached status. */
+void m1_draw_battery_icon(u8g2_uint_t x, u8g2_uint_t y);
+
 #endif /* M1_DISPLAY_H_ */

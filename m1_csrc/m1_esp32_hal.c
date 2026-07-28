@@ -332,9 +332,15 @@ void esp32_UART_init(void)
 	assert(pesp32_rx!=NULL);
 	m1_ringbuffer_init(&esp32_rb_hdl, pesp32_rx, ESP32_RX_BUFFER_LEN, sizeof(uint8_t));
 
-	sem_esp32_trans = xSemaphoreCreateBinary();
-	assert(sem_esp32_trans!=NULL);
-	xSemaphoreGive(sem_esp32_trans); // Must give first
+	/* Create once and reuse across re-inits (mirrors the pesp32_rx guard above):
+	 * an unconditional create leaked the previous control block on every
+	 * init/deinit cycle (e.g. the ESP flash-from-SD path). */
+	if ( !sem_esp32_trans )
+	{
+		sem_esp32_trans = xSemaphoreCreateBinary();
+		assert(sem_esp32_trans!=NULL);
+		xSemaphoreGive(sem_esp32_trans); // Must give first
+	}
 
 	esp32_uart_init_done = TRUE;
 

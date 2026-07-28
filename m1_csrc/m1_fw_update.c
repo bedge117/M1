@@ -140,7 +140,10 @@ void firmware_update_start(void)
 		}
     } while (0);
 
-    if ( fw_update_status==M1_FW_UPDATE_READY )
+    /* Close the image file on EVERY exit where validation left it open — including
+     * the low-battery force-quit above, which previously skipped this guarded close
+     * and leaked the handle (now reachable headlessly via the mobile RPC path). */
+    if ( hfile_fw.obj.fs != NULL )
     	m1_fb_close_file(&hfile_fw);
 
     fw_update_status = uret; // Update new status
@@ -154,6 +157,92 @@ void firmware_update_start(void)
 
     xQueueReset(main_q_hdl); // Reset main q before return
 } // void firmware_update_start(void)
+
+
+
+/*============================================================================*/
+/**
+  * @brief  Headless validate of an SD firmware image for the flash-from-SD RPC.
+  *         Mirrors firmware_update_get_image_file()'s checks (size + appended
+  *         CRC32 + battery), but takes a path instead of the file browser. On
+  *         success it leaves hfile_fw OPEN and sets fw_update_status = READY, so
+  *         the caller can send its ACK and then call firmware_update_start() to
+  *         flash + swap. Returns M1_FW_UPDATE_READY on success, else an error.
+  */
+/*============================================================================*/
+uint8_t m1_fw_validate_from_path(const char *sd_path)
+{
+	uint8_t   fw_payload[FW_IMAGE_CHUNK_SIZE];
+	uint32_t  crc32ret;
+	uint32_t  image_size;
+	size_t    count = 0, sum;
+	uint8_t   uret;
+
+	fw_update_status = M1_FW_UPDATE_NOT_READY;
+
+	/* Never flash on a low battery — a brown-out mid-write can brick the device. */
+	if ( !m1_check_battery_level(50) )
+		return M1_FW_UPDATE_LOW_BATTERY;
+
+	if ( m1_fb_open_file(&hfile_fw, (char *)sd_path) != 0 )
+		return M1_FW_IMAGE_FILE_ACCESS_ERROR;
+
+	image_size = f_size(&hfile_fw);
+	if ( (!image_size) || (image_size % 4 != 0) ||
+	     (image_size > (FW_IMAGE_SIZE_MAX + FW_IMAGE_CRC_SIZE)) )
+	{
+		m1_fb_close_file(&hfile_fw);
+		return M1_FW_IMAGE_SIZE_INVALID;
+	}
+
+	/* Roll the CRC over the image (excluding the 4-byte appended CRC), the same
+	 * way firmware_update_get_image_file() does. */
+	bl_get_crc_chunk(&crc32ret, 0, true, false);   // init
+	sum = image_size;
+	uret = 0;
+	while ( sum )
+	{
+		count = m1_fb_read_from_file(&hfile_fw, fw_payload, FW_IMAGE_CHUNK_SIZE);
+		if ( !count || (count % 4 != 0) ) { uret = M1_FW_IMAGE_FILE_ACCESS_ERROR; break; }
+		sum -= count;
+		if ( count < FW_IMAGE_CHUNK_SIZE )         // last (short) chunk
+		{
+			count -= FW_IMAGE_CRC_SIZE;
+			if ( count )
+				crc32ret = bl_get_crc_chunk((uint32_t *)fw_payload, count/FW_IMAGE_CRC_SIZE, false, true);
+			else
+				bl_get_crc_chunk(&crc32ret, 1, false, true);
+			break;
+		}
+		else if ( !sum )                            // last (full-size) chunk
+		{
+			count -= FW_IMAGE_CRC_SIZE;
+			crc32ret = bl_get_crc_chunk((uint32_t *)fw_payload, count/FW_IMAGE_CRC_SIZE, false, true);
+			break;
+		}
+		else
+		{
+			crc32ret = bl_get_crc_chunk((uint32_t *)fw_payload, count/FW_IMAGE_CRC_SIZE, false, false);
+		}
+	}
+
+	if ( uret || sum )
+	{
+		m1_fb_close_file(&hfile_fw);
+		return uret ? uret : M1_FW_IMAGE_FILE_ACCESS_ERROR;
+	}
+
+	/* Compare the computed CRC to the 4-byte value appended at the end. */
+	if ( memcmp(&fw_payload[count], &crc32ret, FW_IMAGE_CRC_SIZE) != 0 )
+	{
+		m1_fb_close_file(&hfile_fw);
+		return M1_FW_CRC_CHECKSUM_UNMATCHED;
+	}
+
+	/* Valid — leave the file open; firmware_update_start() rewinds and flashes it. */
+	fw_update_status = M1_FW_UPDATE_READY;
+	return M1_FW_UPDATE_READY;
+} // uint8_t m1_fw_validate_from_path(const char *sd_path)
 
 
 
@@ -573,7 +662,20 @@ void firmware_swap_banks(void)
 
     active_bank = bl_get_active_bank();
     target_bank = (active_bank == BANK1_ACTIVE) ? 2 : 1;
+    /* Mirror qM's bank-swap rule exactly: the target bank must be structurally
+     * valid, and if it carries the extended CRC block that CRC must match — but
+     * legacy/stock firmware (no CRC block) is allowed through. */
     bank_valid = bl_is_inactive_bank_valid();
+    if ( bank_valid )
+    {
+        uint32_t ib = FW_START_ADDRESS + M1_FLASH_BANK_SIZE;
+        uint32_t magic = 0;
+        if ( bl_safe_flash_read_u32(ib + (FW_CRC_EXT_BASE - FW_START_ADDRESS), &magic)
+             && magic == FW_CRC_EXT_MAGIC_VALUE )
+        {
+            bank_valid = bl_verify_bank_crc(ib);
+        }
+    }
 
     /* Draw status screen */
     m1_u8g2_firstpage();

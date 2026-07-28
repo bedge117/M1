@@ -68,7 +68,7 @@
 /*#define HAL_XSPI_MODULE_ENABLED */
 /*#define HAL_OTFDEC_MODULE_ENABLED */
 /*#define HAL_PKA_MODULE_ENABLED */
-/*#define HAL_RNG_MODULE_ENABLED */
+/*#define HAL_RNG_MODULE_ENABLED */  /* RNG driven by direct register access (m1_rng.c); no HAL driver in tree */
 #define HAL_RTC_MODULE_ENABLED
 /*#define HAL_SAI_MODULE_ENABLED */
 #define HAL_SD_MODULE_ENABLED

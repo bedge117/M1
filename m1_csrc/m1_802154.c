@@ -578,3 +578,116 @@ void ieee802154_scan_all(void)
 {
     ieee802154_scan(0);
 }
+
+/********************* B E A C O N   F L O O D (offensive) *******************/
+
+/* Hammer broadcast 802.15.4 Beacon Requests, which every Zigbee coordinator/
+ * router must answer — floods the channel and their request handlers. The flood
+ * runs autonomously on the ESP; the M1 just picks a channel and starts/stops it. */
+void zigbee_beacon_flood(void)
+{
+    S_M1_Buttons_Status this_button_status;
+    S_M1_Main_Q_t q_item;
+    BaseType_t ret;
+    static const struct { const char *label; uint8_t ch; } chans[] = {
+        { "All (11-26)", 0 }, { "Ch 11", 11 }, { "Ch 15", 15 },
+        { "Ch 20", 20 },      { "Ch 25", 25 }, { "Ch 26", 26 },
+    };
+    const int nchan = (int)(sizeof(chans) / sizeof(chans[0]));
+    int sel = 0;
+    bool running = false;
+    bool redraw = true;
+
+    u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+    if (!m1_esp32_get_init_status())
+        m1_esp32_init();
+    if (!get_esp32_main_init_status())
+    {
+        show_message("Beacon Flood", "Initializing...", NULL, 0);
+        esp32_main_init();
+    }
+    if (!get_esp32_main_init_status())
+    {
+        show_message("Beacon Flood", "ESP32 not ready!", "Press Back", 0);
+        goto wait_back;
+    }
+
+    for (;;)
+    {
+        if (redraw && !running)
+        {
+            redraw = false;
+            m1_u8g2_firstpage();
+            u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+            u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+            draw_title_bar("Beacon Flood");
+            u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);   /* smaller: 6 rows fit without touching */
+            for (int i = 0; i < nchan; i++)
+                u8g2_DrawStr(&m1_u8g2, 12, 22 + i * 8, chans[i].label);
+            u8g2_DrawStr(&m1_u8g2, 3, 22 + sel * 8, ">");
+            m1_u8g2_nextpage();
+        }
+
+        ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+        if (ret != pdTRUE || q_item.q_evt_type != Q_EVENT_KEYPAD)
+            continue;
+        xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+
+        if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+         || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            if (running) { m1_esp_client_zb_flood_stop(); running = false; redraw = true; continue; }
+            m1_esp_client_zb_flood_stop();   /* belt-and-braces */
+            xQueueReset(main_q_hdl);
+            return;
+        }
+        if (running)
+            continue;
+
+        if (this_button_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            sel = (sel > 0) ? sel - 1 : nchan - 1; redraw = true;
+        }
+        else if (this_button_status.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            sel = (sel < nchan - 1) ? sel + 1 : 0; redraw = true;
+        }
+        else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+              || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+        {
+            if (m1_esp_client_zb_flood_start(chans[sel].ch))
+            {
+                running = true;
+                m1_u8g2_firstpage();
+                u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+                u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+                draw_title_bar("Beacon Flood");
+                u8g2_DrawStr(&m1_u8g2, 2, 30, "Flooding...");
+                u8g2_DrawStr(&m1_u8g2, 2, 42, chans[sel].label);
+                u8g2_DrawStr(&m1_u8g2, 2, 58, "BACK to stop");
+                m1_u8g2_nextpage();
+            }
+            else
+            {
+                show_message("Beacon Flood", "start failed", NULL, 1200);
+                redraw = true;
+            }
+        }
+    }
+
+wait_back:
+    while (1)
+    {
+        ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+        if (ret == pdTRUE && q_item.q_evt_type == Q_EVENT_KEYPAD)
+        {
+            xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+            if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+             || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK
+             || this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
+                break;
+        }
+    }
+    m1_esp_client_zb_flood_stop();
+    xQueueReset(main_q_hdl);
+}

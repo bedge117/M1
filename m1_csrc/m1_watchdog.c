@@ -163,6 +163,7 @@ void m1_wdt_add_task_to_report(S_M1_WDT_Report_ID rpt_id, uint32_t rpt_period, u
 	{
 		wdt_report[rpt_id].report_id = rpt_id;
 		wdt_report[rpt_id].inactive = false;
+		wdt_report[rpt_id].resume_grace = false;
 		wdt_report[rpt_id].report_period = rpt_period;
 		wdt_report[rpt_id].min_rpt_percent = min_rpt_percent;
 		wdt_report[rpt_id].max_rpt_percent = max_rpt_percent;
@@ -265,6 +266,10 @@ static void m1_wdt_system_check(void)
 		min = (wdt_report[i].report_period/100)*wdt_report[i].min_rpt_percent;
 		max = (wdt_report[i].report_period/100)*wdt_report[i].max_rpt_percent;
 		taskENTER_CRITICAL();
+		/* Consume any post-resume grace this cycle (pass or fail), so it can never
+		 * linger and mask a genuine failure on a later check. */
+		bool grace = wdt_report[i].resume_grace;
+		wdt_report[i].resume_grace = false;
 		if ( (wdt_report[i].run_time >= min) && (wdt_report[i].run_time <= max) )
 		{
 			//M1_LOG_I(M1_LOGDB_TAG, "SysOK\r\n");
@@ -273,6 +278,13 @@ static void m1_wdt_system_check(void)
 		else if (wdt_report[i].inactive)
 		{
 			M1_LOG_W(M1_LOGDB_TAG, "Task ID %d suspended\r\n", wdt_report[i].report_id);
+			wdt_report[i].run_time = 0;
+		}
+		else if (grace)
+		{
+			/* First check after resume: the task hasn't had a full period to report
+			 * yet. Give it this one cycle to re-establish before enforcing. */
+			M1_LOG_W(M1_LOGDB_TAG, "Task ID %d resume grace\r\n", wdt_report[i].report_id);
 			wdt_report[i].run_time = 0;
 		}
 		else
@@ -413,6 +425,13 @@ void m1_wdt_resume_task(S_M1_WDT_Report_ID rpt_id)
 		taskENTER_CRITICAL();
 		wdt_report[rpt_id].inactive = false;
 		wdt_report[rpt_id].run_time = 0;
+		/* Grant one free system-check pass: run_time was just zeroed, but the next
+		 * system_check fires on an independent global cadence and may arrive before
+		 * the task has re-accumulated 70% of a period — which would wrongly trip the
+		 * failure handler (IWDG reset). This is why a device rebooted ~5/10 in the
+		 * idle window after a firmware flash (the flash suspends/resumes this task).
+		 * The grace bridges the resume transient; enforcement is normal thereafter. */
+		wdt_report[rpt_id].resume_grace = true;
 		taskEXIT_CRITICAL();
 	}
 }

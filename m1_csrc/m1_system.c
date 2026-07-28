@@ -24,6 +24,7 @@
 #include "m1_fw_update_bl.h"
 #include "m1_lp5814.h"
 #include "battery.h"
+#include "m1_display.h"   /* battery-indicator cache + m1_draw_battery_icon */
 
 /*************************** D E F I N E S ************************************/
 
@@ -471,6 +472,12 @@ static void battery_indicator_update(void)
 
 	battery_power_status_get(&SystemPowerStatus);
 
+	/* Cache for the GUI battery indicator (splash + main menu) so the display
+	 * never has to touch I2C itself. */
+	m1_batt_level = SystemPowerStatus.battery_level;
+	m1_batt_stat  = ( SystemPowerStatus.fault == 0 ) ? SystemPowerStatus.stat : 0;
+	m1_batt_valid = 1;
+
 	if ( SystemPowerStatus.fault == 0 )
 	{
 		new_stat = SystemPowerStatus.stat;
@@ -650,7 +657,7 @@ void startup_device_init(void)
 void startup_config_handler(void)
 {
     uint16_t i, k;
-    uint32_t *bu_reg_read, crc32_add;
+    uint32_t *bu_reg_read;
     uint32_t fw_ver_old, fw_ver_new;
     S_M1_FW_CONFIG_t old_fw_config;
     BaseType_t ret;
@@ -715,11 +722,21 @@ void startup_config_handler(void)
 			    		if ( i < k )
 			    		{
 			    			M1_LOG_I(M1_LOGDB_TAG, "Valid firmware found for rollback. Checking CRC...");
-			    			bu_reg_read++; // Move to CRC32 location which is right after the Magic Number 2
-			    			crc32_add = (uint32_t)bu_reg_read; // Get the CRC address and use it as the size of the firmware resided in this bank
-			    			crc32_add -= (FW_START_ADDRESS + M1_FLASH_BANK_SIZE); // Exclude the size of bank 1
-			    			crc32_add /= 4; // convert size from byte to word (32-bit)
-			    			if ( bl_crc_check(crc32_add)==BL_CODE_OK )
+			    			/* Mirror qM's bank-swap rule: the other bank must be structurally
+			    			 * valid, and if it carries the extended CRC block it must match — but
+			    			 * legacy/stock firmware (no CRC block) is allowed through. The old
+			    			 * bl_crc_check() used the pre-extended offset and failed on all modern
+			    			 * images. */
+			    			uint32_t rb_ib = FW_START_ADDRESS + M1_FLASH_BANK_SIZE;
+			    			uint32_t rb_magic = 0;
+			    			bool rb_ok = bl_is_inactive_bank_valid();
+			    			if ( rb_ok
+			    			     && bl_safe_flash_read_u32(rb_ib + (FW_CRC_EXT_BASE - FW_START_ADDRESS), &rb_magic)
+			    			     && rb_magic == FW_CRC_EXT_MAGIC_VALUE )
+			    			{
+			    				rb_ok = bl_verify_bank_crc(rb_ib);
+			    			}
+			    			if ( rb_ok )
 			    			{
 			    				M1_LOG_N(M1_LOGDB_TAG, "OK\r\n");
 			    				i++; // Move to CRC32 location which is right after the Magic Number 2
@@ -738,7 +755,7 @@ void startup_config_handler(void)
 			    				{
 			    					M1_LOG_I(M1_LOGDB_TAG, "Rollback was already completed!\r\n");
 			    				}
-			    			} // if ( bl_crc_check(crc32_add)==BL_CODE_OK )
+			    			} // if ( bl_verify_bank_crc(...) )
 			    			else
 			    			{
 			    				M1_LOG_N(M1_LOGDB_TAG, "Failed\r\n");
@@ -835,12 +852,14 @@ static void startup_bu_registers_init(void)
  * This function displays the M1 welcome screen
 */
 /*============================================================================*/
-void startup_info_screen_display(const char *scr_text)
+/* Draw the power-up / version info screen WITH NO side effects — no backlight
+ * change, no op_mode / inactivity-timer change. Safe to call for a periodic
+ * battery refresh from the menu task while the device is idle (so the home-screen
+ * battery stays current, including after waking from the screen saver). */
+void startup_info_screen_draw(const char *scr_text)
 {
 	char ver1[16], ver2[10];
 	uint8_t len, x0;
-
-	u8g2_SetPowerSave(&m1_u8g2, false);
 
 	/* Graphic work starts here */
 	u8g2_FirstPage(&m1_u8g2);
@@ -874,6 +893,8 @@ void startup_info_screen_display(const char *scr_text)
 		/* Landscape: logo left; name + version to the right on three lines so the
 		 * 3-digit C3 rev drops to its own row instead of overflowing. */
 		int tx = M1_POWERUP_LOGO_LEFT_POS_X + M1_POWERUP_LOGO_WIDTH + 3;
+		/* Battery indicator, upper-left corner (landscape splash only). */
+		m1_draw_battery_icon(1, 1);
 		u8g2_DrawXBMP(&m1_u8g2, M1_POWERUP_LOGO_LEFT_POS_X, M1_POWERUP_LOGO_TOP_POS_Y, M1_POWERUP_LOGO_WIDTH, M1_POWERUP_LOGO_HEIGHT, m1_logo_40x32);
 		u8g2_SetFont(&m1_u8g2, M1_POWERUP_LOGO_FONT);
 		u8g2_DrawStr(&m1_u8g2, tx, M1_POWERUP_LOGO_TOP_POS_Y + 10, "M1 BY C3");
@@ -891,9 +912,18 @@ void startup_info_screen_display(const char *scr_text)
 	}
 
 	m1_u8g2_nextpage(); // Update display RAM
+} // void startup_info_screen_draw(const char *scr_text)
 
+
+/*============================================================================*/
+/* Full power-up screen: draw it, light the backlight, mark DISPLAY_ON, and reset
+ * the inactivity timer. Used at boot and for FW-update status messages. */
+/*============================================================================*/
+void startup_info_screen_display(const char *scr_text)
+{
+	u8g2_SetPowerSave(&m1_u8g2, false);
+	startup_info_screen_draw(scr_text);
 	lp5814_backlight_on(M1_BACKLIGHT_BRIGHTNESS); // Turn on backlight
-
 	m1_device_stat.op_mode = M1_OPERATION_MODE_DISPLAY_ON; // update new state
 	m1_device_stat.active_timestamp = HAL_GetTick(); // reset timeout
 } // void startup_info_screen_display(const char *scr_text)

@@ -235,6 +235,23 @@ bool m1_esp_client_zb_sniff_stop(void)
     return (n >= 1) && (resp[0] == M1ESP_OK);
 }
 
+/* 802.15.4 beacon-request flood. channel 0 = sweep 11-26, else dwell it. */
+bool m1_esp_client_zb_flood_start(uint8_t channel)
+{
+    uint8_t p[1] = { channel };
+    uint8_t resp[1] = { 0 };
+    int n = esp_call_to(M1ESP_ZB_FLOOD_START, p, 1, resp, sizeof(resp),
+                        ESP_ZB_START_TIMEOUT_MS);
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+bool m1_esp_client_zb_flood_stop(void)
+{
+    uint8_t resp[1] = { 0 };
+    int n = esp_call_to(M1ESP_ZB_FLOOD_STOP, NULL, 0, resp, sizeof(resp), 2000u);
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
 /* Fills buf with [u8 count][m1esp_zb_device_t x count]. Returns bytes, <0 err. */
 int m1_esp_client_zb_sniff_get(uint8_t *buf, uint16_t cap)
 {
@@ -388,6 +405,50 @@ bool m1_esp_client_beacon_stop(void)
 {
     uint8_t resp[1] = { 0 };
     int n = esp_call(M1ESP_OFF_BEACON_STOP, NULL, 0, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+/* Probe-request flood. Payload: [channel:1][count:1] then [len:1][ssid] x count.
+ * count 0 = wildcard broadcast probes. */
+bool m1_esp_client_probe_start(uint8_t channel, const char ssids[][33], uint8_t count)
+{
+    uint8_t payload[M1L_PAYLOAD_MAX];
+    uint16_t off = 0;
+    payload[off++] = channel;
+    uint8_t n = count > 16 ? 16 : count;
+    payload[off++] = n;
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t l = (uint8_t)strnlen(ssids[i], 32);
+        if ((uint16_t)(off + 1 + l) > sizeof(payload)) { n = i; payload[1] = n; break; }
+        payload[off++] = l;
+        memcpy(&payload[off], ssids[i], l);
+        off += l;
+    }
+    uint8_t resp[1] = { 0 };
+    int r = esp_call(M1ESP_OFF_PROBE_START, payload, off, resp, sizeof(resp));
+    return (r >= 1) && (resp[0] == M1ESP_OK);
+}
+
+bool m1_esp_client_probe_stop(void)
+{
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_OFF_PROBE_STOP, NULL, 0, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+/* Karma probe-response auto-responder on `channel`. */
+bool m1_esp_client_karma_start(uint8_t channel)
+{
+    uint8_t p[1] = { channel };
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_OFF_KARMA_START, p, 1, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+bool m1_esp_client_karma_stop(void)
+{
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_OFF_KARMA_STOP, NULL, 0, resp, sizeof(resp));
     return (n >= 1) && (resp[0] == M1ESP_OK);
 }
 
@@ -571,6 +632,23 @@ bool m1_esp_client_ble_advertise(const char *name)
     uint8_t nl = (uint8_t)strnlen(name ? name : "", 31);
     uint8_t resp[1] = { 0 };
     int n = esp_call(M1ESP_BLE_ADV_START, (const uint8_t *)name, nl, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+/* BLE spam: start the proximity-pair popup flooder in `mode`
+ * (0=Apple 1=FastPair 2=Samsung 3=SwiftPair 4=All), or stop it. */
+bool m1_esp_client_ble_spam_start(uint8_t mode)
+{
+    uint8_t p[1] = { mode };
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_BLE_SPAM_START, p, 1, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+bool m1_esp_client_ble_spam_stop(void)
+{
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_BLE_SPAM_STOP, NULL, 0, resp, sizeof(resp));
     return (n >= 1) && (resp[0] == M1ESP_OK);
 }
 

@@ -355,6 +355,114 @@ void setting_esp32_image_file(void)
 
 /******************************************************************************/
 /**
+  * @brief  Headless validate of an SD ESP image for the flash-from-SD RPC.
+  *         Mirrors setting_esp32_image_file()'s checks (sibling .md5 present +
+  *         image MD5 matches + battery), but takes a path + address instead of
+  *         the file browser. On success it points the flasher at the image
+  *         (pfullpath / start_address) and sets esp32_update_status = READY so
+  *         the caller can ACK and then call setting_esp32_firmware_update().
+  *         Returns M1_FW_UPDATE_READY on success, else an error code.
+  */
+/******************************************************************************/
+uint8_t esp32_prepare_from_path(const char *bin_path, uint32_t addr)
+{
+	uint8_t  payload[ESP32_IMAGE_CHUNK_SIZE];
+	uint8_t  raw_md5[16] = {0};
+	uint8_t  hex_md5[MAX(MD5_SIZE_ROM, MD5_SIZE_STUB) + 1] = {0};
+	uint8_t  hex_md5_infile[MAX(MD5_SIZE_ROM, MD5_SIZE_STUB) + 1] = {0};
+	char     md5path[ESP_FILE_PATH_LEN_MAX + ESP_FILE_NAME_LEN_MAX];
+	size_t   count, sum, plen;
+	uint32_t img_sz;
+
+	esp32_update_status = M1_FW_UPDATE_NOT_READY;
+
+	if ( !m1_check_battery_level(50) )
+		return M1_FW_UPDATE_LOW_BATTERY;
+
+	/* Lazily allocate the module's path globals if the ESP settings menu was
+	 * never opened this session (setting_esp32_init/exit still manage them). */
+	if ( !pfullpath )
+		pfullpath = malloc(ESP_FILE_PATH_LEN_MAX + ESP_FILE_NAME_LEN_MAX);
+	if ( !pfilename_md5 )
+		pfilename_md5 = malloc(ESP_FILE_NAME_LEN_MAX);
+	if ( !pfullpath || !pfilename_md5 )
+		return M1_FW_UPDATE_FAILED;
+
+	start_address = addr;
+
+	plen = strlen(bin_path);
+	if ( plen < 5 || plen >= sizeof(md5path) )
+		return M1_FW_IMAGE_FILE_TYPE_ERROR;
+	if ( strcmp(&bin_path[plen - 4], ".bin") != 0 )
+		return M1_FW_IMAGE_FILE_TYPE_ERROR;
+
+	/* Sibling .md5 path: same name, extension swapped ("...bin" -> "...md5"). */
+	strcpy(md5path, bin_path);
+	strcpy(&md5path[plen - 3], "md5");
+
+	/* Read the expected MD5 (32 hex chars) from the .md5 file. */
+	if ( m1_fb_open_file(&hfile_fw, md5path) != 0 )
+		return M1_FW_CRC_FILE_ACCESS_ERROR;
+	if ( f_size(&hfile_fw) != MD5_SIZE_ROM )
+	{
+		m1_fb_close_file(&hfile_fw);
+		return M1_FW_CRC_FILE_INVALID;
+	}
+	count = m1_fb_read_from_file(&hfile_fw, hex_md5_infile, MD5_SIZE_ROM);
+	m1_fb_close_file(&hfile_fw);
+	if ( count != MD5_SIZE_ROM )
+		return M1_FW_CRC_FILE_ACCESS_ERROR;
+
+	/* Compute the image MD5 and compare. */
+	if ( m1_fb_open_file(&hfile_fw, (char *)bin_path) != 0 )
+		return M1_FW_IMAGE_FILE_ACCESS_ERROR;
+	img_sz = f_size(&hfile_fw);
+	if ( (!img_sz) || (img_sz % 4 != 0) )
+	{
+		m1_fb_close_file(&hfile_fw);
+		return M1_FW_IMAGE_SIZE_INVALID;
+	}
+#ifdef MD5_ENABLED
+	mh_md5_init(start_address, img_sz);
+#endif
+	sum = img_sz;
+	while ( sum )
+	{
+		count = m1_fb_read_from_file(&hfile_fw, payload, ESP32_IMAGE_CHUNK_SIZE);
+		if ( !count )
+		{
+			m1_fb_close_file(&hfile_fw);
+			return M1_FW_IMAGE_FILE_ACCESS_ERROR;
+		}
+		sum -= count;
+#ifdef MD5_ENABLED
+		mh_md5_update(payload, (count + 3) & ~3);
+#endif
+	}
+	m1_fb_close_file(&hfile_fw);
+#ifdef MD5_ENABLED
+	mh_md5_final(raw_md5);
+	mh_hexify(raw_md5, hex_md5);
+	if ( memcmp(hex_md5_infile, hex_md5, MD5_SIZE_ROM) != 0 )
+		return M1_FW_CRC_CHECKSUM_UNMATCHED;
+#endif
+
+	/* Point the flasher at the image and mark it ready. setting_esp32_firmware_update()
+	 * / m1_fw_app() flash `image_size` bytes from an ALREADY-OPEN hfile_fw (they never
+	 * reopen it — the menu path leaves it open too), so set the size and leave the bin
+	 * open here. Without this the headless flash ran with a closed handle + stale size. */
+	strcpy(pfullpath, bin_path);
+	image_size = img_sz;
+	if ( m1_fb_open_file(&hfile_fw, (char *)bin_path) != 0 )
+		return M1_FW_IMAGE_FILE_ACCESS_ERROR;
+	esp32_update_status = M1_FW_UPDATE_READY;
+	return M1_FW_UPDATE_READY;
+} // uint8_t esp32_prepare_from_path(const char *bin_path, uint32_t addr)
+
+
+
+/******************************************************************************/
+/**
   * @brief
   * @param None
   * @retval None
@@ -415,6 +523,11 @@ void setting_esp32_firmware_update(void)
 		m1_fb_close_file(&hfile_fw);
 		m1_led_fw_update_off(); // Turn off
     } while (0);
+
+    /* Close the image on the not-ready/low-battery break too: esp32_prepare_from_path
+     * leaves hfile_fw open, and that path skips the close above — would leak otherwise. */
+    if ( hfile_fw.obj.fs != NULL )
+    	m1_fb_close_file(&hfile_fw);
 
     esp32_update_status = uret;
 

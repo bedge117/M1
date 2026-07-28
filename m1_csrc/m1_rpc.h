@@ -78,6 +78,7 @@
 #define RPC_CMD_FW_BANK_SWAP    0x45
 #define RPC_CMD_FW_DFU_ENTER    0x46
 #define RPC_CMD_FW_BANK_ERASE   0x47
+#define RPC_CMD_FW_FLASH_FROM_SD 0x48   /* headless on-device M1 flash from an SD file */
 
 /* ── ESP32 Commands (0x50–0x5F) ── */
 #define RPC_CMD_ESP_INFO        0x50
@@ -85,6 +86,7 @@
 #define RPC_CMD_ESP_UPDATE_START 0x52
 #define RPC_CMD_ESP_UPDATE_DATA 0x53
 #define RPC_CMD_ESP_UPDATE_FINISH 0x54
+#define RPC_CMD_ESP_FLASH_FROM_SD 0x55   /* headless ESP flash from an SD file (+addr) */
 
 /* ── Debug / CLI Commands (0x60–0x6F) ── */
 #define RPC_CMD_CLI_EXEC        0x60

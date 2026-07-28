@@ -338,7 +338,10 @@ bool bq27421_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
     // Send CFG_UPDATE
     bq27421_i2c_control_write( BQ27421_CONTROL_SET_CFGUPDATE );
 
-    // Poll flags
+    // Poll flags — BOUNDED so a cold boot at 100% SOC on external power (where the
+    // gauge may never assert CFGUPMODE) can't hang the boot forever. Fall through
+    // on timeout and continue init; a stale gauge config is far better than a brick.
+    uint16_t cfgup_enter_to = 2000;   /* ~2 s worst case @ ~1 ms/iter */
     do
     {
         bq27421_i2c_command_read( BQ27421_FLAGS_LOW, &flags );
@@ -347,7 +350,7 @@ bool bq27421_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
             HAL_Delay( 1 );
         }
     }
-    while( !(flags & BQ27421_FLAG_CFGUPMODE) );
+    while( !(flags & BQ27421_FLAG_CFGUPMODE) && --cfgup_enter_to );
 
     //
     // read 0x52
@@ -527,7 +530,9 @@ bool bq27421_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
     // Send Soft Reset
     bq27421_i2c_control_write( BQ27421_CONTROL_SOFT_RESET );
 
-    // Poll flags
+    // Poll flags — BOUNDED (see the CFGUPMODE-enter note above): never hang boot
+    // waiting for the gauge to leave config-update mode. Fall through on timeout.
+    uint16_t cfgup_exit_to = 2000;   /* ~2 s worst case */
     do
     {
         bq27421_i2c_command_read( BQ27421_FLAGS_LOW, &flags );
@@ -536,7 +541,7 @@ bool bq27421_init( uint16_t designCapacity_mAh, uint16_t terminateVoltage_mV, ui
             HAL_Delay( 1 );
         }
     }
-    while( (flags & BQ27421_FLAG_CFGUPMODE) );
+    while( (flags & BQ27421_FLAG_CFGUPMODE) && --cfgup_exit_to );
 
     // Seal gauge
     bq27421_i2c_control_write( BQ27421_CONTROL_SEALED );

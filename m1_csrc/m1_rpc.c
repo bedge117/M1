@@ -692,6 +692,10 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
     case RPC_CMD_ESP_UPDATE_START:
     case RPC_CMD_ESP_UPDATE_FINISH:
     case RPC_CMD_FW_UPDATE_START:
+    /* Flash-from-SD: the on-device flash reads the whole image + reboots/resets,
+     * so it must run on rpc_task, not inline on the USB CDC endpoint. */
+    case RPC_CMD_FW_FLASH_FROM_SD:
+    case RPC_CMD_ESP_FLASH_FROM_SD:
         if (s_deferred_pending)
         {
             m1_rpc_send_nack(frame->seq, RPC_ERR_BUSY);
@@ -1938,6 +1942,82 @@ static void rpc_handle_fw_info(const S_RPC_Frame *f)
  *
  * Erases the inactive flash bank, preparing for sequential writes.
  */
+/* ── Flash-from-SD (headless on-device flash for the WiFi mobile app) ─────────
+ * The mobile app can't stream firmware over WiFi (M1: relay suspends; ESP: the
+ * link it streams over is the chip being reset). So it uploads the image to SD
+ * and asks the M1 to run its own on-device updater. Fire-and-forget: validate
+ * fully first (so a bad file NACKs with the link still up), then ACK, then flash
+ * — the flash drops the link (M1 swaps+reboots; ESP resets), so there is no
+ * completion ACK; the app reconnects afterward. */
+extern uint8_t m1_fw_validate_from_path(const char *sd_path);   /* m1_fw_update.c */
+extern void    firmware_update_start(void);                     /* m1_fw_update.c */
+extern uint8_t esp32_prepare_from_path(const char *bin_path, uint32_t addr); /* m1_esp32_fw_update.c */
+extern void    setting_esp32_firmware_update(void);             /* m1_esp32_fw_update.c */
+extern void    setting_esp32_exit(void);                        /* m1_esp32_fw_update.c */
+
+/* Bounded copy of a NUL-terminated string out of an RPC payload. */
+static bool rpc_copy_cstr(char *dst, size_t dstsz, const uint8_t *src, uint16_t srclen)
+{
+    size_t n = 0;
+    while (n < srclen && src[n] != 0) n++;
+    if (n == 0 || n >= dstsz) return false;
+    memcpy(dst, src, n);
+    dst[n] = 0;
+    return true;
+}
+
+static void rpc_handle_fw_flash_from_sd(const S_RPC_Frame *f)
+{
+    char path[256];
+    uint8_t st;
+
+    if (!rpc_copy_cstr(path, sizeof path, f->payload, f->len)) {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    st = m1_fw_validate_from_path(path);            /* validate BEFORE we ACK/flash */
+    if (st != M1_FW_UPDATE_READY) {
+        m1_rpc_send_nack(f->seq,
+            (st == M1_FW_CRC_CHECKSUM_UNMATCHED) ? RPC_ERR_CRC_MISMATCH : RPC_ERR_FILE_NOT_FOUND);
+        return;
+    }
+    /* Receipt first — the bank swap at the end reboots and drops the link. */
+    m1_rpc_send_ack(f->seq);
+    osDelay(150);                                   /* let the ACK drain out */
+    firmware_update_start();                        /* flashes hfile_fw + swaps (reboots) */
+}
+
+static void rpc_handle_esp_flash_from_sd(const S_RPC_Frame *f)
+{
+    char path[256];
+    uint32_t addr;
+    uint8_t st;
+
+    if (f->len < 5) { m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD); return; }
+    addr =  (uint32_t)f->payload[0]        | ((uint32_t)f->payload[1] << 8) |
+           ((uint32_t)f->payload[2] << 16) | ((uint32_t)f->payload[3] << 24);
+    if (!rpc_copy_cstr(path, sizeof path, f->payload + 4, (uint16_t)(f->len - 4))) {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    st = esp32_prepare_from_path(path, addr);       /* validate .md5 BEFORE we ACK/flash */
+    if (st != M1_FW_UPDATE_READY) {
+        m1_rpc_send_nack(f->seq,
+            (st == M1_FW_CRC_CHECKSUM_UNMATCHED) ? RPC_ERR_CRC_MISMATCH : RPC_ERR_ESP_FLASH);
+        return;
+    }
+    m1_rpc_send_ack(f->seq);
+    osDelay(150);                                   /* let the ACK drain out */
+    /* Pause the qMonstatek-over-WiFi relay for the whole ESP flash: its 50ms SPI
+     * poll to the ESP must not contend with the ROM bootloader (the same guard
+     * every other ESP-flash entry uses — see rpc_handle_esp_update_start). Unlike
+     * the M1 self-flash, this path does NOT reboot the M1, so resume afterward. */
+    m1_qmon_relay_suspend(true);
+    setting_esp32_firmware_update();                /* flashes the ESP (resets it → WiFi drops) */
+    setting_esp32_exit();                           /* release the path globals */
+    m1_qmon_relay_suspend(false);                   /* ESP is back; let the relay poll again */
+}
+
 static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
 {
     M1_LOG_N(M1_LOGDB_TAG, "FW flash: START received\r\n");
@@ -2023,6 +2103,21 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
     erase_init.Banks      = inactive_bank;
     erase_init.NbSectors  = 1;
 
+#ifndef M1_RESTORE_HOST
+    /* Mask the ESP interrupt lines for the (blocking) bank erase. After WiFi/BLE/
+     * 802.15.4 use the ESP keeps asserting DataReady (EXTI1) / Handshake (EXTI7)
+     * and streaming over UART4; those high-priority ISRs preempt this task and
+     * steal CPU during every sector erase, stretching it until qMonstatek's
+     * START-ACK timeout fires ("Timeout during erase/start" — reproduces ONLY
+     * after ESP activity, and a reboot that idles the ESP "fixes" it). This is
+     * the same guard the Restore Host already applies (see the block above); here
+     * we only mask (never hold the ESP in reset), and we unmask on every exit so
+     * a failed flash leaves the ESP link fully live. */
+    HAL_NVIC_DisableIRQ(EXTI1_IRQn);   /* ESP DataReady */
+    HAL_NVIC_DisableIRQ(EXTI7_IRQn);   /* ESP Handshake */
+    HAL_NVIC_DisableIRQ(UART4_IRQn);   /* ESP UART RX   */
+#endif
+
     uint32_t erase_t0 = HAL_GetTick();
     for (uint16_t i = 0; i < n_sectors; i++)
     {
@@ -2031,12 +2126,23 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
         if (HAL_FLASHEx_Erase(&erase_init, &sector_error) != HAL_OK)
         {
             HAL_FLASH_Lock();
+#ifndef M1_RESTORE_HOST
+            HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+            HAL_NVIC_EnableIRQ(EXTI7_IRQn);
+            HAL_NVIC_EnableIRQ(UART4_IRQn);
+#endif
             m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
             m1_qmon_relay_suspend(false);
             m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
             return;
         }
     }
+
+#ifndef M1_RESTORE_HOST
+    HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+    HAL_NVIC_EnableIRQ(EXTI7_IRQn);
+    HAL_NVIC_EnableIRQ(UART4_IRQn);
+#endif
     M1_LOG_N(M1_LOGDB_TAG, "FW flash: erase done in %lu ms (%u sectors)\r\n",
              (unsigned long)(HAL_GetTick() - erase_t0), (unsigned)n_sectors);
 
@@ -2984,6 +3090,8 @@ void m1_rpc_task(void *param)
             case RPC_CMD_ESP_UPDATE_START:  rpc_handle_esp_update_start(&frame);  break;
             case RPC_CMD_ESP_UPDATE_FINISH: rpc_handle_esp_update_finish(&frame); break;
             case RPC_CMD_FW_UPDATE_START:   rpc_handle_fw_update_start(&frame);   break;
+            case RPC_CMD_FW_FLASH_FROM_SD:  rpc_handle_fw_flash_from_sd(&frame);  break;
+            case RPC_CMD_ESP_FLASH_FROM_SD: rpc_handle_esp_flash_from_sd(&frame); break;
             default: break;
             }
         }

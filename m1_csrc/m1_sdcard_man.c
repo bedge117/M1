@@ -522,7 +522,7 @@ uint32_t m1_sdm_getlastfilenumber(char *dirname, char *prefix)
 	char *filename;
 
 	filename = malloc(strlen(prefix) + 6);
-	assert(filename!=NULL);
+	if (filename == NULL) return 0;   /* OOM: treat as "no existing files" (start at 0) */
 	sprintf(filename, "%s*", prefix); // * = wildcard
 	file_n = 0;
 	fr = f_findfirst(&dir, &fno, dirname, filename);  /* Start to search for matching files */
@@ -537,6 +537,7 @@ uint32_t m1_sdm_getlastfilenumber(char *dirname, char *prefix)
 	} // while (fr==FR_OK && fno.fname[0])
 
 	f_closedir(&dir);
+	free(filename);   /* was leaked on every SD data-file create */
 
 	return file_n;
 } // uint32_t m1_sdm_getlastfilenumber(char *dirname, char *prefix)

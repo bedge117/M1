@@ -814,14 +814,17 @@ static void badbt_init_file_browser(void)
     /* Point directly at BadUSB folder instead of root */
     free(fb->info.dir_name);
     fb->info.dir_name = malloc(strlen(BADBT_DIR) + 1);
-    strcpy(fb->info.dir_name, BADBT_DIR);
+    if (fb->info.dir_name) strcpy(fb->info.dir_name, BADBT_DIR);
     fb->dir_level = 1;
-    fb->listing_index_buffer = realloc(fb->listing_index_buffer, 2 * sizeof(uint16_t));
-    fb->row_index_buffer = realloc(fb->row_index_buffer, 2 * sizeof(uint16_t));
-    fb->listing_index_buffer[0] = 0;
-    fb->row_index_buffer[0] = 0;
-    fb->listing_index_buffer[1] = 0;
-    fb->row_index_buffer[1] = 0;
+    /* Grow via temps and only write the new [1] slot when the grow actually
+     * succeeded — a self-assign realloc would leak the old block on failure and
+     * then write past a buffer that never grew. */
+    {
+        uint16_t *tli = realloc(fb->listing_index_buffer, 2 * sizeof(uint16_t));
+        uint16_t *tri = realloc(fb->row_index_buffer, 2 * sizeof(uint16_t));
+        if (tli) { fb->listing_index_buffer = tli; tli[0] = 0; tli[1] = 0; }
+        if (tri) { fb->row_index_buffer = tri; tri[0] = 0; tri[1] = 0; }
+    }
 
     m1_u8g2_firstpage();
     u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);

@@ -28,6 +28,8 @@
 #include "battery.h"
 #include "m1_gpio.h"
 #include "m1_log_debug.h"
+#include "m1_display.h"   /* battery-indicator cache (m1_batt_*) */
+#include "battery.h"      /* battery_status_update / battery_power_status_get */
 /*************************** D E F I N E S ************************************/
 
 #define M1_LOGDB_TAG	"Sys_Init"
@@ -204,6 +206,21 @@ void m1_system_init_task(void *param)
 			m1_spi_hal_init(&hspi2);
 
 			battery_service_init();
+
+			/* Seed the battery-indicator cache with one real reading so the boot
+			 * splash shows it immediately instead of appearing only once the
+			 * periodic task first runs. This is a bounded I2C read (the gauge
+			 * config waits in bq27421_init are now timeout-bounded), so it cannot
+			 * hang boot even on a cold start at 100% SOC while charging. */
+			{
+				S_M1_Power_Status_t pwr;
+				battery_status_update();
+				battery_power_status_get(&pwr);
+				m1_batt_level = pwr.battery_level;
+				m1_batt_stat  = (pwr.fault == 0) ? pwr.stat : 0;
+				m1_batt_valid = 1;
+			}
+
 			lp5814_init();
 			m1_lcd_init(&hspi1);
 			m1_sdcard_init(&hsd1);

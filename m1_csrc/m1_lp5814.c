@@ -597,4 +597,9 @@ static void lp5814_stop_blink_timer(TimerHandle_t xTimer)
 		blink_timer_cb_func();
 		blink_timer_cb_func = NULL; // reset
 	} // if ( blink_timer_cb_func )
+	/* One-shot timer: free its control block here (its own expiry callback), or the
+	 * heap_4 block leaks on EVERY blink. A bouncing SD-detect line drives this task
+	 * steadily while idle, draining heap_4 until USB/stream-buffer allocs fail and
+	 * the CDC link wedges after a consistent uptime (the M1 keeps running). */
+	xTimerDelete(xTimer, 0);
 } // static void lp5814_stop_blink_timer(TimerHandle_t xTimer)

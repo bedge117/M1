@@ -362,6 +362,11 @@ S_M1_Menu_t menu_802154_Scan =
     "802.15.4 Scan", ieee802154_scan_all, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
+S_M1_Menu_t menu_802154_Flood =
+{
+    "802.15.4 Flood", zigbee_beacon_flood, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 /*--------------------------------- > Wifi -----------------------------------*/
 
 S_M1_Menu_t menu_Wifi_Scan_AP =
@@ -394,6 +399,16 @@ S_M1_Menu_t menu_Wifi_Captive =
     "Captive Portal", wifi_captive_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
+S_M1_Menu_t menu_Wifi_ProbeFlood =
+{
+    "Probe Flood", wifi_probe_flood_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Wifi_Karma =
+{
+    "Karma", wifi_karma_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 S_M1_Menu_t menu_Wifi_Config =
 {
     "Saved Networks", wifi_config, NULL, NULL, 0, 0, NULL, NULL, NULL
@@ -412,14 +427,14 @@ S_M1_Menu_t menu_Wifi_Disconnect =
 
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 10, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
+    "Wifi", menu_wifi_init, NULL, NULL, 13, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_ProbeFlood, &menu_Wifi_Karma, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_802154_Flood, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
 };
 #else
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 8, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_Wifi_Config}
+    "Wifi", menu_wifi_init, NULL, NULL, 11, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_ProbeFlood, &menu_Wifi_Karma, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_802154_Flood, &menu_Wifi_Config}
 };
 #endif
 
@@ -427,6 +442,11 @@ S_M1_Menu_t menu_Wifi =
 S_M1_Menu_t menu_Bluetooth_Scan =
 {
     "Scan", bluetooth_scan, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
+S_M1_Menu_t menu_Bluetooth_Spam =
+{
+    "BLE Spam", ble_spam_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
 #ifdef M1_APP_BT_MANAGE_ENABLE
@@ -460,14 +480,14 @@ S_M1_Menu_t menu_Bluetooth_BTName =
 
 S_M1_Menu_t menu_Bluetooth =
 {
-    "Bluetooth", menu_bluetooth_init, NULL, NULL, 6, 0, menu_m1_icon_bluetooth, NULL,
-    {&menu_Bluetooth_Scan, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_BadBT, &menu_Bluetooth_BTName, &menu_Bluetooth_Info}
+    "Bluetooth", menu_bluetooth_init, NULL, NULL, 7, 0, menu_m1_icon_bluetooth, NULL,
+    {&menu_Bluetooth_Scan, &menu_Bluetooth_Spam, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_BadBT, &menu_Bluetooth_BTName, &menu_Bluetooth_Info}
 };
 #else
 S_M1_Menu_t menu_Bluetooth =
 {
-    "Bluetooth", menu_bluetooth_init, NULL, NULL, 4, 0, menu_m1_icon_bluetooth, NULL,
-    {&menu_Bluetooth_Scan, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_Info}
+    "Bluetooth", menu_bluetooth_init, NULL, NULL, 5, 0, menu_m1_icon_bluetooth, NULL,
+    {&menu_Bluetooth_Scan, &menu_Bluetooth_Spam, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_Info}
 };
 #endif /* M1_APP_BADBT_ENABLE */
 
@@ -484,8 +504,8 @@ S_M1_Menu_t menu_Bluetooth_Advertise =
 
 S_M1_Menu_t menu_Bluetooth =
 {
-    "Bluetooth", menu_bluetooth_init, NULL, NULL, 3, 0, menu_m1_icon_bluetooth, NULL,
-    {&menu_Bluetooth_Config, &menu_Bluetooth_Scan, &menu_Bluetooth_Advertise}
+    "Bluetooth", menu_bluetooth_init, NULL, NULL, 4, 0, menu_m1_icon_bluetooth, NULL,
+    {&menu_Bluetooth_Config, &menu_Bluetooth_Scan, &menu_Bluetooth_Spam, &menu_Bluetooth_Advertise}
 };
 #endif /* M1_APP_BT_MANAGE_ENABLE */
 
@@ -607,6 +627,9 @@ void menu_main_handler_task(void *param)
 	S_M1_Buttons_Status this_button_status;
 	S_M1_Main_Q_t q_item;
 	BaseType_t ret;
+	/* Last battery state drawn on the main menu, so the periodic refresh only
+	 * redraws when the % or plugged state actually changes. */
+	uint8_t batt_lvl_shown = 0xFF, batt_plugged_shown = 0xFF;
 
 	settings_load_from_sd();  /* Load southpaw and other user settings (needs stack > sys_init) */
 
@@ -620,9 +643,38 @@ void menu_main_handler_task(void *param)
 	while(1)
 	{
 		menu_update_stat = MENU_UPDATE_NONE;
-		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		ret = xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(1000));
 		if ( ret!=pdTRUE )
+		{
+			/* Queue-wait timeout (no button). Live-refresh the battery indicator
+			 * on the main menu so charge % / plugged state track without a keypress.
+			 * Redraw only when it changed, and only on the top-level menu (the only
+			 * screen drawn here that shows the icon). All drawing stays in this task,
+			 * so there's no race with the periodic battery task (which only updates
+			 * the cached value, never the display). */
+			uint8_t plugged = (m1_batt_stat != 0) ? 1 : 0;
+			if ( m1_batt_level != batt_lvl_shown || plugged != batt_plugged_shown )
+			{
+				if ( m1_device_stat.op_mode == M1_OPERATION_MODE_MENU_ON
+				     && menu_ctl.menu_level == 0 )
+				{
+					batt_lvl_shown = m1_batt_level;
+					batt_plugged_shown = plugged;
+					m1_gui_menu_update(pthis_submenu, menu_ctl.menu_item_active, MENU_UPDATE_REFRESH);
+				}
+				else if ( m1_device_stat.op_mode == M1_OPERATION_MODE_DISPLAY_ON )
+				{
+					/* Home/version screen: side-effect-free redraw so the battery
+					 * stays current without touching the backlight or sleep timer.
+					 * While the screen saver has the backlight off this is an
+					 * invisible buffer update; on wake the value is already fresh. */
+					batt_lvl_shown = m1_batt_level;
+					batt_plugged_shown = plugged;
+					startup_info_screen_draw("");
+				}
+			}
 			continue;
+		}
 		if ( q_item.q_evt_type!=Q_EVENT_KEYPAD )
 			continue;
 		// Notification is only sent to this task when there's any button activity,

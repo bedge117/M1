@@ -24,6 +24,7 @@ typedef struct
 {
 	S_M1_WDT_Report_ID report_id;
 	bool inactive;
+	bool resume_grace;   /* one free system-check pass right after resume (see m1_wdt_system_check) */
 	uint32_t report_period;
 	uint32_t min_rpt_percent, max_rpt_percent;
 	uint32_t run_time;

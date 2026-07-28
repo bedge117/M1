@@ -167,6 +167,10 @@ void buzzer_sys_deinit(TimerHandle_t xTimer)
 	buzzer_busy = false; // unlock
 
 	//HAL_GPIO_DeInit(SPK_CTRL_GPIO_Port, SPK_CTRL_Pin);
+
+	/* One-shot timer: free its control block (its own expiry callback) — otherwise
+	 * a heap_4 timer block leaks on every beep. */
+	xTimerDelete(xTimer, 0);
 } // static void buzzer_sys_deinit(TimerHandle_t xTimer)
 
 

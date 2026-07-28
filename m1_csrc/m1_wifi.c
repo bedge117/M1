@@ -778,6 +778,158 @@ void wifi_beacon_menu(void)
 
 
 /*============================================================================*/
+/* BLE Spam — proximity-pair popup flooder (runs autonomously on the ESP).
+ * Lives here (not m1_bt.c) because it uses the same m1_link RPC + ESP-ready
+ * plumbing as the other offensive ESP features. Exposed in the Bluetooth menu. */
+/*============================================================================*/
+void ble_spam_menu(void)
+{
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	static const char *modes[5] = { "Apple", "Google", "Samsung", "Windows", "All / Random" };
+	int sel = 0;
+	bool running = false;
+
+	if ( !wifi_ensure_esp32_ready() )
+		wifi_display_msg("ESP32", "not ready!");
+
+	for (;;)
+	{
+		if ( !running )
+		{
+			m1_u8g2_firstpage();
+			u8g2_DrawStr(&m1_u8g2, 2, 12, "BLE Spam:");
+			for ( int i = 0; i < 5; i++ )
+				u8g2_DrawStr(&m1_u8g2, 12, 24 + i * 9, modes[i]);
+			u8g2_DrawStr(&m1_u8g2, 3, 24 + sel * 9, ">");
+			m1_u8g2_nextpage();
+		}
+
+		if ( xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY) != pdTRUE
+		     || q_item.q_evt_type != Q_EVENT_KEYPAD )
+			continue;
+		xQueueReceive(button_events_q_hdl, &btn, 0);
+
+		if ( btn.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			if ( running ) { m1_esp_client_ble_spam_stop(); running = false; continue; }
+			xQueueReset(main_q_hdl);
+			m1_esp32_deinit();
+			return;
+		}
+		if ( running ) continue;
+
+		if ( btn.event[BUTTON_UP_KP_ID]==BUTTON_EVENT_CLICK )        { if ( sel > 0 ) sel--; }
+		else if ( btn.event[BUTTON_DOWN_KP_ID]==BUTTON_EVENT_CLICK ) { if ( sel < 4 ) sel++; }
+		else if ( btn.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			if ( m1_esp_client_ble_spam_start((uint8_t)sel) )
+			{
+				running = true;
+				m1_u8g2_firstpage();
+				u8g2_DrawStr(&m1_u8g2, 4, 20, "BLE Spam running");
+				u8g2_DrawStr(&m1_u8g2, 4, 38, modes[sel]);
+				u8g2_DrawStr(&m1_u8g2, 4, 58, "BACK to stop");
+				m1_u8g2_nextpage();
+			}
+			else
+			{
+				wifi_display_msg("BLE Spam", "failed");
+			}
+		}
+	}
+} // void ble_spam_menu(void)
+
+
+/*============================================================================*/
+/* Probe Flood + Karma — channel-picker driven ESP offensive features.
+ * Shared helper: pick a channel, OK starts (via start_fn), BACK stops/exits. */
+/*============================================================================*/
+static bool probe_start_bcast(uint8_t ch)   /* wildcard broadcast probe flood */
+{
+	return m1_esp_client_probe_start(ch, NULL, 0);
+}
+
+static void wifi_channel_attack_menu(const char *title,
+                                     bool (*start_fn)(uint8_t),
+                                     bool (*stop_fn)(void))
+{
+	S_M1_Buttons_Status btn;
+	S_M1_Main_Q_t q_item;
+	static const struct { const char *label; uint8_t ch; } chans[] = {
+		{ "Channel 1", 1 }, { "Channel 6", 6 }, { "Channel 11", 11 },
+	};
+	const int nchan = 3;
+	int sel = 0;
+	bool running = false, redraw = true;
+
+	if ( !wifi_ensure_esp32_ready() )
+		wifi_display_msg("ESP32", "not ready!");
+
+	for (;;)
+	{
+		if ( redraw && !running )
+		{
+			redraw = false;
+			m1_u8g2_firstpage();
+			u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+			u8g2_DrawStr(&m1_u8g2, 2, 12, title);
+			for ( int i = 0; i < nchan; i++ )
+				u8g2_DrawStr(&m1_u8g2, 12, 26 + i * 12, chans[i].label);
+			u8g2_DrawStr(&m1_u8g2, 3, 26 + sel * 12, ">");
+			m1_u8g2_nextpage();
+		}
+
+		if ( xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY) != pdTRUE
+		     || q_item.q_evt_type != Q_EVENT_KEYPAD )
+			continue;
+		xQueueReceive(button_events_q_hdl, &btn, 0);
+
+		if ( btn.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			if ( running ) { stop_fn(); running = false; redraw = true; continue; }
+			stop_fn();                       /* belt-and-braces */
+			xQueueReset(main_q_hdl);
+			m1_esp32_deinit();
+			return;
+		}
+		if ( running )
+			continue;
+
+		if ( btn.event[BUTTON_UP_KP_ID]==BUTTON_EVENT_CLICK )        { sel = (sel > 0) ? sel - 1 : nchan - 1; redraw = true; }
+		else if ( btn.event[BUTTON_DOWN_KP_ID]==BUTTON_EVENT_CLICK ) { sel = (sel < nchan - 1) ? sel + 1 : 0; redraw = true; }
+		else if ( btn.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			if ( start_fn(chans[sel].ch) )
+			{
+				running = true;
+				m1_u8g2_firstpage();
+				u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+				u8g2_DrawStr(&m1_u8g2, 4, 20, title);
+				u8g2_DrawStr(&m1_u8g2, 4, 38, chans[sel].label);
+				u8g2_DrawStr(&m1_u8g2, 4, 58, "BACK to stop");
+				m1_u8g2_nextpage();
+			}
+			else
+			{
+				wifi_display_msg(title, "failed");
+			}
+		}
+	}
+}
+
+void wifi_probe_flood_menu(void)
+{
+	wifi_channel_attack_menu("Probe Flood", probe_start_bcast, m1_esp_client_probe_stop);
+}
+
+void wifi_karma_menu(void)
+{
+	wifi_channel_attack_menu("Karma", m1_esp_client_karma_start, m1_esp_client_karma_stop);
+}
+
+
+/*============================================================================*/
 /* Packet Monitor — promiscuous 802.11 sniffer (runs on the ESP; the M1 polls
  * live capture stats). UP/DOWN pick the channel (0 = hop 1-13), OK starts, BACK
  * stops then exits.                                                            */

@@ -821,14 +821,42 @@ static uint8_t bl_flash_binary(uint8_t *payload, size_t size)
     M1_LOG_I(M1_LOGDB_TAG, "\r\nFlashing completed!\r\n");
     init_done = false; // reset
 
-    write_acc -= FW_IMAGE_CRC_SIZE; // exclude the CRC at the end of the image file
-    write_acc /= 4; // convert image size from byte to word (32-bit)
-    err = bl_crc_check(write_acc);
-
-	if (err != BL_CODE_OK)
+    /* Verify the freshly-written inactive bank.
+     *
+     * Images built with the C3 tooling carry an extended CRC block (magic/size/crc
+     * at fixed offsets 0xFFC14/18/1C) — verify it exactly, the SAME check qM's USB
+     * update and the boot path use. Images WITHOUT the magic (genuine stock, or a
+     * fork that doesn't append the block) can't be CRC-verified, so fall back to a
+     * structural sanity check (valid stack pointer + reset vector) and accept.
+     *
+     * The old bl_crc_check() read the expected CRC from the pre-extended offset
+     * (0xFFC14, which now holds the "CRC2" magic, not the CRC at 0xFFC1C), so it
+     * never matched and every on-device SD-card update failed at 100%. */
+    (void)write_acc;
     {
-        M1_LOG_I(M1_LOGDB_TAG, "CRC not matched.\r\n");
-        return err;
+        uint32_t inactive_base = FW_START_ADDRESS + M1_FLASH_BANK_SIZE;
+        uint32_t crc_ext_addr  = inactive_base + (FW_CRC_EXT_BASE - FW_START_ADDRESS);
+        uint32_t magic = 0;
+        bool has_ext_crc = bl_safe_flash_read_u32(crc_ext_addr, &magic)
+                           && (magic == FW_CRC_EXT_MAGIC_VALUE);
+
+        if ( has_ext_crc )
+        {
+            /* C3-style image → strong CRC verify. */
+            if ( !bl_verify_bank_crc(inactive_base) )
+            {
+                M1_LOG_I(M1_LOGDB_TAG, "CRC not matched.\r\n");
+                return BL_CODE_CHK_ERROR;
+            }
+        }
+        else if ( !bl_is_inactive_bank_valid() )
+        {
+            /* No CRC block (stock / other FW) AND the image isn't even a valid
+             * vector table — reject rather than boot into garbage. */
+            M1_LOG_I(M1_LOGDB_TAG, "Image invalid (no CRC block, bad vector table).\r\n");
+            return BL_CODE_CHK_ERROR;
+        }
+        /* else: no CRC block but structurally valid → accept (can't do better). */
     }
     M1_LOG_I(M1_LOGDB_TAG, "Flash verified.\r\n");
 

@@ -7,6 +7,7 @@
 #include "stm32h5xx_hal.h"
 #include "main.h"
 #include "m1_nfc.h"
+#include "m1_rng.h"
 #include "m1_storage.h"
 #include "m1_sdcard.h"
 #include "m1_virtual_kb.h"
@@ -3541,8 +3542,7 @@ static void nfc_rename_gui_update(uint8_t param)
 	if (c->file.path[0] != '\0') {
 		fu_get_filename_without_ext(c->file.path, dname, sizeof(dname));
 	} else {
-	    srand(HAL_GetTick());
-	    	sprintf((char*)dname, "nfc_%05u", rand() % 0xFFFFF);
+	    	sprintf((char*)dname, "nfc_%05u", (unsigned)(m1_rng_get() % 0xFFFFF));
 	}
 
 	// Get new filename from user

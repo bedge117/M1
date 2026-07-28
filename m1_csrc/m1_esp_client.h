@@ -35,6 +35,10 @@ bool m1_esp_client_zb_sniff_start(uint8_t channel);
 bool m1_esp_client_zb_sniff_stop(void);
 int  m1_esp_client_zb_sniff_get(uint8_t *buf, uint16_t cap);
 
+/* 802.15.4 beacon-request flood (offensive). channel 0 = sweep 11-26. */
+bool m1_esp_client_zb_flood_start(uint8_t channel);
+bool m1_esp_client_zb_flood_stop(void);
+
 /* WiFi scan. Copies the raw response payload ([count:2][entries...]) into buf.
  * Returns payload length (>0), 0 on timeout, <0 on error. */
 int  m1_esp_client_wifi_scan(uint8_t *buf, uint16_t buf_size);
@@ -74,6 +78,12 @@ bool m1_esp_client_hs_stop(void);
 bool m1_esp_client_beacon_start(const char ssids[][33], uint8_t count);
 bool m1_esp_client_beacon_stop(void);
 
+/* Probe-request flood (count 0 = wildcard) and Karma probe-response responder. */
+bool m1_esp_client_probe_start(uint8_t channel, const char ssids[][33], uint8_t count);
+bool m1_esp_client_probe_stop(void);
+bool m1_esp_client_karma_start(uint8_t channel);
+bool m1_esp_client_karma_stop(void);
+
 /* Packet monitor: promiscuous 802.11 sniffer on the ESP. channel 0 = hop 1-13.
  * start returns the ESP esp_err (0 = OK); negative = SPI/link failure.
  * The ESP buffers captured frames; the M1 pulls stats and frames on demand. */
@@ -108,6 +118,11 @@ bool m1_esp_client_ble_hid_key(uint8_t modifier, uint8_t keycode);
  * and generic (non-HID) advertising as `name`. */
 bool m1_esp_client_ble_connect(const char *addr_str, uint8_t addr_type);
 bool m1_esp_client_ble_advertise(const char *name);
+
+/* BLE spam: proximity-pair popup flooder. mode 0=Apple 1=FastPair 2=Samsung
+ * 3=SwiftPair 4=All. start returns true on ACK; stop halts it. */
+bool m1_esp_client_ble_spam_start(uint8_t mode);
+bool m1_esp_client_ble_spam_stop(void);
 
 /* Push a framebuffer to the ESP (for qMonstatek forwarding). */
 bool m1_esp_client_screen_push(const uint8_t *fb, uint16_t len);

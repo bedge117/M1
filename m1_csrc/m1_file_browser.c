@@ -621,9 +621,16 @@ S_M1_file_info *m1_fb_display(S_M1_Buttons_Status *button_status)
 	       					pfb_hdl->info.dir_name[l] = 0;
 	       					l--;
 	       				} // while (l >= 0 && !k)
-	       				pfb_hdl->info.dir_name = (char *)realloc(pfb_hdl->info.dir_name, l + 2);
-	       				pfb_hdl->listing_index_buffer = (uint16_t *)realloc(pfb_hdl->listing_index_buffer, pfb_hdl->dir_level * sizeof(uint16_t));
-	       				pfb_hdl->row_index_buffer = (uint16_t *)realloc(pfb_hdl->row_index_buffer, pfb_hdl->dir_level * sizeof(uint16_t));
+	       				/* Shrink via temps: keep the old (larger) block if realloc
+	       				 * returns NULL instead of leaking it + NULL-derefing. */
+	       				{
+	       					char *tdir = (char *)realloc(pfb_hdl->info.dir_name, l + 2);
+	       					if (tdir) pfb_hdl->info.dir_name = tdir;
+	       					uint16_t *tli = (uint16_t *)realloc(pfb_hdl->listing_index_buffer, pfb_hdl->dir_level * sizeof(uint16_t));
+	       					if (tli) pfb_hdl->listing_index_buffer = tli;
+	       					uint16_t *tri = (uint16_t *)realloc(pfb_hdl->row_index_buffer, pfb_hdl->dir_level * sizeof(uint16_t));
+	       					if (tri) pfb_hdl->row_index_buffer = tri;
+	       				}
 	       				pfb_hdl->dir_level--;
 	       			}
 	       			else // Being at root directory
@@ -643,14 +650,29 @@ S_M1_file_info *m1_fb_display(S_M1_Buttons_Status *button_status)
 	       		{
 	       			if ( pfb_hdl->dir_level >= DIRECTORY_MAX_DEPTH_LEVEL )
 	       				break; // Do nothing if it goes too deep
-	       			pfb_hdl->info.dir_name = (TCHAR *)realloc(pfb_hdl->info.dir_name, strlen(pfb_hdl->info.dir_name) + 1 + 1 + strlen(this_file.fname));
+	       			/* Grow all three buffers via temps up front; commit only if
+	       			 * every realloc succeeds, so an OOM aborts the descend cleanly
+	       			 * instead of leaking the old block or writing past a buffer
+	       			 * that failed to grow (self-assign realloc did both). */
+	       			{
+	       				size_t   newlvl = (size_t)pfb_hdl->dir_level + 1;
+	       				char     *ndir = (TCHAR *)realloc(pfb_hdl->info.dir_name, strlen(pfb_hdl->info.dir_name) + 1 + 1 + strlen(this_file.fname));
+	       				if (ndir) pfb_hdl->info.dir_name = ndir;
+	       				uint16_t *nli = ndir ? (uint16_t *)realloc(pfb_hdl->listing_index_buffer, (newlvl + 1) * sizeof(uint16_t)) : NULL;
+	       				if (nli) pfb_hdl->listing_index_buffer = nli;
+	       				uint16_t *nri = nli ? (uint16_t *)realloc(pfb_hdl->row_index_buffer, (newlvl + 1) * sizeof(uint16_t)) : NULL;
+	       				if (nri) pfb_hdl->row_index_buffer = nri;
+	       				if (!ndir || !nli || !nri)
+	       				{
+	       					f_closedir(&directory);
+	       					break;   /* OOM: abort the descend, leave state unchanged */
+	       				}
+	       			}
 	       			strcat(pfb_hdl->info.dir_name, "/");
 	       			strcat(pfb_hdl->info.dir_name, this_file.fname);
 	       			pfb_hdl->listing_index_buffer[pfb_hdl->dir_level] = pfb_hdl->listing_index;
 	       			pfb_hdl->row_index_buffer[pfb_hdl->dir_level] = pfb_hdl->row_index;
 	       			pfb_hdl->dir_level++;
-	       			pfb_hdl->listing_index_buffer = (uint16_t *)realloc(pfb_hdl->listing_index_buffer, (pfb_hdl->dir_level + 1) * sizeof(uint16_t));
-	       			pfb_hdl->row_index_buffer = (uint16_t *)realloc(pfb_hdl->row_index_buffer, (pfb_hdl->dir_level + 1) * sizeof(uint16_t));
 	       			pfb_hdl->listing_index_buffer[pfb_hdl->dir_level] = 0;
 	       			pfb_hdl->row_index_buffer[pfb_hdl->dir_level] = 0;
 	       			pfb_hdl->info.file_is_selected = FALSE;

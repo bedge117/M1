@@ -13,6 +13,7 @@
 #include "m1_file_util.h"
 #include "m1_virtual_kb.h"
 #include "m1_storage.h"
+#include "m1_rng.h"
 #include "nfc_file.h"
 #include "nfc_storage.h"
 #include "nfc_ctx.h"
@@ -304,10 +305,9 @@ uint8_t nfc_save_file_keyboard(char *filepath)
 			break;
 		}
 
-		srand(HAL_GetTick());
 		while(1)
 		{
-			sprintf((char*)dname, NFC_FILE_PREFIX"%05u", rand() % 0xFFFFF);
+			sprintf((char*)dname, NFC_FILE_PREFIX"%05u", (unsigned)(m1_rng_get() % 0xFFFFF));
 			ret = m1_vkb_get_filename((char*)res_string(IDS_ENTER_FILENAME), (char*)dname, (char*)fname);
 			if (!ret )
 			{
