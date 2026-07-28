@@ -21,6 +21,7 @@
 #include "m1_esp32_hal.h"
 #include "m1_esp_client.h"
 #include "m1_qmon_relay.h"
+#include "m1_wifi.h"          /* m1_ble_direct — keep the ESP link up for Bluetooth Direct */
 //#include "spi_drv.h"
 #include "m1_ring_buffer.h"
 
@@ -477,6 +478,15 @@ void m1_esp32_deinit(void)
 {
 	GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+	/* NEVER tear down the shared ESP link while a remote session is using it.
+	 * Legacy radio-menu exits (WiFi/BLE/Sub-GHz) call this to save power, but the
+	 * ESP is now the brain for the qMonstatek relay + Bluetooth Direct — killing
+	 * the SPI link here drops an active phone/desktop session and its screen
+	 * mirror ("ESP not available" until re-Initialize). Skip when a client is
+	 * connected, or Bluetooth Direct is enabled (a phone can connect any time). */
+	if ( m1_qmon_relay_session_active() || m1_ble_direct )
+		return;
+
 	if ( esp32_init_done )
 	{
 		HAL_SPI_DeInit(&hspi_esp);
@@ -640,11 +650,12 @@ void esp32_UART_deinit(void)
 		HAL_UART_DeInit(&huart_esp);
 	HAL_NVIC_DisableIRQ(ESP32_UART_IRQn);
 
-	if ( pesp32_rx )
-	{
-		free(pesp32_rx);
-		pesp32_rx = NULL;
-	} // if ( pesp32_rx )
+	/* Do NOT free pesp32_rx here. It's a fixed-size buffer created once (guarded
+	 * by `if (!pesp32_rx)` in init) and re-wrapped by m1_ringbuffer_init on each
+	 * re-init. Freeing + re-malloc'ing it on every radio-menu deinit/init cycle
+	 * churned the heap and fragmented it (malloc failures after heavy use). Keep
+	 * it allocated for the life of the program; the ring buffer state is reset on
+	 * the next init regardless. */
 
 	esp32_uart_init_done = FALSE;
 

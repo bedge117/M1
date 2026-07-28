@@ -15,6 +15,24 @@
 #define M1_WIFI_H_
 
 #include "m1_compile_cfg.h"
+#include <stdint.h>
+
+/* WiFi auto-connect on boot + the chosen "primary" network SSID. Persisted in
+ * settings.cfg. Declared unconditionally so the settings save/load and the
+ * System Settings menu always link regardless of the WiFi-connect feature gate. */
+extern uint8_t m1_wifi_boot_connect;        /* 0 = off, 1 = connect at boot */
+extern char    m1_wifi_primary_ssid[];      /* empty = no primary set */
+extern uint8_t m1_ble_direct;               /* 0 = off, 1 = ESP advertises NUS RPC over BLE */
+extern uint8_t m1_hotspot_on;               /* 0 = off, 1 = SoftAP hotspot running */
+extern char    m1_hotspot_ssid[];           /* hotspot SSID (editable) */
+extern char    m1_hotspot_pass[];           /* hotspot WPA2 password (>=8 chars, else open) */
+
+/* WiFi Hotspot (SoftAP) menu — enable/disable, edit SSID/password, show status. */
+void wifi_hotspot_menu(void);
+
+/* Connect to the primary network at boot when m1_wifi_boot_connect is set.
+ * No-op if the toggle is off, no primary is set, or its credential is missing. */
+void wifi_boot_autoconnect(void);
 
 void menu_wifi_init(void);
 void menu_wifi_exit(void);

@@ -30,6 +30,7 @@
 #include "m1_usb_cdc_msc.h"
 #include "m1_log_debug.h"
 #include "m1_system.h"
+#include "m1_gpio.h"
 #include "m1_tasks.h"
 #include "m1_sdcard.h"
 #include "m1_file_browser.h"
@@ -67,6 +68,7 @@
 /* USB CDC TX retry */
 #define RPC_USB_TX_RETRIES      10
 #define RPC_USB_TX_RETRY_MS     2
+#define RPC_USB_TX_DONE_TIMEOUT 20   /* ms to wait for a CDC transfer to complete */
 
 /* File operation buffer size */
 #define RPC_FILE_CHUNK_SIZE     1024
@@ -92,7 +94,7 @@ typedef struct {
     uint32_t total_size;
     uint32_t start_addr;
     uint32_t bytes_written;
-    bool     screen_was_streaming;  /* restore screen stream after flash */
+    uint8_t  screen_was_streaming;  /* bitmask of streams to restore after flash */
     uint32_t last_activity_tick;    /* stall-timeout watchdog (see m1_rpc_task) */
 } S_RPC_EspUpdateState;
 
@@ -112,14 +114,22 @@ typedef struct {
 
 /***************************** V A R I A B L E S ******************************/
 
-/* Parser state */
-static E_RPC_ParseState s_parse_state = RPC_STATE_IDLE;
-static S_RPC_Frame      s_rx_frame;
-static uint8_t           s_header_buf[4];    /* CMD + SEQ + LEN(2) */
-static uint16_t          s_header_idx;
-static uint16_t          s_payload_idx;
-static uint8_t           s_crc_buf[2];
-static uint8_t           s_crc_idx;
+/* Parser state — one context PER TRANSPORT so a USB frame and a WiFi/TCP frame
+ * that arrive interleaved (mobile app polling while a desktop is plugged in)
+ * never share parse state and corrupt each other. */
+typedef struct {
+    E_RPC_ParseState state;
+    S_RPC_Frame      frame;
+    uint8_t          header_buf[4];   /* CMD + SEQ + LEN(2) */
+    uint16_t         header_idx;
+    uint16_t         payload_idx;
+    uint8_t          crc_buf[2];
+    uint8_t          crc_idx;
+    uint8_t          src;             /* E_RPC_Src for frames from this context */
+} S_RPC_Parser;
+
+static S_RPC_Parser s_parser_usb;
+static S_RPC_Parser s_parser_tcp;
 
 /* TX frame buffer */
 static uint8_t           s_tx_buf[RPC_MAX_FRAME_SIZE];
@@ -127,13 +137,48 @@ static SemaphoreHandle_t s_tx_mutex;
 
 /* WiFi TCP routing */
 static rpc_tcp_tx_fn_t  s_tcp_tx_fn = NULL;
-static volatile bool     s_route_tcp = false;
+static volatile bool     s_route_tcp = false;   /* async/streaming default route */
 
 bool m1_rpc_route_is_tcp(void) { return s_route_tcp; }
 
-/* Screen streaming */
-S_RPC_ScreenStream rpc_screen_stream;
+/* Per-request response routing. A response must go back on the SAME transport
+ * the request arrived on, regardless of the async streaming route above. We map
+ * the sending task to a transport: the TCP relay task feeds TCP frames, so it
+ * records its own handle here; deferred commands run on rpc_task and carry their
+ * origin in s_deferred_to_tcp; everything else (the USB CDC task) is USB. */
+static TaskHandle_t      s_tcp_feed_task   = NULL;
+static volatile bool     s_deferred_to_tcp = false;
+
+static bool rpc_resp_to_tcp(void);   /* defined after s_rpc_task_hdl below */
+
+/* Screen streaming — one independent stream PER TRANSPORT so USB (desktop) and
+ * WiFi/TCP (mobile) can mirror the screen at the same time. Indexed RPC_SCR_*. */
+#define RPC_SCR_USB   0
+#define RPC_SCR_TCP   1
+#define RPC_SCR_N     2
+#define RPC_SCR_IDX(src)  ((src) == RPC_SRC_TCP ? RPC_SCR_TCP : RPC_SCR_USB)
+static S_RPC_ScreenStream s_screen[RPC_SCR_N];
 static uint8_t     s_screen_fb_copy[RPC_SCREEN_FB_SIZE];
+
+/* Suspend all active screen streams (returns a bitmask to restore later) and
+ * restore them — used to pause streaming during a flash. */
+static uint8_t rpc_screen_suspend(void)
+{
+    uint8_t mask = 0;
+    for (int i = 0; i < RPC_SCR_N; i++)
+    {
+        if (s_screen[i].active) { mask |= (1u << i); s_screen[i].active = false; }
+    }
+    return mask;
+}
+
+static void rpc_screen_restore(uint8_t mask)
+{
+    for (int i = 0; i < RPC_SCR_N; i++)
+    {
+        if (mask & (1u << i)) s_screen[i].active = true;
+    }
+}
 
 /* RPC mode flag — when true, debug output goes to UART only (not USB CDC) */
 volatile bool m1_rpc_active = false;
@@ -149,6 +194,16 @@ static uint8_t           s_log_seq = 0;
 
 /* RPC task */
 static TaskHandle_t s_rpc_task_hdl;
+
+/* Route a response to the transport the request arrived on (see the forward
+ * declaration and routing notes above). */
+static bool rpc_resp_to_tcp(void)
+{
+    TaskHandle_t t = xTaskGetCurrentTaskHandle();
+    if (t == s_rpc_task_hdl)   return s_deferred_to_tcp;   /* deferred op reply */
+    if (t == s_tcp_feed_task)  return true;                /* TCP inline dispatch */
+    return false;                                          /* USB inline (default) */
+}
 
 /* FW update state */
 static S_RPC_FwUpdateState  s_fw_update;
@@ -208,7 +263,7 @@ static uint16_t rpc_crc16(const uint8_t *data, uint16_t len);
 static uint16_t rpc_crc16_continue(uint16_t crc, const uint8_t *data, uint16_t len);
 
 /* Frame handling */
-static void rpc_parse_byte(uint8_t byte);
+static void rpc_parse_byte(S_RPC_Parser *p, uint8_t byte);
 static void rpc_dispatch_frame(const S_RPC_Frame *frame);
 
 /* USB CDC TX helper */
@@ -226,6 +281,13 @@ static void rpc_handle_button_press(const S_RPC_Frame *f);
 static void rpc_handle_button_release(const S_RPC_Frame *f);
 static void rpc_handle_button_click(const S_RPC_Frame *f);
 static void rpc_handle_set_log_level(const S_RPC_Frame *f);
+static void rpc_handle_gpio_list(const S_RPC_Frame *f);
+static void rpc_handle_gpio_mode(const S_RPC_Frame *f);
+static void rpc_handle_gpio_write(const S_RPC_Frame *f);
+static void rpc_handle_gpio_read(const S_RPC_Frame *f);
+static void rpc_handle_gpio_release(const S_RPC_Frame *f);
+static void rpc_handle_gpio_power(const S_RPC_Frame *f);
+static void rpc_handle_i2c_scan(const S_RPC_Frame *f);
 static void rpc_handle_file_list(const S_RPC_Frame *f);
 static void rpc_handle_file_read(const S_RPC_Frame *f);
 static void rpc_handle_file_write_start(const S_RPC_Frame *f);
@@ -252,7 +314,7 @@ static void rpc_handle_cli_exec(const S_RPC_Frame *f);
 static void rpc_handle_esp_uart_snoop(const S_RPC_Frame *f);
 
 /* Screen streaming helpers */
-static void rpc_send_screen_frame(uint8_t seq);
+static void rpc_send_screen_frame(uint8_t seq, bool to_tcp);
 static void rpc_flip_buffer_180(uint8_t *buf, uint16_t size);
 
 /*************** F U N C T I O N   I M P L E M E N T A T I O N ****************/
@@ -317,6 +379,20 @@ static void rpc_usb_transmit(const uint8_t *data, uint16_t len)
         uint8_t result = CDC_Transmit_FS((uint8_t *)data, len);
         if (result == USBD_OK)
         {
+            /* CDC_Transmit_FS hands the class our buffer BY POINTER and returns
+             * immediately while the USB engine is still reading it. The caller
+             * (rpc_emit) reuses the shared s_tx_buf for the next frame as soon as
+             * we return, so we MUST wait for the transfer to finish first — else
+             * the next build overwrites the in-flight frame and the host sees a
+             * corrupted frame (CRC mismatch). Bounded so a wedged/unplugged host
+             * can't hang us. */
+            uint32_t spins = 0;
+            while (CDC_Transmit_Busy() && spins < RPC_USB_TX_DONE_TIMEOUT)
+            {
+                osDelay(1);
+                spins++;
+            }
+
             /* Do NOT log successful LOG_MESSAGE (0x64) TX — logging it would
              * itself emit another LOG_MESSAGE frame, creating a self-sustaining
              * log-about-logging feedback loop that floods the CDC every ~100ms. */
@@ -342,8 +418,9 @@ static void rpc_usb_transmit(const uint8_t *data, uint16_t len)
  * Frame: [0xAA] [CMD] [SEQ] [LEN_LO] [LEN_HI] [PAYLOAD...] [CRC_LO] [CRC_HI]
  *   CRC computed over CMD through end of PAYLOAD.
  */
-void m1_rpc_send_frame(uint8_t cmd, uint8_t seq,
-                       const uint8_t *payload, uint16_t len)
+/* Build + send a frame to a specific transport. All public senders funnel here. */
+static void rpc_emit(uint8_t cmd, uint8_t seq,
+                     const uint8_t *payload, uint16_t len, bool to_tcp)
 {
     if (len > RPC_MAX_PAYLOAD)
         return;
@@ -379,13 +456,29 @@ void m1_rpc_send_frame(uint8_t cmd, uint8_t seq,
     s_tx_buf[idx++] = (uint8_t)(crc & 0xFF);
     s_tx_buf[idx++] = (uint8_t)(crc >> 8);
 
-    /* Transmit — route to TCP or USB */
-    if (s_route_tcp && s_tcp_tx_fn)
+    /* Transmit — route to TCP or USB per the caller's decision */
+    if (to_tcp && s_tcp_tx_fn)
         s_tcp_tx_fn(s_tx_buf, frame_size);
     else
         rpc_usb_transmit(s_tx_buf, frame_size);
 
     xSemaphoreGive(s_tx_mutex);
+}
+
+/* Async / unsolicited sender (screen frames, log messages): uses the session
+ * streaming route. Behaviour is unchanged from before the per-request split. */
+void m1_rpc_send_frame(uint8_t cmd, uint8_t seq,
+                       const uint8_t *payload, uint16_t len)
+{
+    rpc_emit(cmd, seq, payload, len, s_route_tcp);
+}
+
+/* Response sender: routes back to whichever transport the request arrived on,
+ * so a USB request is answered on USB even during a WiFi (mobile) session. */
+static void m1_rpc_send_resp(uint8_t cmd, uint8_t seq,
+                             const uint8_t *payload, uint16_t len)
+{
+    rpc_emit(cmd, seq, payload, len, rpc_resp_to_tcp());
 }
 
 
@@ -396,7 +489,7 @@ void m1_rpc_route_to_tcp(bool enable) { s_route_tcp = enable; }
  * fire-and-forget from the M1's side — without this the M1 keeps pushing frames
  * to a dead socket (user saw "SCREEN: frame 200... streaming" long after the
  * disconnect), needlessly loading the shared SPI link. */
-void m1_rpc_stop_screen_stream(void) { rpc_screen_stream.active = false; }
+void m1_rpc_stop_screen_stream(void) { s_screen[RPC_SCR_TCP].active = false; }
 
 
 /*============================================================================*/
@@ -452,7 +545,7 @@ static void rpc_flush_log(void)
  */
 void m1_rpc_send_ack(uint8_t seq)
 {
-    m1_rpc_send_frame(RPC_CMD_ACK, seq, NULL, 0);
+    rpc_emit(RPC_CMD_ACK, seq, NULL, 0, rpc_resp_to_tcp());
 }
 
 
@@ -461,7 +554,7 @@ void m1_rpc_send_ack(uint8_t seq)
  */
 void m1_rpc_send_nack(uint8_t seq, uint8_t error_code)
 {
-    m1_rpc_send_frame(RPC_CMD_NACK, seq, &error_code, 1);
+    rpc_emit(RPC_CMD_NACK, seq, &error_code, 1, rpc_resp_to_tcp());
 }
 
 /**
@@ -471,7 +564,7 @@ void m1_rpc_send_nack(uint8_t seq, uint8_t error_code)
 static void rpc_send_nack_sub(uint8_t seq, uint8_t error_code, uint8_t sub_error)
 {
     uint8_t buf[2] = { error_code, sub_error };
-    m1_rpc_send_frame(RPC_CMD_NACK, seq, buf, 2);
+    rpc_emit(RPC_CMD_NACK, seq, buf, 2, rpc_resp_to_tcp());
 }
 
 
@@ -480,7 +573,7 @@ static void rpc_send_nack_sub(uint8_t seq, uint8_t error_code, uint8_t sub_error
 /*============================================================================*/
 
 /**
- * @brief  Feed received bytes from USB CDC into the RPC parser.
+ * @brief  Feed received bytes from USB CDC into the USB parser context.
  */
 void m1_rpc_feed(const uint8_t *data, uint16_t len)
 {
@@ -491,7 +584,23 @@ void m1_rpc_feed(const uint8_t *data, uint16_t len)
              (len > 2) ? data[2] : 0);
     for (uint16_t i = 0; i < len; i++)
     {
-        rpc_parse_byte(data[i]);
+        rpc_parse_byte(&s_parser_usb, data[i]);
+    }
+}
+
+
+/**
+ * @brief  Feed received bytes from the WiFi/TCP (mobile) relay into the TCP
+ *         parser context. Kept separate from the USB context so partial frames
+ *         from the two transports never corrupt each other, and records the
+ *         relay task so its responses route back over TCP.
+ */
+void m1_rpc_feed_tcp(const uint8_t *data, uint16_t len)
+{
+    s_tcp_feed_task = xTaskGetCurrentTaskHandle();
+    for (uint16_t i = 0; i < len; i++)
+    {
+        rpc_parse_byte(&s_parser_tcp, data[i]);
     }
 }
 
@@ -508,7 +617,8 @@ bool m1_rpc_is_sync(const uint8_t *data, uint16_t len)
 
 
 /**
- * @brief  Parse a single byte through the RPC frame state machine.
+ * @brief  Parse a single byte through the RPC frame state machine, using the
+ *         given per-transport context.
  *
  * States:
  *   IDLE    → Wait for 0xAA sync byte
@@ -516,88 +626,89 @@ bool m1_rpc_is_sync(const uint8_t *data, uint16_t len)
  *   PAYLOAD → Accumulate LEN payload bytes (may be 0)
  *   CRC     → Accumulate 2 CRC bytes, validate, dispatch
  */
-static void rpc_parse_byte(uint8_t byte)
+static void rpc_parse_byte(S_RPC_Parser *p, uint8_t byte)
 {
-    switch (s_parse_state)
+    switch (p->state)
     {
     case RPC_STATE_IDLE:
         if (byte == RPC_SYNC_BYTE)
         {
-            s_header_idx  = 0;
-            s_payload_idx = 0;
-            s_crc_idx     = 0;
-            s_parse_state = RPC_STATE_HEADER;
+            p->header_idx  = 0;
+            p->payload_idx = 0;
+            p->crc_idx     = 0;
+            p->state       = RPC_STATE_HEADER;
         }
         break;
 
     case RPC_STATE_HEADER:
-        s_header_buf[s_header_idx++] = byte;
-        if (s_header_idx >= 4)
+        p->header_buf[p->header_idx++] = byte;
+        if (p->header_idx >= 4)
         {
-            s_rx_frame.cmd = s_header_buf[0];
-            s_rx_frame.seq = s_header_buf[1];
-            s_rx_frame.len = (uint16_t)s_header_buf[2] |
-                             ((uint16_t)s_header_buf[3] << 8);
+            p->frame.cmd = p->header_buf[0];
+            p->frame.seq = p->header_buf[1];
+            p->frame.len = (uint16_t)p->header_buf[2] |
+                           ((uint16_t)p->header_buf[3] << 8);
+            p->frame.src = p->src;
 
-            if (s_rx_frame.len > RPC_MAX_PAYLOAD)
+            if (p->frame.len > RPC_MAX_PAYLOAD)
             {
                 /* Invalid length — reset */
-                s_parse_state = RPC_STATE_IDLE;
+                p->state = RPC_STATE_IDLE;
             }
-            else if (s_rx_frame.len == 0)
+            else if (p->frame.len == 0)
             {
                 /* No payload — go straight to CRC */
-                s_parse_state = RPC_STATE_CRC;
+                p->state = RPC_STATE_CRC;
             }
             else
             {
-                s_parse_state = RPC_STATE_PAYLOAD;
+                p->state = RPC_STATE_PAYLOAD;
             }
         }
         break;
 
     case RPC_STATE_PAYLOAD:
-        s_rx_frame.payload[s_payload_idx++] = byte;
-        if (s_payload_idx >= s_rx_frame.len)
+        p->frame.payload[p->payload_idx++] = byte;
+        if (p->payload_idx >= p->frame.len)
         {
-            s_parse_state = RPC_STATE_CRC;
+            p->state = RPC_STATE_CRC;
         }
         break;
 
     case RPC_STATE_CRC:
-        s_crc_buf[s_crc_idx++] = byte;
-        if (s_crc_idx >= 2)
+        p->crc_buf[p->crc_idx++] = byte;
+        if (p->crc_idx >= 2)
         {
             /* Reconstruct received CRC (little-endian) */
-            uint16_t rx_crc = (uint16_t)s_crc_buf[0] |
-                              ((uint16_t)s_crc_buf[1] << 8);
+            uint16_t rx_crc = (uint16_t)p->crc_buf[0] |
+                              ((uint16_t)p->crc_buf[1] << 8);
 
             /* Compute CRC over header(4) + payload incrementally
              * without copying to a temp buffer */
-            uint16_t computed_crc = rpc_crc16(s_header_buf, 4);
-            if (s_rx_frame.len > 0)
+            uint16_t computed_crc = rpc_crc16(p->header_buf, 4);
+            if (p->frame.len > 0)
             {
                 computed_crc = rpc_crc16_continue(computed_crc,
-                                                   s_rx_frame.payload,
-                                                   s_rx_frame.len);
+                                                   p->frame.payload,
+                                                   p->frame.len);
             }
 
             if (rx_crc == computed_crc)
             {
-                rpc_dispatch_frame(&s_rx_frame);
+                rpc_dispatch_frame(&p->frame);
             }
             else
             {
                 M1_LOG_I(M1_LOGDB_TAG, "CRC MISMATCH cmd=0x%02X rx=0x%04X calc=0x%04X\r\n",
-                         s_rx_frame.cmd, rx_crc, computed_crc);
+                         p->frame.cmd, rx_crc, computed_crc);
             }
 
-            s_parse_state = RPC_STATE_IDLE;
+            p->state = RPC_STATE_IDLE;
         }
         break;
 
     default:
-        s_parse_state = RPC_STATE_IDLE;
+        p->state = RPC_STATE_IDLE;
         break;
     }
 }
@@ -641,6 +752,14 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
 
     /* Debug — runtime UART log verbosity */
     case RPC_CMD_SET_LOG_LEVEL:   rpc_handle_set_log_level(frame);   break;
+
+    /* GPIO / Expansion header — quick register ops, safe to run inline. */
+    case RPC_CMD_GPIO_LIST:       rpc_handle_gpio_list(frame);       break;
+    case RPC_CMD_GPIO_MODE:       rpc_handle_gpio_mode(frame);       break;
+    case RPC_CMD_GPIO_WRITE:      rpc_handle_gpio_write(frame);      break;
+    case RPC_CMD_GPIO_READ:       rpc_handle_gpio_read(frame);       break;
+    case RPC_CMD_GPIO_RELEASE:    rpc_handle_gpio_release(frame);    break;
+    case RPC_CMD_GPIO_POWER:      rpc_handle_gpio_power(frame);      break;
 
     /* File — read-only operations stay inline */
     case RPC_CMD_FILE_LIST:        rpc_handle_file_list(frame);        break;
@@ -710,8 +829,11 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
 
     /* Debug / CLI — deferred to rpc_task (16KB stack).
      * mtest subcommands may trigger SD/I2C/SPI operations that
-     * overflow the 8KB Usb2SerTask stack. */
+     * overflow the 8KB Usb2SerTask stack.
+     * I2C_SCAN is grouped here too: the bit-bang sweep takes tens of ms and
+     * drives header pins, so it runs off the USB endpoint. */
     case RPC_CMD_CLI_EXEC:
+    case RPC_CMD_I2C_SCAN:
         if (s_deferred_pending)
         {
             m1_rpc_send_nack(frame->seq, RPC_ERR_BUSY);
@@ -756,7 +878,7 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
  */
 static void rpc_handle_ping(const S_RPC_Frame *f)
 {
-    m1_rpc_send_frame(RPC_CMD_PONG, f->seq, NULL, 0);
+    m1_rpc_send_resp(RPC_CMD_PONG, f->seq, NULL, 0);
 }
 
 
@@ -895,7 +1017,11 @@ static void rpc_handle_get_device_info(const S_RPC_Frame *f)
     info.fw_variant = 0;   /* normal working FW */
 #endif
 
-    m1_rpc_send_frame(RPC_CMD_DEVICE_INFO_RESP, f->seq,
+    /* Mobile/WiFi session flag — lets a USB desktop client say "also connected to
+     * the mobile app" instead of mistaking a busy device for incompatible FW. */
+    info.link_active = m1_qmon_relay_session_active() ? 1 : 0;
+
+    m1_rpc_send_resp(RPC_CMD_DEVICE_INFO_RESP, f->seq,
                       (const uint8_t *)&info, sizeof(info));
 }
 
@@ -958,31 +1084,34 @@ static void rpc_handle_screen_start(const S_RPC_Frame *f)
         if (fps > RPC_SCREEN_FPS_MAX) fps = RPC_SCREEN_FPS_MAX;
     }
 
-    rpc_screen_stream.fps          = fps;
-    rpc_screen_stream.interval_ms  = 1000 / fps;
-    rpc_screen_stream.last_send_tick = xTaskGetTickCount();
-    rpc_screen_stream.active       = true;
+    /* Start/refresh only the requesting transport's stream, so USB and mobile
+     * can mirror independently. */
+    int idx = RPC_SCR_IDX(f->src);
+    s_screen[idx].fps          = fps;
+    s_screen[idx].interval_ms  = 1000 / fps;
+    s_screen[idx].last_send_tick = xTaskGetTickCount();
+    s_screen[idx].active       = true;
 
     m1_rpc_send_ack(f->seq);
 }
 
 
 /**
- * @brief  Handle SCREEN_STOP — stop streaming.
+ * @brief  Handle SCREEN_STOP — stop the requesting transport's stream only.
  */
 static void rpc_handle_screen_stop(const S_RPC_Frame *f)
 {
-    rpc_screen_stream.active = false;
+    s_screen[RPC_SCR_IDX(f->src)].active = false;
     m1_rpc_send_ack(f->seq);
 }
 
 
 /**
- * @brief  Handle SCREEN_CAPTURE — send a single frame immediately.
+ * @brief  Handle SCREEN_CAPTURE — send a single frame to the requester.
  */
 static void rpc_handle_screen_capture(const S_RPC_Frame *f)
 {
-    rpc_send_screen_frame(f->seq);
+    rpc_send_screen_frame(f->seq, f->src == RPC_SRC_TCP);
 }
 
 
@@ -1032,7 +1161,7 @@ static void rpc_flip_buffer_180(uint8_t *buf, uint16_t size)
  *         app never needs to know about southpaw — it always receives
  *         correctly-oriented data.
  */
-static void rpc_send_screen_frame(uint8_t seq)
+static void rpc_send_screen_frame(uint8_t seq, bool to_tcp)
 {
     uint8_t *fb = u8g2_GetBufferPtr(&m1_u8g2);
 
@@ -1054,15 +1183,16 @@ static void rpc_send_screen_frame(uint8_t seq)
      * UDP mailbox and the isolated screen_tx task sends it. This keeps screen bytes
      * off the ESP heartbeat task, so pings are always answered (the link-death was
      * the ESP rpc_ctrl task being CPU-starved, now fixed by raising its priority).
-     * Over USB the desktop reads SCREEN_FRAME straight off the CDC. */
-    if (s_route_tcp)
+     * Over USB the desktop reads SCREEN_FRAME straight off the CDC. The target
+     * is chosen by the caller (per-transport stream), not the global route. */
+    if (to_tcp)
     {
         m1_esp_client_screen_push(s_screen_fb_copy, RPC_SCREEN_FB_SIZE);
     }
     else
     {
-        m1_rpc_send_frame(RPC_CMD_SCREEN_FRAME, seq,
-                          s_screen_fb_copy, RPC_SCREEN_FB_SIZE);
+        rpc_emit(RPC_CMD_SCREEN_FRAME, seq,
+                 s_screen_fb_copy, RPC_SCREEN_FB_SIZE, false /* USB */);
     }
 }
 
@@ -1086,7 +1216,7 @@ void m1_rpc_notify_screen_update(void)
  */
 bool m1_rpc_screen_streaming_active(void)
 {
-    return rpc_screen_stream.active;
+    return s_screen[RPC_SCR_USB].active || s_screen[RPC_SCR_TCP].active;
 }
 
 
@@ -1174,6 +1304,159 @@ static void rpc_handle_set_log_level(const S_RPC_Frame *f)
     }
     m1_logdb_set_level((S_M1_LogDebugLevel_t)f->payload[0]);
     m1_rpc_send_ack(f->seq);
+}
+
+
+/*============================================================================*/
+/*              G P I O   /   E X P A N S I O N   H E A D E R                 */
+/*============================================================================*/
+
+/* Tracked pin direction (0=input, 1=output), indexed by app_id. The GPIO HAL
+ * has no "get mode", so we remember what CMD_GPIO_MODE last set and report it
+ * back in the LIST response. */
+static uint8_t s_gpio_mode[M1_EXT_GPIO_LIST_N] = {0};
+
+/**
+ * @brief  Handle GPIO_LIST — enumerate expansion pins for the mobile GPIO panel.
+ *
+ * Response GPIO_LIST_RESP: [count] then count × record:
+ *   [app_id:1] [mode:1] [level:1] [name_len:1] [name:name_len]  (name not NUL-terminated)
+ */
+static void rpc_handle_gpio_list(const S_RPC_Frame *f)
+{
+    uint8_t  n = m1_gpio_ext_app_count();
+    uint8_t  buf[256];
+    uint16_t o = 0;
+
+    if (n > M1_EXT_GPIO_LIST_N) n = M1_EXT_GPIO_LIST_N;   /* defensive clamp */
+    buf[o++] = n;
+    for (uint8_t i = 0; i < n; i++)
+    {
+        const char *nm = m1_gpio_ext_app_name(i);
+        uint8_t nl = (uint8_t)strlen(nm);
+        /* Skip this record if it would overflow buf (names are short; realistic
+         * total is ~145 bytes, so this never trips in practice). */
+        if ((uint16_t)(o + 4u + nl) > sizeof(buf))
+            break;
+        buf[o++] = i;
+        buf[o++] = s_gpio_mode[i];
+        buf[o++] = m1_gpio_ext_app_read(i) ? 1 : 0;
+        buf[o++] = nl;
+        memcpy(&buf[o], nm, nl);
+        o += nl;
+    }
+    m1_rpc_send_resp(RPC_CMD_GPIO_LIST_RESP, f->seq, buf, o);
+}
+
+/**
+ * @brief  Handle GPIO_MODE — set a pin's direction. Payload: [app_id][mode].
+ */
+static void rpc_handle_gpio_mode(const S_RPC_Frame *f)
+{
+    if (f->len < 2)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    uint8_t app_id = f->payload[0];
+    /* Bounds-check before the tracked-mode array write (HAL bounds-checks the
+     * hardware op itself, but s_gpio_mode[] would be an OOB write otherwise). */
+    if (app_id >= m1_gpio_ext_app_count())
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    uint8_t mode = f->payload[1] ? 1 : 0;
+    s_gpio_mode[app_id] = mode;
+    m1_gpio_ext_app_mode(app_id, mode);
+    m1_rpc_send_ack(f->seq);
+}
+
+/**
+ * @brief  Handle GPIO_WRITE — drive a pin high/low. Payload: [app_id][level].
+ */
+static void rpc_handle_gpio_write(const S_RPC_Frame *f)
+{
+    if (f->len < 2)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    uint8_t app_id = f->payload[0];
+    if (app_id >= m1_gpio_ext_app_count())
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    m1_gpio_ext_app_write(app_id, f->payload[1] ? 1 : 0);
+    m1_rpc_send_ack(f->seq);
+}
+
+/**
+ * @brief  Handle GPIO_READ — read one pin. Payload: [app_id]. Resp: [app_id][level].
+ */
+static void rpc_handle_gpio_read(const S_RPC_Frame *f)
+{
+    if (f->len < 1)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    uint8_t app_id = f->payload[0];
+    if (app_id >= m1_gpio_ext_app_count())
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    uint8_t resp[2];
+    resp[0] = app_id;
+    resp[1] = m1_gpio_ext_app_read(app_id) ? 1 : 0;
+    m1_rpc_send_resp(RPC_CMD_GPIO_READ_RESP, f->seq, resp, 2);
+}
+
+/**
+ * @brief  Handle GPIO_RELEASE — park all app pins in their safe state.
+ */
+static void rpc_handle_gpio_release(const S_RPC_Frame *f)
+{
+    m1_gpio_ext_app_release();
+    /* Forget tracked modes so a fresh LIST reports all inputs again. */
+    memset(s_gpio_mode, 0, sizeof(s_gpio_mode));
+    m1_rpc_send_ack(f->seq);
+}
+
+/**
+ * @brief  Handle GPIO_POWER — switch an expansion power rail. Payload: [rail][on].
+ *         rail 0 = 3.3V, 1 = 5V.
+ */
+static void rpc_handle_gpio_power(const S_RPC_Frame *f)
+{
+    if (f->len < 2)
+    {
+        m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
+        return;
+    }
+    if (f->payload[0] == 0)
+        ext_power_3V_set(f->payload[1] ? 1 : 0);
+    else
+        ext_power_5V_set(f->payload[1] ? 1 : 0);
+    m1_rpc_send_ack(f->seq);
+}
+
+/**
+ * @brief  Handle I2C_SCAN — bit-bang scan of the header I2C bus (SDA=pin7,
+ *         SCL=pin6). Response I2C_SCAN_RESP: [count][addr7]... (7-bit addrs).
+ *         Deferred to rpc_task (see dispatcher) — the sweep takes tens of ms.
+ */
+static void rpc_handle_i2c_scan(const S_RPC_Frame *f)
+{
+    uint8_t found[16];
+    uint8_t buf[1 + sizeof(found)];
+    uint8_t n = m1_i2c_scan(found, sizeof(found));
+
+    buf[0] = n;
+    memcpy(&buf[1], found, n);
+    m1_rpc_send_resp(RPC_CMD_I2C_SCAN_RESP, f->seq, buf, (uint16_t)(1 + n));
 }
 
 
@@ -1350,7 +1633,7 @@ static void rpc_handle_file_list(const S_RPC_Frame *f)
     M1_LOG_I(M1_LOGDB_TAG, "FILE_LIST: sending %u entries, %u bytes\r\n",
              entry_count, resp_len);
 
-    m1_rpc_send_frame(RPC_CMD_FILE_LIST_RESP, f->seq, resp, resp_len);
+    m1_rpc_send_resp(RPC_CMD_FILE_LIST_RESP, f->seq, resp, resp_len);
 }
 
 
@@ -1411,7 +1694,7 @@ static void rpc_handle_file_read(const S_RPC_Frame *f)
             return;
         }
 
-        m1_rpc_send_frame(RPC_CMD_FILE_READ_DATA, seq,
+        m1_rpc_send_resp(RPC_CMD_FILE_READ_DATA, seq,
                           chunk_buf, 4 + bytes_read);
 
         offset += bytes_read;
@@ -1930,7 +2213,7 @@ static void rpc_handle_fw_info(const S_RPC_Frame *f)
         }
     }
 
-    m1_rpc_send_frame(RPC_CMD_FW_INFO_RESP, f->seq,
+    m1_rpc_send_resp(RPC_CMD_FW_INFO_RESP, f->seq,
                       (const uint8_t *)&info, sizeof(info));
 }
 
@@ -2207,8 +2490,29 @@ static void rpc_handle_fw_update_data(const S_RPC_Frame *f)
     m1_wdt_reset();
 
     /* Write using HAL — STM32H5 requires 16-byte aligned writes.
-     * bl_flash_if_write handles alignment internally. */
-    if (bl_flash_if_write((uint8_t *)&f->payload[4], write_addr, data_len) != BL_CODE_OK)
+     * bl_flash_if_write handles alignment internally.
+     *
+     * Mask the ESP interrupt lines around the actual program, exactly as the
+     * erase does. On STM32H5 an EXTI1/EXTI7/UART4 ISR preempting an active
+     * quad-word program (RWW) stalls FLASH_BSY; because the IWDG feeder is the
+     * lowest-priority task, a stalled/looping program starves the feed → IWDG
+     * reboot mid-flash "at a random %". This is the bulk of a flash (many DATA
+     * chunks) — leaving it exposed was the M1 FW-flash hang, worse after ESP
+     * (WiFi/BLE/802.15.4) activity. Unmasked right after so the link stays live
+     * between chunks (and the IWDG feeder runs then). */
+#ifndef M1_RESTORE_HOST
+    HAL_NVIC_DisableIRQ(EXTI1_IRQn);
+    HAL_NVIC_DisableIRQ(EXTI7_IRQn);
+    HAL_NVIC_DisableIRQ(UART4_IRQn);
+#endif
+    uint8_t wr = bl_flash_if_write((uint8_t *)&f->payload[4], write_addr, data_len);
+#ifndef M1_RESTORE_HOST
+    HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+    HAL_NVIC_EnableIRQ(EXTI7_IRQn);
+    HAL_NVIC_EnableIRQ(UART4_IRQn);
+#endif
+
+    if (wr != BL_CODE_OK)
     {
         HAL_FLASH_Lock();
         s_fw_update.active = false;
@@ -2437,7 +2741,7 @@ static void rpc_handle_esp_info(const S_RPC_Frame *f)
             32);
 #endif
 
-    m1_rpc_send_frame(RPC_CMD_ESP_INFO_RESP, f->seq, resp, 33);
+    m1_rpc_send_resp(RPC_CMD_ESP_INFO_RESP, f->seq, resp, 33);
 }
 
 
@@ -2526,8 +2830,7 @@ static void esp_flash_session_teardown(void)
     m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
     esp_spi3_pins_restore();
     m1_qmon_relay_suspend(false);
-    if (s_esp_update.screen_was_streaming)
-        rpc_screen_stream.active = true;
+    rpc_screen_restore(s_esp_update.screen_was_streaming);
     s_esp_update.active = false;
 }
 
@@ -2676,9 +2979,7 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
     /* Suspend screen streaming during ESP flash to eliminate USB TX
      * mutex contention between screen frames and flash ACK responses.
      * This reduces USB interrupt load and prevents timing jitter. */
-    s_esp_update.screen_was_streaming = rpc_screen_stream.active;
-    if (rpc_screen_stream.active)
-        rpc_screen_stream.active = false;
+    s_esp_update.screen_was_streaming = rpc_screen_suspend();
 
     /* Connect to ESP32 ROM bootloader.
      * Use 230400 for RPC path — UART4 RX is byte-by-byte ISR with no DMA,
@@ -2700,8 +3001,7 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         esp_spi3_pins_restore();
         m1_qmon_relay_suspend(false);
-        if (s_esp_update.screen_was_streaming)
-            rpc_screen_stream.active = true;
+        rpc_screen_restore(s_esp_update.screen_was_streaming);
         rpc_send_nack_sub(f->seq, RPC_ERR_ESP_FLASH, RPC_ESP_SUB_CONNECT);
         return;
     }
@@ -2725,8 +3025,7 @@ static void rpc_handle_esp_update_start(const S_RPC_Frame *f)
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         esp_spi3_pins_restore();
         m1_qmon_relay_suspend(false);
-        if (s_esp_update.screen_was_streaming)
-            rpc_screen_stream.active = true;
+        rpc_screen_restore(s_esp_update.screen_was_streaming);
         rpc_send_nack_sub(f->seq, RPC_ERR_ESP_FLASH, RPC_ESP_SUB_ERASE);
         return;
     }
@@ -2794,8 +3093,7 @@ static void rpc_handle_esp_update_data(const S_RPC_Frame *f)
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         esp_spi3_pins_restore();
         m1_qmon_relay_suspend(false);
-        if (s_esp_update.screen_was_streaming)
-            rpc_screen_stream.active = true;
+        rpc_screen_restore(s_esp_update.screen_was_streaming);
         rpc_send_nack_sub(f->seq, RPC_ERR_ESP_FLASH, RPC_ESP_SUB_WRITE);
         return;
     }
@@ -2874,13 +3172,12 @@ static void rpc_handle_esp_update_finish(const S_RPC_Frame *f)
             uint32_t overruns = esp32_uart4_overrun_count;
             memcpy(&diag[74], &overruns, 4);
 
-            m1_rpc_send_frame(RPC_CMD_NACK, f->seq, diag, sizeof(diag));
+            m1_rpc_send_resp(RPC_CMD_NACK, f->seq, diag, sizeof(diag));
         }
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         esp_spi3_pins_restore();
         m1_qmon_relay_suspend(false);
-        if (s_esp_update.screen_was_streaming)
-            rpc_screen_stream.active = true;
+        rpc_screen_restore(s_esp_update.screen_was_streaming);
         return;
     }
 #endif
@@ -2907,8 +3204,7 @@ static void rpc_handle_esp_update_finish(const S_RPC_Frame *f)
     m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
     esp_spi3_pins_restore();
     m1_qmon_relay_suspend(false);
-    if (s_esp_update.screen_was_streaming)
-        rpc_screen_stream.active = true;
+    rpc_screen_restore(s_esp_update.screen_was_streaming);
     m1_rpc_send_ack(f->seq);
 }
 
@@ -2982,7 +3278,7 @@ static void rpc_handle_cli_exec(const S_RPC_Frame *f)
 
     M1_LOG_I(M1_LOGDB_TAG, "CLI_EXEC: captured %u bytes\r\n", out_len);
 
-    m1_rpc_send_frame(RPC_CMD_CLI_RESP, f->seq,
+    m1_rpc_send_resp(RPC_CMD_CLI_RESP, f->seq,
                       (const uint8_t *)out_buf, out_len);
 }
 
@@ -3029,7 +3325,7 @@ static void rpc_handle_esp_uart_snoop(const S_RPC_Frame *f)
     M1_LOG_I(M1_LOGDB_TAG, "ESP_UART_SNOOP: captured %u bytes\r\n", snoop_len);
 
     /* 4. Send captured data back */
-    m1_rpc_send_frame(RPC_CMD_ESP_UART_SNOOP_RESP, f->seq,
+    m1_rpc_send_resp(RPC_CMD_ESP_UART_SNOOP_RESP, f->seq,
                       (const uint8_t *)snoop_buf, snoop_len);
 
     /* 5. Clean up — deinit UART4 so SPI can operate */
@@ -3073,6 +3369,8 @@ void m1_rpc_task(void *param)
             S_RPC_Frame frame;
             memcpy(&frame, (const void *)&s_deferred_frame, sizeof(S_RPC_Frame));
             s_deferred_pending = false;
+            /* Route this deferred op's reply back to its originating transport. */
+            s_deferred_to_tcp = (frame.src == RPC_SRC_TCP);
 
             switch (frame.cmd)
             {
@@ -3086,6 +3384,7 @@ void m1_rpc_task(void *param)
             case RPC_CMD_SD_UNMOUNT:        rpc_handle_sd_unmount(&frame);        break;
             case RPC_CMD_SD_MOUNT:          rpc_handle_sd_mount(&frame);          break;
             case RPC_CMD_CLI_EXEC:          rpc_handle_cli_exec(&frame);          break;
+            case RPC_CMD_I2C_SCAN:          rpc_handle_i2c_scan(&frame);          break;
             case RPC_CMD_ESP_UART_SNOOP:    rpc_handle_esp_uart_snoop(&frame);    break;
             case RPC_CMD_ESP_UPDATE_START:  rpc_handle_esp_update_start(&frame);  break;
             case RPC_CMD_ESP_UPDATE_FINISH: rpc_handle_esp_update_finish(&frame); break;
@@ -3116,18 +3415,20 @@ void m1_rpc_task(void *param)
             fw_flash_session_teardown();
         }
 
-        /* Screen streaming */
-        if (rpc_screen_stream.active)
+        /* Screen streaming — service each transport's stream independently so
+         * USB and mobile can mirror at the same time (own FPS/phase each). */
+        for (int i = 0; i < RPC_SCR_N; i++)
         {
-            uint32_t min_interval = pdMS_TO_TICKS(rpc_screen_stream.interval_ms);
+            if (!s_screen[i].active)
+                continue;
 
+            uint32_t min_interval = pdMS_TO_TICKS(s_screen[i].interval_ms);
             uint32_t now = xTaskGetTickCount();
-            uint32_t elapsed = now - rpc_screen_stream.last_send_tick;
 
-            if (elapsed >= min_interval)
+            if ((now - s_screen[i].last_send_tick) >= min_interval)
             {
-                rpc_send_screen_frame(screen_seq++);
-                rpc_screen_stream.last_send_tick = xTaskGetTickCount();
+                rpc_send_screen_frame(screen_seq++, (i == RPC_SCR_TCP));
+                s_screen[i].last_send_tick = xTaskGetTickCount();
             }
         }
 
@@ -3147,15 +3448,20 @@ void m1_rpc_task(void *param)
  */
 void m1_rpc_init(void)
 {
-    /* Parser state */
-    s_parse_state = RPC_STATE_IDLE;
+    /* Per-transport parser contexts */
+    memset(&s_parser_usb, 0, sizeof(s_parser_usb));
+    memset(&s_parser_tcp, 0, sizeof(s_parser_tcp));
+    s_parser_usb.state = RPC_STATE_IDLE;
+    s_parser_usb.src   = RPC_SRC_USB;
+    s_parser_tcp.state = RPC_STATE_IDLE;
+    s_parser_tcp.src   = RPC_SRC_TCP;
 
     /* TX mutex */
     s_tx_mutex = xSemaphoreCreateMutex();
     assert(s_tx_mutex != NULL);
 
     /* Screen streaming off by default */
-    memset(&rpc_screen_stream, 0, sizeof(rpc_screen_stream));
+    memset(s_screen, 0, sizeof(s_screen));
 
     /* FW update state */
     memset(&s_fw_update, 0, sizeof(s_fw_update));

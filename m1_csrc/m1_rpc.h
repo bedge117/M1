@@ -96,6 +96,18 @@
 #define RPC_CMD_LOG_MESSAGE     0x64    /* M1→host: streamed debug log text */
 #define RPC_CMD_SET_LOG_LEVEL   0x65    /* host->M1: payload[0]=level (0..5) — gate UART verbosity */
 
+/* ── GPIO / Expansion Header (0x70–0x7F) ── */
+#define RPC_CMD_GPIO_LIST       0x70    /* host->M1 — enumerate expansion pins */
+#define RPC_CMD_GPIO_LIST_RESP  0x71    /* M1->host — [count] then count×[app_id][mode][level][nlen][name] */
+#define RPC_CMD_GPIO_MODE       0x72    /* host->M1 — [app_id][mode] (0=input,1=output) -> ACK/NACK */
+#define RPC_CMD_GPIO_WRITE      0x73    /* host->M1 — [app_id][level] (0/1) -> ACK/NACK */
+#define RPC_CMD_GPIO_READ       0x74    /* host->M1 — [app_id] -> GPIO_READ_RESP */
+#define RPC_CMD_GPIO_READ_RESP  0x75    /* M1->host — [app_id][level] */
+#define RPC_CMD_GPIO_RELEASE    0x76    /* host->M1 — release all app pins to safe state -> ACK */
+#define RPC_CMD_GPIO_POWER      0x77    /* host->M1 — [rail][on] (rail 0=3.3V,1=5V) -> ACK */
+#define RPC_CMD_I2C_SCAN        0x78    /* host->M1 — scan header I2C bus -> I2C_SCAN_RESP */
+#define RPC_CMD_I2C_SCAN_RESP   0x79    /* M1->host — [count][addr7]... (7-bit addrs 0x08..0x77) */
+
 /* ── Button IDs (match m1_system.h) ── */
 #define RPC_BUTTON_OK           0
 #define RPC_BUTTON_UP           1
@@ -137,11 +149,19 @@ typedef enum {
 } E_RPC_ParseState;
 
 /* Parsed frame */
+/* Transport a frame arrived on — drives per-request response routing so a USB
+ * request is answered on USB even while a WiFi/TCP (mobile) session is active. */
+typedef enum {
+    RPC_SRC_USB = 0,
+    RPC_SRC_TCP = 1
+} E_RPC_Src;
+
 typedef struct {
     uint8_t  cmd;
     uint8_t  seq;
     uint16_t len;
     uint8_t  payload[RPC_MAX_PAYLOAD];
+    uint8_t  src;               /* E_RPC_Src — transport this frame came in on */
 } S_RPC_Frame;
 
 /* Screen streaming state */
@@ -183,6 +203,11 @@ typedef struct __attribute__((packed)) {
     /* Firmware variant (appended for backward compat):
      * 0 = normal working FW, 1 = Recovery FW, 2 = Restore Host FW */
     uint8_t  fw_variant;
+
+    /* Mobile/WiFi session flag (appended for backward compat): 1 = a TCP (mobile
+     * app) client is currently connected over WiFi. Lets a USB desktop client
+     * show "also connected to the mobile app" instead of guessing. */
+    uint8_t  link_active;
 } S_RPC_DeviceInfo;
 
 /* Firmware bank info (packed) */
@@ -219,6 +244,16 @@ void m1_rpc_init(void);
  * @param  len    Number of bytes
  */
 void m1_rpc_feed(const uint8_t *data, uint16_t len);
+
+/**
+ * @brief  Feed received bytes from the WiFi/TCP (mobile) relay into the RPC
+ *         parser. Uses a separate parser context from USB so interleaved partial
+ *         frames from the two transports can't corrupt each other, and tags the
+ *         frames so their responses route back over TCP.
+ * @param  data   Pointer to received data
+ * @param  len    Number of bytes
+ */
+void m1_rpc_feed_tcp(const uint8_t *data, uint16_t len);
 
 /**
  * @brief  Check if the given data starts with an RPC sync byte.
@@ -264,8 +299,6 @@ void m1_rpc_send_ack(uint8_t seq);
 void m1_rpc_send_nack(uint8_t seq, uint8_t error_code);
 
 /*************************** E X T E R N S ************************************/
-
-extern S_RPC_ScreenStream rpc_screen_stream;
 
 /**
  * @brief  RPC mode flag — set true when first valid RPC frame is received.

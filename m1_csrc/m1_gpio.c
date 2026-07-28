@@ -43,8 +43,8 @@ const char *m1_ext_gpio_label[M1_EXT_GPIO_LIST_N] = {	"Power 3.3V",
 														"Pin PE6",
 														"Pin PD12",
 														"Pin PD13",
-														"Pin PA14",
-														"Pin PA13",
+														"PA14 (SWCLK)",
+														"PA13 (SWDIO)",
 														/*"Pin PA9",*/
 														/*"Pin PA10",*/
 														"Pin PC2",
@@ -1321,6 +1321,28 @@ static bool tool_i2c_probe(uint8_t addr7)
 	uint8_t ack = tool_i2c_write((uint8_t)((addr7 << 1) | 0));
 	tool_i2c_stop();
 	return (ack == 0);
+}
+
+/* Headless I2C scan for the RPC / mobile path. Bit-bangs the header bus
+ * (SDA=pin7, SCL=pin6), requires TWO consecutive ACKs per address (same filter
+ * as the on-device tool), writes up to `max` 7-bit addresses (0x08..0x77) into
+ * `out`, parks the pins on exit, and returns the count found. */
+uint8_t m1_i2c_scan(uint8_t *out, uint8_t max)
+{
+	uint8_t n = 0;
+
+	if (out == NULL || max == 0)
+		return 0;
+
+	tool_i2c_pins_init();
+	for (uint8_t a = 0x08; a <= 0x77 && n < max; a++)
+	{
+		if (tool_i2c_probe(a) && tool_i2c_probe(a))
+			out[n++] = a;
+	}
+	tool_i2c_pins_release();
+
+	return n;
 }
 
 void tool_i2c_scanner(void)

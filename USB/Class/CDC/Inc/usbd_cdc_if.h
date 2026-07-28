@@ -36,6 +36,11 @@ extern USBD_CDC_ItfTypeDef  USBD_CDC_Interface_fops;
 /* Exported functions ------------------------------------------------------- */
 uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 
+/* Returns 1 while a previous CDC IN transfer is still in flight (the class is
+ * still reading the caller's TX buffer), 0 when idle. Callers that reuse a
+ * shared TX buffer must wait for this to clear before overwriting it. */
+uint8_t CDC_Transmit_Busy(void);
+
 #ifdef __cplusplus
 }
 #endif

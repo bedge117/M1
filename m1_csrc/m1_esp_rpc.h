@@ -184,6 +184,7 @@ typedef enum {
     M1ESP_BLE_HID_STATUS      = 0x040C, /* REQ -> RESP u8 connected */
     M1ESP_BLE_SPAM_START      = 0x040D, /* REQ u8 mode -> RESP u8 status (adv-spam popups) */
     M1ESP_BLE_SPAM_STOP       = 0x040E, /* REQ (none) -> RESP u8 status */
+    M1ESP_BLE_RPC_ADV         = 0x040F, /* REQ u8 enable -> RESP u8 status — Bluetooth-Direct (NUS) advertising */
 
     /* ---- Zigbee / 802.15.4 0x0500-0x05FF ---- */
     M1ESP_ZB_INIT             = 0x0500,

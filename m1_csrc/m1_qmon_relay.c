@@ -11,6 +11,7 @@
 #include "m1_qmon_relay.h"
 #include "m1_esp_client.h"
 #include "m1_rpc.h"
+#include "m1_wifi.h"          /* m1_ble_direct — keep polling for a BLE client with WiFi down */
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -47,11 +48,12 @@ static void qmon_relay_task(void *arg)
             continue;
         }
 
-        /* No WiFi => nothing can be connected over TCP, so don't poll the ESP at
-         * the 50ms rate. But re-check WiFi status every 3s (cheap) so we notice it
-         * coming up — e.g. after a firmware-flash reboot that reset our flag while
-         * the ESP kept its link — without needing a manual reconnect. */
-        if (!m1_esp_client_wifi_is_connected()) {
+        /* No WiFi => normally nothing can be connected over TCP, so don't poll the
+         * ESP at the 50ms rate. EXCEPTION: with Bluetooth Direct on, a phone can be
+         * connected over BLE with WiFi down — the ESP reports that client via
+         * rpc_connected, so keep polling. Re-check WiFi status every 3s (cheap) so
+         * we notice it coming up without a manual reconnect. */
+        if (!m1_esp_client_wifi_is_connected() && !m1_ble_direct) {
             if (routed) { m1_rpc_route_to_tcp(false); routed = false; }
             s_session_active = false;
             uint32_t now = xTaskGetTickCount();
@@ -65,7 +67,14 @@ static void qmon_relay_task(void *arg)
         }
 
         uint8_t connected = 0;
-        m1_esp_client_rpc_connected(&connected);
+        if (!m1_esp_client_rpc_connected(&connected)) {
+            /* Poll FAILED (SPI busy/contended — e.g. a device menu is also talking
+             * to the ESP). Do NOT treat a failed poll as a disconnect: that would
+             * wrongly tear down an active screen stream. Keep the current session
+             * state and retry next tick. */
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
         s_session_active = (connected != 0);
 
         /* Route m1_rpc responses to WiFi for the whole connected session, so
@@ -82,7 +91,7 @@ static void qmon_relay_task(void *arg)
         if (connected) {
             int n = m1_esp_client_qmon_poll(buf, sizeof(buf));
             if (n > 0) {
-                m1_rpc_feed(buf, (uint16_t)n);   /* inline cmds respond via qmon_tcp_tx */
+                m1_rpc_feed_tcp(buf, (uint16_t)n);   /* TCP context; inline cmds respond via qmon_tcp_tx */
                 continue;                         /* drain the queue quickly */
             }
         }
@@ -94,8 +103,19 @@ static void qmon_relay_task(void *arg)
 void m1_qmon_relay_init(void)
 {
 #if M1_QMON_RELAY_ENABLE
+    /* Create the relay task EXACTLY ONCE for the life of the program. This is
+     * called from m1_esp32_init(), which re-runs every time a radio menu is
+     * re-entered (m1_esp32_deinit clears esp32_init_done). Without this guard
+     * every menu open→close leaked a permanent 8KB task hammering the ESP link
+     * — heap exhaustion + link saturation after heavy use → M1 hang / flash
+     * failure. Registering the tx callback again is harmless (just a fn ptr). */
+    static bool s_relay_task_created = false;
     m1_rpc_register_tcp_tx(qmon_tcp_tx);
-    xTaskCreate(qmon_relay_task, "qmon_relay", 2048, NULL, 4, NULL);
+    if (!s_relay_task_created)
+    {
+        if (xTaskCreate(qmon_relay_task, "qmon_relay", 2048, NULL, 4, NULL) == pdPASS)
+            s_relay_task_created = true;
+    }
 #endif
 }
 

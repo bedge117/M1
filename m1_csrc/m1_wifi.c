@@ -27,9 +27,10 @@
 #include "ctrl_api.h"
 #include "esp_app_main.h"
 #include "m1_compile_cfg.h"
+#include "m1_wifi_cred.h"      /* WIFI_CRED_SSID_MAX_LEN + cred API (always available) */
+#include "m1_settings.h"       /* settings_save_to_sd — persist primary/boot flags */
 
 #ifdef M1_APP_WIFI_CONNECT_ENABLE
-#include "m1_wifi_cred.h"
 #include "m1_virtual_kb.h"
 #if defined(M1_APP_RPC_ENABLE)
 #include "m1_wifi_rpc.h"
@@ -54,6 +55,21 @@ static uint16_t s_current_ap_index = 0;
 static bool s_wifi_connected = false;
 static char s_connected_ssid[SSID_LENGTH];
 #endif
+
+/* Auto-connect-on-boot toggle + primary network SSID (persisted in settings.cfg).
+ * Defined unconditionally so settings + menu code always links. */
+uint8_t m1_wifi_boot_connect = 0;
+char    m1_wifi_primary_ssid[WIFI_CRED_SSID_MAX_LEN] = { 0 };
+
+/* "Bluetooth Direct": when on, the ESP advertises its NUS RPC service so a phone
+ * can connect over BLE. Persisted in settings.cfg; applied at boot + on toggle. */
+uint8_t m1_ble_direct = 0;
+
+/* "WiFi Hotspot" (SoftAP): the ESP hosts its own WiFi network (no router) that a
+ * phone joins to reach qMonstatek. SSID/password are user-editable + persisted. */
+uint8_t m1_hotspot_on = 0;
+char    m1_hotspot_ssid[WIFI_CRED_SSID_MAX_LEN] = "M1-Hotspot";
+char    m1_hotspot_pass[WIFI_CRED_PASS_MAX_LEN] = "monstatek";
 
 /********************* F U N C T I O N   P R O T O T Y P E S ******************/
 
@@ -1475,6 +1491,58 @@ void wifi_config(void)
   *        Shows list of saved WiFi credentials, allows connect/delete
   */
 /*============================================================================*/
+/*============================================================================*/
+/**
+  * @brief  Connect to the saved "primary" network at boot, if enabled.
+  *         No-op unless m1_wifi_boot_connect is set, a primary SSID is chosen,
+  *         and a matching saved credential exists. Brings the ESP up if needed.
+  */
+/*============================================================================*/
+void wifi_boot_autoconnect(void)
+{
+#ifdef M1_APP_WIFI_CONNECT_ENABLE
+	wifi_credential_t cred;
+	bool have_target = false;
+
+	if ( !m1_wifi_boot_connect )
+		return;
+
+	if ( m1_wifi_primary_ssid[0] != '\0' )
+	{
+		/* Connect to the chosen primary network. */
+		have_target = wifi_cred_find(m1_wifi_primary_ssid, &cred);
+	}
+	else
+	{
+		/* No primary set: fall back to the sole saved network when there is
+		 * exactly one (unambiguous). With multiple saved and no primary chosen,
+		 * do nothing rather than guess which. */
+		wifi_credential_t creds[WIFI_CRED_MAX_STORED];
+		uint8_t n = wifi_cred_load_all(creds, WIFI_CRED_MAX_STORED);
+		if ( n == 1 )
+		{
+			memcpy(&cred, &creds[0], sizeof(cred));
+			have_target = true;
+		}
+		memset(creds, 0, sizeof(creds));   /* wipe plaintext passwords from stack */
+	}
+
+	if ( !have_target )
+		return;
+	if ( !wifi_ensure_esp32_ready() )
+	{
+		memset(&cred, 0, sizeof(cred));
+		return;
+	}
+
+	wifi_do_connect(cred.ssid, cred.password);
+
+	/* Wipe the plaintext password copy from stack */
+	memset(&cred, 0, sizeof(cred));
+#endif
+}
+
+
 void wifi_saved_networks(void)
 {
 	S_M1_Buttons_Status this_button_status;
@@ -1534,9 +1602,16 @@ void wifi_saved_networks(void)
 
 		y_offset = 14 + M1_GUI_FONT_HEIGHT;
 
-		/* Show selected network SSID */
-		strncpy(prn_msg, creds[sel_idx].ssid, 20);
-		prn_msg[20] = '\0';
+		/* Show selected network SSID, prefixed with "*" when it's the primary. */
+		bool sel_is_primary = ( m1_wifi_primary_ssid[0]
+			&& strncmp(creds[sel_idx].ssid, m1_wifi_primary_ssid, SSID_LENGTH - 1) == 0 );
+		if ( sel_is_primary )
+			snprintf(prn_msg, sizeof(prn_msg), "* %.18s", creds[sel_idx].ssid);
+		else
+		{
+			strncpy(prn_msg, creds[sel_idx].ssid, 20);
+			prn_msg[20] = '\0';
+		}
 		u8g2_DrawStr(&m1_u8g2, 2, y_offset, prn_msg);
 		y_offset += M1_GUI_FONT_HEIGHT + 2;
 
@@ -1554,6 +1629,9 @@ void wifi_saved_networks(void)
 		u8g2_DrawStr(&m1_u8g2, 2, y_offset, ok_label);
 		y_offset += M1_GUI_FONT_HEIGHT;
 		u8g2_DrawStr(&m1_u8g2, 2, y_offset, "RIGHT: Delete");
+		y_offset += M1_GUI_FONT_HEIGHT;
+		u8g2_DrawStr(&m1_u8g2, 2, y_offset,
+			sel_is_primary ? "LEFT: Unset Pri" : "LEFT: Set Primary");
 
 		m1_u8g2_nextpage();
 
@@ -1614,6 +1692,13 @@ void wifi_saved_networks(void)
 			{
 				/* Delete credential */
 				wifi_display_msg("Deleting...", creds[sel_idx].ssid);
+				/* If this was the primary network, clear the primary flag too. */
+				if ( m1_wifi_primary_ssid[0]
+					&& strncmp(creds[sel_idx].ssid, m1_wifi_primary_ssid, SSID_LENGTH - 1) == 0 )
+				{
+					m1_wifi_primary_ssid[0] = '\0';
+					settings_save_to_sd();
+				}
 				wifi_cred_delete(creds[sel_idx].ssid);
 				vTaskDelay(pdMS_TO_TICKS(1000));
 
@@ -1630,6 +1715,27 @@ void wifi_saved_networks(void)
 					sel_idx = cred_count - 1;
 				u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
 			}
+			else if ( this_button_status.event[BUTTON_LEFT_KP_ID]==BUTTON_EVENT_CLICK )
+			{
+				/* Toggle "primary network". Only one primary at a time — setting a
+				 * new one overwrites the single stored SSID, so any prior primary is
+				 * automatically cleared. Press again on the primary to clear it. */
+				if ( m1_wifi_primary_ssid[0]
+					&& strncmp(creds[sel_idx].ssid, m1_wifi_primary_ssid, SSID_LENGTH - 1) == 0 )
+				{
+					m1_wifi_primary_ssid[0] = '\0';
+					wifi_display_msg("Primary", "cleared");
+				}
+				else
+				{
+					strncpy(m1_wifi_primary_ssid, creds[sel_idx].ssid, WIFI_CRED_SSID_MAX_LEN - 1);
+					m1_wifi_primary_ssid[WIFI_CRED_SSID_MAX_LEN - 1] = '\0';
+					wifi_display_msg("Primary set:", creds[sel_idx].ssid);
+				}
+				settings_save_to_sd();
+				vTaskDelay(pdMS_TO_TICKS(1000));
+				u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+			}
 		}
 	} // while(1)
 } // void wifi_saved_networks(void)
@@ -1641,6 +1747,148 @@ void wifi_saved_networks(void)
   * @brief Show WiFi connection status - IP, SSID, RSSI, MAC
   */
 /*============================================================================*/
+/*============================================================================*/
+/**
+  * @brief  WiFi Hotspot (SoftAP) menu: enable/disable, edit SSID + password,
+  *         show connected-client count. The ESP hosts a real WiFi network the
+  *         phone joins (no router) to reach qMonstatek.
+  */
+/*============================================================================*/
+void wifi_hotspot_menu(void)
+{
+	S_M1_Buttons_Status this_button_status;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	uint8_t sel = 0;            /* 0 = Enable, 1 = SSID, 2 = Password */
+	bool redraw = true;
+	char line[26];
+
+	while (1)
+	{
+		if (redraw)
+		{
+			redraw = false;
+			uint8_t clients = 0, net = 0;
+			if (m1_hotspot_on)
+				m1_esp_client_softap_status(&clients, &net);
+
+			m1_u8g2_firstpage();
+			u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+			u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+			u8g2_DrawXBMP(&m1_u8g2, 0, 0, 128, 14, m1_frame_128_14);
+			u8g2_DrawStr(&m1_u8g2, 2, M1_GUI_ROW_SPACING + M1_GUI_FONT_HEIGHT, "WiFi Hotspot");
+
+			u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
+			int y = 24;
+			if (m1_hotspot_on)
+				snprintf(line, sizeof(line), "%c Hotspot ON (%u) %s",
+					sel==0?'>':' ', clients, net ? "internet" : "local");
+			else
+				snprintf(line, sizeof(line), "%c Hotspot: OFF", sel==0?'>':' ');
+			u8g2_DrawStr(&m1_u8g2, 2, y, line); y += 11;
+			snprintf(line, sizeof(line), "%c SSID:%.13s", sel==1?'>':' ', m1_hotspot_ssid);
+			u8g2_DrawStr(&m1_u8g2, 2, y, line); y += 11;
+			snprintf(line, sizeof(line), "%c Pass:%.13s", sel==2?'>':' ', m1_hotspot_pass);
+			u8g2_DrawStr(&m1_u8g2, 2, y, line);
+
+			u8g2_DrawHLine(&m1_u8g2, 0, 54, 128);
+			u8g2_DrawStr(&m1_u8g2, 2, 63, "OK:Set  U/D  BACK");
+			m1_u8g2_nextpage();
+		}
+
+		/* 1s timeout so the client-count / internet status refreshes live. */
+		ret = xQueueReceive(main_q_hdl, &q_item, pdMS_TO_TICKS(1000));
+		if ( ret != pdTRUE )
+		{
+			if ( m1_hotspot_on ) redraw = true;   /* live status refresh */
+			continue;
+		}
+		if ( q_item.q_evt_type != Q_EVENT_KEYPAD )
+			continue;
+		xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+
+		if ( this_button_status.event[BUTTON_BACK_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			xQueueReset(main_q_hdl);
+			return;
+		}
+		else if ( this_button_status.event[BUTTON_UP_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			sel = (sel==0) ? 2 : (uint8_t)(sel-1);
+			redraw = true;
+		}
+		else if ( this_button_status.event[BUTTON_DOWN_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			sel = (sel==2) ? 0 : (uint8_t)(sel+1);
+			redraw = true;
+		}
+		else if ( this_button_status.event[BUTTON_OK_KP_ID]==BUTTON_EVENT_CLICK
+		       || this_button_status.event[BUTTON_RIGHT_KP_ID]==BUTTON_EVENT_CLICK )
+		{
+			if ( sel == 0 )
+			{
+				/* Toggle the hotspot. */
+				if ( !m1_hotspot_on )
+				{
+					if ( !wifi_ensure_esp32_ready() )
+					{
+						wifi_display_msg("ESP32", "not ready!");
+						vTaskDelay(pdMS_TO_TICKS(1500));
+					}
+					else
+					{
+						wifi_display_busy("Starting AP...");
+						if ( m1_esp_client_softap_start(m1_hotspot_ssid, m1_hotspot_pass, 1) )
+						{
+							m1_hotspot_on = 1;
+							settings_save_to_sd();
+						}
+						else
+						{
+							wifi_display_msg("Hotspot", "start failed");
+							vTaskDelay(pdMS_TO_TICKS(1500));
+						}
+					}
+				}
+				else
+				{
+					m1_esp_client_softap_stop();
+					m1_hotspot_on = 0;
+					settings_save_to_sd();
+				}
+			}
+			else if ( sel == 1 )
+			{
+				char newv[WIFI_CRED_SSID_MAX_LEN];
+				if ( m1_vkb_get_text("Hotspot SSID", m1_hotspot_ssid, newv, sizeof(newv))
+					&& newv[0] )
+				{
+					strncpy(m1_hotspot_ssid, newv, WIFI_CRED_SSID_MAX_LEN - 1);
+					m1_hotspot_ssid[WIFI_CRED_SSID_MAX_LEN - 1] = '\0';
+					settings_save_to_sd();
+					if ( m1_hotspot_on )   /* re-apply live */
+						m1_esp_client_softap_start(m1_hotspot_ssid, m1_hotspot_pass, 1);
+				}
+			}
+			else /* sel == 2 : password */
+			{
+				char newv[WIFI_CRED_PASS_MAX_LEN];
+				if ( m1_vkb_get_text("Pass (blank=open)", m1_hotspot_pass, newv, sizeof(newv)) )
+				{
+					strncpy(m1_hotspot_pass, newv, WIFI_CRED_PASS_MAX_LEN - 1);
+					m1_hotspot_pass[WIFI_CRED_PASS_MAX_LEN - 1] = '\0';
+					settings_save_to_sd();
+					if ( m1_hotspot_on )
+						m1_esp_client_softap_start(m1_hotspot_ssid, m1_hotspot_pass, 1);
+				}
+			}
+			redraw = true;
+			u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+		}
+	}
+} // void wifi_hotspot_menu(void)
+
+
 void wifi_show_status(void)
 {
 	S_M1_Buttons_Status this_button_status;

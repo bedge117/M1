@@ -426,6 +426,18 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
   return result;
 }
 
+/* True while a CDC IN transfer is still in flight. The class holds the caller's
+ * TX buffer by pointer until the transfer completes (TxState clears in the USB
+ * IRQ), so anyone reusing a shared TX buffer must wait for this to go 0 before
+ * overwriting it — otherwise the in-flight frame is corrupted on the wire. */
+uint8_t CDC_Transmit_Busy(void)
+{
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+  if (hcdc == NULL)
+    return 0;   /* not enumerated — nothing in flight */
+  return (hcdc->TxState != 0) ? 1 : 0;
+}
+
 /**
   * @}
   */

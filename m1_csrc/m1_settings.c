@@ -20,6 +20,8 @@
 #include "main.h"
 #include "m1_settings.h"
 #include "m1_rpc.h"       /* m1_rpc_esp_fw_str — ESP coprocessor fw for About */
+#include "m1_wifi.h"      /* m1_wifi_boot_connect, m1_wifi_primary_ssid */
+#include "m1_wifi_cred.h" /* WIFI_CRED_SSID_MAX_LEN */
 #include "m1_buzzer.h"
 #include "m1_lcd.h"
 #include "m1_lp5814.h"
@@ -31,6 +33,7 @@
 #include "m1_system.h"
 #include "m1_file_util.h"
 #include "m1_esp32_hal.h"  /* m1_esp32_init / m1_esp32_reboot / init status */
+#include "m1_esp_client.h" /* m1_esp_client_ble_direct — Bluetooth Direct toggle */
 
 /*************************** D E F I N E S ************************************/
 
@@ -412,7 +415,9 @@ void settings_power(void)
 /*============================================================================*/
 static void settings_system_draw(uint8_t sel)
 {
-    static const char *items[3] = { "ESP32 at boot", "Initialize ESP32", "Reboot ESP32" };
+    static const char *items[5] = { "ESP32 at boot", "WiFi on boot", "Bluetooth Direct",
+                                    "Initialize ESP32", "Reboot ESP32" };
+    const uint8_t SYS_SETTINGS_ITEMS = 5;
 
     m1_u8g2_firstpage();
     u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
@@ -421,9 +426,16 @@ static void settings_system_draw(uint8_t sel)
     m1_draw_text(&m1_u8g2, 2, 10, 124, "System Settings", TEXT_ALIGN_CENTER);
 
     u8g2_SetFont(&m1_u8g2, M1_DISP_SUB_MENU_FONT_N);
-    for (uint8_t i = 0; i < 3; i++)
+
+    /* Scrollable window: show 3 of the items at a time. */
+    uint8_t visible_start = 0;
+    if (sel > 1 && SYS_SETTINGS_ITEMS > 3)
+        visible_start = (sel - 1 > SYS_SETTINGS_ITEMS - 3) ? SYS_SETTINGS_ITEMS - 3 : sel - 1;
+
+    for (uint8_t vi = 0; vi < 3 && (visible_start + vi) < SYS_SETTINGS_ITEMS; vi++)
     {
-        int y = 24 + i * 12;
+        uint8_t i = visible_start + vi;
+        int y = 24 + vi * 12;
         if (i == sel)
         {
             u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
@@ -433,6 +445,10 @@ static void settings_system_draw(uint8_t sel)
         m1_draw_text(&m1_u8g2, 4, y, 96, items[i], TEXT_ALIGN_LEFT);
         if (i == 0)
             m1_draw_text(&m1_u8g2, 96, y, 30, m1_esp32_auto_init ? "ON" : "OFF", TEXT_ALIGN_LEFT);
+        else if (i == 1)
+            m1_draw_text(&m1_u8g2, 96, y, 30, m1_wifi_boot_connect ? "ON" : "OFF", TEXT_ALIGN_LEFT);
+        else if (i == 2)
+            m1_draw_text(&m1_u8g2, 96, y, 30, m1_ble_direct ? "ON" : "OFF", TEXT_ALIGN_LEFT);
         u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
     }
 
@@ -474,22 +490,34 @@ void settings_system(void)
         }
         else if (this_button_status.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
         {
-            if (sel < 2) sel++;
+            if (sel < 4) sel++;
             settings_system_draw(sel);
         }
-        else if (sel == 0 &&
+        else if ((sel == 0 || sel == 1 || sel == 2) &&
                  (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK ||
                   this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK ||
                   this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK))
         {
-            /* ESP32 at boot: toggle ON/OFF */
-            m1_esp32_auto_init = m1_esp32_auto_init ? 0 : 1;
+            if (sel == 0)
+                /* ESP32 at boot: toggle ON/OFF */
+                m1_esp32_auto_init = m1_esp32_auto_init ? 0 : 1;
+            else if (sel == 1)
+                /* Connect to WiFi (primary network) at boot: toggle ON/OFF */
+                m1_wifi_boot_connect = m1_wifi_boot_connect ? 0 : 1;
+            else
+            {
+                /* Bluetooth Direct: toggle + tell the ESP to start/stop NUS
+                 * advertising now (best-effort; re-applied at boot too). */
+                m1_ble_direct = m1_ble_direct ? 0 : 1;
+                if (m1_esp32_get_init_status())
+                    m1_esp_client_ble_direct(m1_ble_direct ? true : false);
+            }
             settings_save_to_sd();
             settings_system_draw(sel);
         }
         else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK)
         {
-            if (sel == 1)
+            if (sel == 3)
             {
                 /* Initialize ESP32 (brings up the link if not already up) */
                 if (!m1_esp32_get_init_status())
@@ -502,7 +530,7 @@ void settings_system(void)
                     m1_message_box(&m1_u8g2, "ESP32", "Already", "initialized", " OK ");
                 }
             }
-            else if (sel == 2)
+            else if (sel == 4)
             {
                 /* Reboot ESP32 only (M1 keeps running) */
                 m1_esp32_reboot();
@@ -652,7 +680,7 @@ void settings_save_to_sd(void)
     FIL fp;
     FRESULT fres;
     UINT bw;
-    char buf[64];
+    char buf[96];   /* wide enough for hotspot_pass=<up to 64 chars> */
 
     /* Ensure System directory exists */
     f_mkdir("0:/System");
@@ -683,6 +711,22 @@ void settings_save_to_sd(void)
     f_write(&fp, buf, strlen(buf), &bw);
 
     snprintf(buf, sizeof(buf), "ism_region=%d\n", m1_device_stat.config.ism_band_region);
+    f_write(&fp, buf, strlen(buf), &bw);
+
+    snprintf(buf, sizeof(buf), "wifi_boot_connect=%d\n", m1_wifi_boot_connect);
+    f_write(&fp, buf, strlen(buf), &bw);
+
+    snprintf(buf, sizeof(buf), "wifi_primary=%s\n", m1_wifi_primary_ssid);
+    f_write(&fp, buf, strlen(buf), &bw);
+
+    snprintf(buf, sizeof(buf), "ble_direct=%d\n", m1_ble_direct);
+    f_write(&fp, buf, strlen(buf), &bw);
+
+    snprintf(buf, sizeof(buf), "hotspot_on=%d\n", m1_hotspot_on);
+    f_write(&fp, buf, strlen(buf), &bw);
+    snprintf(buf, sizeof(buf), "hotspot_ssid=%s\n", m1_hotspot_ssid);
+    f_write(&fp, buf, strlen(buf), &bw);
+    snprintf(buf, sizeof(buf), "hotspot_pass=%s\n", m1_hotspot_pass);
     f_write(&fp, buf, strlen(buf), &bw);
 
 #ifdef M1_APP_BADBT_ENABLE
@@ -782,6 +826,70 @@ void settings_load_from_sd(void)
         val = (int)(*(p + 11) - '0');
         if (val >= 0 && val <= 3)
             m1_device_stat.config.ism_band_region = (uint8_t)val;
+    }
+
+    /* Parse "wifi_boot_connect=X" */
+    p = strstr(buf, "wifi_boot_connect=");
+    if (p != NULL)
+    {
+        val = (int)(*(p + 18) - '0');
+        if (val == 0 || val == 1)
+            m1_wifi_boot_connect = (uint8_t)val;
+    }
+
+    /* Parse "ble_direct=X" */
+    p = strstr(buf, "ble_direct=");
+    if (p != NULL)
+    {
+        val = (int)(*(p + 11) - '0');
+        if (val == 0 || val == 1)
+            m1_ble_direct = (uint8_t)val;
+    }
+
+    /* Parse "hotspot_on=X" */
+    p = strstr(buf, "hotspot_on=");
+    if (p != NULL)
+    {
+        val = (int)(*(p + 11) - '0');
+        if (val == 0 || val == 1)
+            m1_hotspot_on = (uint8_t)val;
+    }
+
+    /* Parse "hotspot_ssid=..." (to end-of-line) */
+    p = strstr(buf, "hotspot_ssid=");
+    if (p != NULL)
+    {
+        p += 13;
+        char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        uint16_t len = (uint16_t)(end - p);
+        if (len >= WIFI_CRED_SSID_MAX_LEN) len = WIFI_CRED_SSID_MAX_LEN - 1;
+        if (len > 0) { memcpy(m1_hotspot_ssid, p, len); m1_hotspot_ssid[len] = '\0'; }
+    }
+
+    /* Parse "hotspot_pass=..." (to end-of-line; may be empty = open) */
+    p = strstr(buf, "hotspot_pass=");
+    if (p != NULL)
+    {
+        p += 13;
+        char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        uint16_t len = (uint16_t)(end - p);
+        if (len >= WIFI_CRED_PASS_MAX_LEN) len = WIFI_CRED_PASS_MAX_LEN - 1;
+        memcpy(m1_hotspot_pass, p, len); m1_hotspot_pass[len] = '\0';
+    }
+
+    /* Parse "wifi_primary=SSID" (SSID up to end-of-line) */
+    p = strstr(buf, "wifi_primary=");
+    if (p != NULL)
+    {
+        p += 13;  /* skip "wifi_primary=" */
+        char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        uint16_t len = (uint16_t)(end - p);
+        if (len >= WIFI_CRED_SSID_MAX_LEN) len = WIFI_CRED_SSID_MAX_LEN - 1;
+        memcpy(m1_wifi_primary_ssid, p, len);
+        m1_wifi_primary_ssid[len] = '\0';
     }
 
     /* Legacy: migrate "southpaw=1" if no orientation key found */

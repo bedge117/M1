@@ -91,7 +91,16 @@ int m1_link_transfer(const uint8_t *tx_frame, uint16_t tx_len,
     M1L_BC_STAGE(0x52);   /* breadcrumb: SPI transfer returned (st in BKP9R) */
     m1_link_bc(9, (uint32_t)st);
     cs_release();
-    if (st != HAL_OK) return -2;
+    if (st != HAL_OK)
+    {
+        /* SELF-HEAL: a transient SPI fault (OVR / mode-fault / HAL timeout) leaves
+         * SPI3's FIFO/packing byte-shifted, so EVERY later fixed-size exchange
+         * fails CRC and the ESP reads as permanently "not available" until a full
+         * re-init. Abort resets the peripheral state machine + flushes the FIFOs,
+         * so the NEXT transaction recovers on its own — no deinit/init needed. */
+        HAL_SPI_Abort(&hspi_esp);
+        return -2;
+    }
 
     /* Deliver a valid, non-IDLE received frame. */
     m1esp_header_t h;

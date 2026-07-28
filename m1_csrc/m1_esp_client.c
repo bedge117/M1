@@ -652,6 +652,61 @@ bool m1_esp_client_ble_spam_stop(void)
     return (n >= 1) && (resp[0] == M1ESP_OK);
 }
 
+/* WiFi Hotspot (SoftAP): bring up a real AP the phone can join (no router).
+ * Payload: [channel:1][ssid\0][pass\0]. */
+bool m1_esp_client_softap_start(const char *ssid, const char *pass, uint8_t channel)
+{
+    uint8_t p[1 + 33 + 65];
+    uint16_t o = 0;
+    size_t sl = strnlen(ssid ? ssid : "", 32);
+    size_t pl = strnlen(pass ? pass : "", 64);
+
+    p[o++] = channel;
+    memcpy(&p[o], ssid, sl); o += (uint16_t)sl; p[o++] = '\0';
+    memcpy(&p[o], pass, pl); o += (uint16_t)pl; p[o++] = '\0';
+
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_SOFTAP_START, p, o, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+bool m1_esp_client_softap_stop(void)
+{
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_SOFTAP_STOP, NULL, 0, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+/* Number of stations currently joined to the hotspot. */
+uint8_t m1_esp_client_softap_sta_count(void)
+{
+    uint8_t resp[2] = { 0, 0 };
+    int n = esp_call(M1ESP_SOFTAP_STA_LIST, NULL, 0, resp, sizeof(resp));
+    return (n >= 1) ? resp[0] : 0;
+}
+
+/* Hotspot status in one call: connected client count + whether internet is being
+ * shared to clients (NAT via an upstream STA link). Returns false on RPC error. */
+bool m1_esp_client_softap_status(uint8_t *count, uint8_t *internet_shared)
+{
+    uint8_t resp[2] = { 0, 0 };
+    int n = esp_call(M1ESP_SOFTAP_STA_LIST, NULL, 0, resp, sizeof(resp));
+    if (n < 1) return false;
+    if (count)           *count           = resp[0];
+    if (internet_shared) *internet_shared = (n >= 2) ? resp[1] : 0;
+    return true;
+}
+
+/* Bluetooth Direct: start/stop the ESP advertising its NUS RPC service so a
+ * phone can connect over BLE and speak the same RPC as WiFi/USB. */
+bool m1_esp_client_ble_direct(bool enable)
+{
+    uint8_t p[1] = { enable ? 1u : 0u };
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_BLE_RPC_ADV, p, 1, resp, sizeof(resp));
+    return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
 bool m1_esp_client_ble_hid_init(const char *name)
 {
     uint8_t nl = (uint8_t)strnlen(name ? name : "", 31);

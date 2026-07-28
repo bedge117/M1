@@ -34,6 +34,7 @@
 #include "m1_bt.h"
 #include "m1_802154.h"
 #include "m1_esp32_hal.h"
+#include "m1_esp_client.h"   /* m1_esp_client_ble_direct — apply Bluetooth Direct at boot */
 #include "esp_app_main.h"
 #include "m1_compile_cfg.h"
 
@@ -425,10 +426,15 @@ S_M1_Menu_t menu_Wifi_Disconnect =
     "Disconnect", wifi_disconnect, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
+S_M1_Menu_t menu_Wifi_Hotspot =
+{
+    "WiFi Hotspot", wifi_hotspot_menu, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 S_M1_Menu_t menu_Wifi =
 {
-    "Wifi", menu_wifi_init, NULL, NULL, 13, 0, menu_m1_icon_wifi, NULL,
-    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_ProbeFlood, &menu_Wifi_Karma, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_802154_Flood, &menu_Wifi_Config, &menu_Wifi_Status, &menu_Wifi_Disconnect}
+    "Wifi", menu_wifi_init, NULL, NULL, 14, 0, menu_m1_icon_wifi, NULL,
+    {&menu_Wifi_Scan_AP, &menu_Wifi_Deauth, &menu_Wifi_Handshake, &menu_Wifi_Beacon, &menu_Wifi_ProbeFlood, &menu_Wifi_Karma, &menu_Wifi_Monitor, &menu_Wifi_Captive, &menu_802154_Scan, &menu_802154_Flood, &menu_Wifi_Config, &menu_Wifi_Hotspot, &menu_Wifi_Status, &menu_Wifi_Disconnect}
 };
 #else
 S_M1_Menu_t menu_Wifi =
@@ -638,6 +644,20 @@ void menu_main_handler_task(void *param)
 		m1_esp32_init();
 		esp32_main_init();
 	}
+
+	/* Auto-connect to the primary WiFi network if the user enabled it. No-op
+	 * unless the toggle is on and a primary network is set; brings the ESP up
+	 * itself if ESP-at-boot was off. */
+	wifi_boot_autoconnect();
+
+	/* Apply the Bluetooth Direct toggle: tell the ESP to advertise its NUS RPC
+	 * service so a phone can connect over BLE. Only when the ESP is already up. */
+	if (m1_ble_direct && m1_esp32_get_init_status())
+		m1_esp_client_ble_direct(true);
+
+	/* Apply the WiFi Hotspot (SoftAP) toggle: bring the AP back up at boot. */
+	if (m1_hotspot_on && m1_esp32_get_init_status())
+		m1_esp_client_softap_start(m1_hotspot_ssid, m1_hotspot_pass, 1);
 
 	vTaskDelay(POWER_UP_SYS_CONFIG_WAIT_TIME); // Give some time to startup_config_handler() during power-up
 	while(1)

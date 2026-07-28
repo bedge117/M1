@@ -27,6 +27,7 @@ void gpio_3_3v_on_gpio(void);
 void gpio_5v_on_gpio(void);
 void gpio_usb_uart_bridge(void);
 void tool_i2c_scanner(void);   /* bit-bang I2C scanner on header pins 6/7 */
+uint8_t m1_i2c_scan(uint8_t *out, uint8_t max);  /* headless scan for RPC — returns count */
 void tool_pin_reader(void);    /* live logic-level reader for header GPIOs */
 void tool_peer_recover(void);  /* bit-bang SWD host to read/recover a peer M1 via header pins */
 

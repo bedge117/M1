@@ -122,6 +122,11 @@ bool m1_esp_client_ble_advertise(const char *name);
 /* BLE spam: proximity-pair popup flooder. mode 0=Apple 1=FastPair 2=Samsung
  * 3=SwiftPair 4=All. start returns true on ACK; stop halts it. */
 bool m1_esp_client_ble_spam_start(uint8_t mode);
+bool m1_esp_client_ble_direct(bool enable);
+bool m1_esp_client_softap_start(const char *ssid, const char *pass, uint8_t channel);
+bool m1_esp_client_softap_stop(void);
+uint8_t m1_esp_client_softap_sta_count(void);
+bool m1_esp_client_softap_status(uint8_t *count, uint8_t *internet_shared);
 bool m1_esp_client_ble_spam_stop(void);
 
 /* Push a framebuffer to the ESP (for qMonstatek forwarding). */
