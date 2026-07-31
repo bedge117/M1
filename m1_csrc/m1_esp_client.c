@@ -698,13 +698,34 @@ bool m1_esp_client_softap_status(uint8_t *count, uint8_t *internet_shared)
 }
 
 /* Bluetooth Direct: start/stop the ESP advertising its NUS RPC service so a
- * phone can connect over BLE and speak the same RPC as WiFi/USB. */
-bool m1_esp_client_ble_direct(bool enable)
+ * phone can connect over BLE and speak the same RPC as WiFi/USB. When enabling,
+ * the Direct name is sent too so the ESP advertises under OUR name (kept fully
+ * separate from the Bad-BT HID name). A NULL/empty name keeps the current one. */
+bool m1_esp_client_ble_direct(bool enable, const char *name)
 {
-    uint8_t p[1] = { enable ? 1u : 0u };
+    uint8_t p[1 + 31];
+    p[0] = enable ? 1u : 0u;
+    uint16_t len = 1;
+    if (enable && name && name[0]) {
+        uint8_t nl = (uint8_t)strnlen(name, 31);
+        memcpy(&p[1], name, nl);
+        len = (uint16_t)(1 + nl);
+    }
     uint8_t resp[1] = { 0 };
-    int n = esp_call(M1ESP_BLE_RPC_ADV, p, 1, resp, sizeof(resp));
+    int n = esp_call(M1ESP_BLE_RPC_ADV, p, len, resp, sizeof(resp));
     return (n >= 1) && (resp[0] == M1ESP_OK);
+}
+
+/* Query which BLE role(s) are active for the BT-info screen. Flags: bit0 direct
+ * advertising, bit1 direct connected, bit2 bad-bt advertising, bit3 bad-bt
+ * connected. Returns false if the ESP didn't answer. */
+bool m1_esp_client_ble_state(uint8_t *flags)
+{
+    uint8_t resp[1] = { 0 };
+    int n = esp_call(M1ESP_BLE_STATE, NULL, 0, resp, sizeof(resp));
+    if (n < 1) return false;
+    if (flags) *flags = resp[0];
+    return true;
 }
 
 bool m1_esp_client_ble_hid_init(const char *name)

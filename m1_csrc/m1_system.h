@@ -180,6 +180,8 @@ extern uint8_t              m1_menu_style;          /* 0=Small(8px),1=Medium(10p
 #define BADBT_NAME_MAX_LEN 20
 extern char m1_badbt_name[BADBT_NAME_MAX_LEN + 1];
 #endif
+#define BT_DIRECT_NAME_MAX_LEN 20
+extern char m1_bt_direct_name[BT_DIRECT_NAME_MAX_LEN + 1];
 extern TaskHandle_t			system_task_hdl;
 extern TaskHandle_t 		idle_task_hdl;
 extern QueueHandle_t 		button_events_q_hdl;

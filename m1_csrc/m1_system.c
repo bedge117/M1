@@ -68,6 +68,8 @@ uint8_t                 m1_menu_style = 0;         /* Small — scene-menu font 
 #ifdef M1_APP_BADBT_ENABLE
 char                    m1_badbt_name[BADBT_NAME_MAX_LEN + 1] = "M1-BadBT";
 #endif
+/* Bluetooth-Direct (NUS) advertised name — independent of the Bad-BT HID name. */
+char                    m1_bt_direct_name[BT_DIRECT_NAME_MAX_LEN + 1] = "M1-Direct";
 QueueHandle_t 			button_events_q_hdl = NULL;
 TaskHandle_t			system_task_hdl;
 TaskHandle_t 			idle_task_hdl;

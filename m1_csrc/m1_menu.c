@@ -471,6 +471,11 @@ S_M1_Menu_t menu_Bluetooth_Info =
     "BT Info", bluetooth_info, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
+S_M1_Menu_t menu_Bluetooth_Direct =
+{
+    "BT Direct", bluetooth_direct, NULL, NULL, 0, 0, NULL, NULL, NULL
+};
+
 #ifdef M1_APP_BADBT_ENABLE
 #include "m1_badbt.h"
 
@@ -486,14 +491,14 @@ S_M1_Menu_t menu_Bluetooth_BTName =
 
 S_M1_Menu_t menu_Bluetooth =
 {
-    "Bluetooth", menu_bluetooth_init, NULL, NULL, 7, 0, menu_m1_icon_bluetooth, NULL,
-    {&menu_Bluetooth_Scan, &menu_Bluetooth_Spam, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_BadBT, &menu_Bluetooth_BTName, &menu_Bluetooth_Info}
+    "Bluetooth", menu_bluetooth_init, NULL, NULL, 8, 0, menu_m1_icon_bluetooth, NULL,
+    {&menu_Bluetooth_Scan, &menu_Bluetooth_Spam, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_BadBT, &menu_Bluetooth_BTName, &menu_Bluetooth_Direct, &menu_Bluetooth_Info}
 };
 #else
 S_M1_Menu_t menu_Bluetooth =
 {
-    "Bluetooth", menu_bluetooth_init, NULL, NULL, 5, 0, menu_m1_icon_bluetooth, NULL,
-    {&menu_Bluetooth_Scan, &menu_Bluetooth_Spam, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_Info}
+    "Bluetooth", menu_bluetooth_init, NULL, NULL, 6, 0, menu_m1_icon_bluetooth, NULL,
+    {&menu_Bluetooth_Scan, &menu_Bluetooth_Spam, &menu_Bluetooth_Saved, &menu_Bluetooth_Advertise, &menu_Bluetooth_Direct, &menu_Bluetooth_Info}
 };
 #endif /* M1_APP_BADBT_ENABLE */
 
@@ -653,7 +658,7 @@ void menu_main_handler_task(void *param)
 	/* Apply the Bluetooth Direct toggle: tell the ESP to advertise its NUS RPC
 	 * service so a phone can connect over BLE. Only when the ESP is already up. */
 	if (m1_ble_direct && m1_esp32_get_init_status())
-		m1_esp_client_ble_direct(true);
+		m1_esp_client_ble_direct(true, m1_bt_direct_name);
 
 	/* Apply the WiFi Hotspot (SoftAP) toggle: bring the AP back up at boot. */
 	if (m1_hotspot_on && m1_esp32_get_init_status())

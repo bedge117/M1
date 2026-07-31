@@ -37,6 +37,8 @@
 #include "m1_virtual_kb.h"
 #include "m1_settings.h"
 #include "m1_system.h"
+#include "m1_esp_client.h"   /* m1_esp_client_ble_direct / _ble_state — BT Direct */
+#include "m1_wifi.h"         /* m1_ble_direct — shared Bluetooth-Direct enable flag */
 
 /*************************** D E F I N E S ************************************/
 
@@ -795,36 +797,36 @@ void bluetooth_info(void)
 		strncpy(version_str, "ESP32 offline", sizeof(version_str) - 1);
 	}
 
+	/* Query live BLE role/state (Direct + Bad-BT) for the "what's active" lines. */
+	uint8_t ble_flags = 0;
+	const char *direct_state;
+	const char *badbt_state;
+	if (get_esp32_main_init_status())
+		m1_esp_client_ble_state(&ble_flags);
+	if (m1_ble_direct)
+		direct_state = (ble_flags & 0x02) ? "connected"
+		             : (ble_flags & 0x01) ? "advertising" : "on";
+	else
+		direct_state = "off";
+	badbt_state = (ble_flags & 0x08) ? "connected"
+	            : (ble_flags & 0x04) ? "advertising" : "idle";
+
 	/* Draw info screen */
 	m1_u8g2_firstpage();
 	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
 	u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
 	bt_draw_title_bar("BT Info");
 
-	y = 24;
-	u8g2_DrawStr(&m1_u8g2, 2, y, "ESP32 AT FW:");
-	y += 10;
-	u8g2_DrawStr(&m1_u8g2, 4, y, version_str);
-	y += 12;
-
-	if (s_bt_conn_state.connected)
-	{
-		u8g2_DrawStr(&m1_u8g2, 2, y, "Connected:");
-		y += 10;
-		if (s_bt_conn_state.name[0])
-		{
-			char nbuf[22];
-			strncpy(nbuf, s_bt_conn_state.name, 21);
-			nbuf[21] = '\0';
-			u8g2_DrawStr(&m1_u8g2, 4, y, nbuf);
-		}
-		else
-			u8g2_DrawStr(&m1_u8g2, 4, y, s_bt_conn_state.addr);
-	}
-	else
-	{
-		u8g2_DrawStr(&m1_u8g2, 2, y, "Not connected");
-	}
+	char l[26];
+	y = 22;
+	snprintf(l, sizeof(l), "AT FW: %s", version_str);
+	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 11;
+	snprintf(l, sizeof(l), "Direct: %s", direct_state);
+	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 10;
+	snprintf(l, sizeof(l), " %s", m1_bt_direct_name);
+	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 11;
+	snprintf(l, sizeof(l), "Bad-BT: %s", badbt_state);
+	u8g2_DrawStr(&m1_u8g2, 2, y, l);
 
 	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
 	m1_u8g2_nextpage();
@@ -873,6 +875,87 @@ void bluetooth_set_badbt_name(void)
 	}
 }
 #endif /* M1_APP_BADBT_ENABLE */
+
+
+/* Bluetooth Direct control: a small 2-item menu — set the advertised Name and
+ * toggle the connection ON/OFF at runtime. The ON/OFF is the same persisted
+ * state (m1_ble_direct) as the Settings on-boot toggle. The Direct name is fully
+ * independent of the Bad-BT HID name. */
+static void bt_direct_draw(uint8_t sel)
+{
+	char line[26];
+	m1_u8g2_firstpage();
+	u8g2_SetDrawColor(&m1_u8g2, M1_DISP_DRAW_COLOR_TXT);
+	u8g2_SetFont(&m1_u8g2, M1_DISP_MAIN_MENU_FONT_N);
+	bt_draw_title_bar("BT Direct");
+
+	snprintf(line, sizeof(line), "%c Name: %s", sel == 0 ? '>' : ' ', m1_bt_direct_name);
+	u8g2_DrawStr(&m1_u8g2, 2, 26, line);
+	snprintf(line, sizeof(line), "%c Enable: %s", sel == 1 ? '>' : ' ', m1_ble_direct ? "ON" : "OFF");
+	u8g2_DrawStr(&m1_u8g2, 2, 40, line);
+
+	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
+	m1_u8g2_nextpage();
+}
+
+void bluetooth_direct(void)
+{
+	S_M1_Buttons_Status this_button_status;
+	S_M1_Main_Q_t q_item;
+	BaseType_t ret;
+	uint8_t sel = 0;
+
+	bt_direct_draw(sel);
+
+	while (1)
+	{
+		ret = xQueueReceive(main_q_hdl, &q_item, portMAX_DELAY);
+		if (ret != pdTRUE || q_item.q_evt_type != Q_EVENT_KEYPAD)
+			continue;
+		xQueueReceive(button_events_q_hdl, &this_button_status, 0);
+
+		if (this_button_status.event[BUTTON_BACK_KP_ID] == BUTTON_EVENT_CLICK
+		 || this_button_status.event[BUTTON_LEFT_KP_ID] == BUTTON_EVENT_CLICK)
+			break;
+
+		if (this_button_status.event[BUTTON_UP_KP_ID] == BUTTON_EVENT_CLICK
+		 || this_button_status.event[BUTTON_DOWN_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			sel ^= 1;
+			bt_direct_draw(sel);
+		}
+		else if (this_button_status.event[BUTTON_OK_KP_ID] == BUTTON_EVENT_CLICK
+		      || this_button_status.event[BUTTON_RIGHT_KP_ID] == BUTTON_EVENT_CLICK)
+		{
+			if (sel == 0)
+			{
+				/* Edit the Direct advertised name. */
+				char new_name[BT_DIRECT_NAME_MAX_LEN + 1] = {0};
+				uint8_t len = m1_vkb_get_filename("Direct Name", m1_bt_direct_name, new_name);
+				if (len > 0)
+				{
+					strncpy(m1_bt_direct_name, new_name, BT_DIRECT_NAME_MAX_LEN);
+					m1_bt_direct_name[BT_DIRECT_NAME_MAX_LEN] = '\0';
+					settings_save_to_sd();
+					/* If Direct is currently on, re-push so it re-advertises live. */
+					if (m1_ble_direct && m1_esp32_get_init_status())
+						m1_esp_client_ble_direct(true, m1_bt_direct_name);
+				}
+			}
+			else
+			{
+				/* Toggle Direct on/off (shared persisted state). */
+				m1_ble_direct = m1_ble_direct ? 0 : 1;
+				if (m1_esp32_get_init_status())
+					m1_esp_client_ble_direct(m1_ble_direct ? true : false, m1_bt_direct_name);
+				settings_save_to_sd();
+			}
+			bt_direct_draw(sel);
+		}
+	}
+
+	xQueueReset(main_q_hdl);
+}
 
 
 #else /* !M1_APP_BT_MANAGE_ENABLE — original scan/advertise code */

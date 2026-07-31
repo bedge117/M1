@@ -55,6 +55,7 @@ typedef struct {
 
 void bluetooth_saved_devices(void);
 void bluetooth_info(void);
+void bluetooth_direct(void);
 bt_connection_state_t *bt_get_connection_state(void);
 
 #endif /* M1_APP_BT_MANAGE_ENABLE */

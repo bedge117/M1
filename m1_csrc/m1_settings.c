@@ -510,7 +510,7 @@ void settings_system(void)
                  * advertising now (best-effort; re-applied at boot too). */
                 m1_ble_direct = m1_ble_direct ? 0 : 1;
                 if (m1_esp32_get_init_status())
-                    m1_esp_client_ble_direct(m1_ble_direct ? true : false);
+                    m1_esp_client_ble_direct(m1_ble_direct ? true : false, m1_bt_direct_name);
             }
             settings_save_to_sd();
             settings_system_draw(sel);
@@ -721,6 +721,8 @@ void settings_save_to_sd(void)
 
     snprintf(buf, sizeof(buf), "ble_direct=%d\n", m1_ble_direct);
     f_write(&fp, buf, strlen(buf), &bw);
+    snprintf(buf, sizeof(buf), "bt_direct_name=%s\n", m1_bt_direct_name);
+    f_write(&fp, buf, strlen(buf), &bw);
 
     snprintf(buf, sizeof(buf), "hotspot_on=%d\n", m1_hotspot_on);
     f_write(&fp, buf, strlen(buf), &bw);
@@ -844,6 +846,22 @@ void settings_load_from_sd(void)
         val = (int)(*(p + 11) - '0');
         if (val == 0 || val == 1)
             m1_ble_direct = (uint8_t)val;
+    }
+
+    /* Parse "bt_direct_name=XYZ" (Bluetooth Direct advertised name) */
+    p = strstr(buf, "bt_direct_name=");
+    if (p != NULL)
+    {
+        p += 15;  /* skip "bt_direct_name=" */
+        char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        uint8_t len = end - p;
+        if (len > BT_DIRECT_NAME_MAX_LEN) len = BT_DIRECT_NAME_MAX_LEN;
+        if (len > 0)
+        {
+            memcpy(m1_bt_direct_name, p, len);
+            m1_bt_direct_name[len] = '\0';
+        }
     }
 
     /* Parse "hotspot_on=X" */
