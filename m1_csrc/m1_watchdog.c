@@ -265,34 +265,58 @@ static void m1_wdt_system_check(void)
 	{
 		min = (wdt_report[i].report_period/100)*wdt_report[i].min_rpt_percent;
 		max = (wdt_report[i].report_period/100)*wdt_report[i].max_rpt_percent;
+		/* Decide the outcome under the critical section (atomic read-modify of the
+		 * report fields), but do the LOGGING and the failure handler AFTER exiting.
+		 * M1_LOG_* takes a mutex + queue, which is illegal from inside
+		 * taskENTER_CRITICAL(): under log contention it tries to block with the
+		 * scheduler suspended, which can hang/corrupt this very watchdog task —
+		 * which then stops feeding the IWDG and resets the device. */
+		int      wdt_action = 0;   /* 0=ok, 1=suspended, 2=grace, 3=failure */
+		uint8_t  wdt_id = 0;
+		uint32_t wdt_rt = 0;
 		taskENTER_CRITICAL();
 		/* Consume any post-resume grace this cycle (pass or fail), so it can never
 		 * linger and mask a genuine failure on a later check. */
 		bool grace = wdt_report[i].resume_grace;
 		wdt_report[i].resume_grace = false;
+		wdt_id = wdt_report[i].report_id;
 		if ( (wdt_report[i].run_time >= min) && (wdt_report[i].run_time <= max) )
 		{
-			//M1_LOG_I(M1_LOGDB_TAG, "SysOK\r\n");
 			wdt_report[i].run_time = 0;
+			wdt_action = 0;
 		}
 		else if (wdt_report[i].inactive)
 		{
-			M1_LOG_W(M1_LOGDB_TAG, "Task ID %d suspended\r\n", wdt_report[i].report_id);
 			wdt_report[i].run_time = 0;
+			wdt_action = 1;
 		}
 		else if (grace)
 		{
 			/* First check after resume: the task hasn't had a full period to report
 			 * yet. Give it this one cycle to re-establish before enforcing. */
-			M1_LOG_W(M1_LOGDB_TAG, "Task ID %d resume grace\r\n", wdt_report[i].report_id);
 			wdt_report[i].run_time = 0;
+			wdt_action = 2;
 		}
 		else
 		{
-			M1_LOG_W(M1_LOGDB_TAG, "WDT failure. Task ID %d, run time: %ld\r\n", wdt_report[i].report_id, wdt_report[i].run_time);
-		    m1_wdt_failure_handler();
+			wdt_rt = wdt_report[i].run_time;
+			wdt_action = 3;
 		} // else
 		taskEXIT_CRITICAL();
+
+		if (wdt_action == 1)
+		{
+			M1_LOG_W(M1_LOGDB_TAG, "Task ID %d suspended\r\n", wdt_id);
+		}
+		else if (wdt_action == 2)
+		{
+			M1_LOG_W(M1_LOGDB_TAG, "Task ID %d resume grace\r\n", wdt_id);
+		}
+		else if (wdt_action == 3)
+		{
+			M1_LOG_W(M1_LOGDB_TAG, "WDT failure. Task ID %d, run time: %ld\r\n", wdt_id, wdt_rt);
+			m1_wdt_failure_handler();
+		}
 	} // for(i=0; i<M1_REPORT_ID_END_OF_LIST; i++)
 } // static void m1_wdt_system_check(void)
 

@@ -41,6 +41,16 @@ EndBSPDependencies */
 
 #define MSC_SD_DATATIMEOUT          100000
 
+/* Coarse, context-independent backstop for the SD-DMA completion wait below.
+ * STORAGE_Read/Write run in USB-ISR context, so the RTOS tick (SysTick) may be
+ * blocked and cannot be used as a timeout there. This iteration cap bounds the
+ * otherwise-unconditional spin: it is far beyond any real SD block completion
+ * (sub-millisecond) yet finite, so a lost/never-posted completion recovers as a
+ * USB read/write error instead of hanging the whole USB stack forever (which the
+ * old while(1) did — and it fed the watchdog inside the loop, defeating recovery).
+ * ~tens of millions of light iterations ≈ a few seconds at 250 MHz. */
+#define MSC_SD_WAIT_MAX_SPINS       10000000u
+
 #define SDCARD_CB_READ_CPLT_MSG     1
 #define SDCARD_CB_WRITE_CPLT_MSG    2
 
@@ -196,18 +206,30 @@ int8_t STORAGE_Read(uint8_t lun, uint8_t *buf,
   {
     if (HAL_SD_ReadBlocks_DMA(phsd, buf, (uint32_t)blk_addr, blk_len)==HAL_OK)
     {
-      while(1)
+      uint32_t spins = 0;
+      for (;;)
       {
         status = xQueueReceiveFromISR(sdcard_cb_q_hdl, (void *)&event, &xHigherPriorityTaskWoken);
         if (status==pdTRUE) break;
-        //if (res !=0) DBG_sd_rd_timeout_cnt++;
+        if (++spins >= MSC_SD_WAIT_MAX_SPINS)
+        {
+          /* Completion never arrived — recover instead of hanging forever. Leave
+           * event != CPLT so res stays -1 (USB reports an error and retries). */
+          event = 0;
+          DBG_sd_rd_timeout_cnt++;
+          break;
+        }
         m1_wdt_reset();
       }
       portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 
       if (event==SDCARD_CB_READ_CPLT_MSG)
       {
+        /* The osKernelGetTickCount() bound cannot advance in USB-ISR context (the
+         * tick timer is masked), so add an iteration backstop — otherwise a card
+         * stuck out of TRANSFER hangs here forever while petting the WDT. */
         timer = osKernelGetTickCount();
+        uint32_t cs_spins = 0;
         while ( (osKernelGetTickCount() - timer) < MSC_SD_DATATIMEOUT )
         {
           if (HAL_SD_GetCardState(phsd) == HAL_SD_CARD_TRANSFER)
@@ -215,8 +237,8 @@ int8_t STORAGE_Read(uint8_t lun, uint8_t *buf,
             res = 0;
             break;
           }
+          if (++cs_spins >= MSC_SD_WAIT_MAX_SPINS) { DBG_sd_rd_timeout_cnt++; break; }
           m1_wdt_reset();
-          if (res !=0) DBG_sd_rd_timeout_cnt++;
         } // while (...)
       } // if (event==SDCARD_CB_READ_CPLT_MSG)
       else
@@ -253,12 +275,19 @@ int8_t STORAGE_Write(uint8_t lun, uint8_t *buf,
   {
     if ( HAL_SD_WriteBlocks_DMA(phsd, buf, (uint32_t)blk_addr, blk_len)==HAL_OK )
     {
-      while(1)
+      uint32_t spins = 0;
+      for (;;)
       {
         status = xQueueReceiveFromISR(sdcard_cb_q_hdl, (void *)&event, &xHigherPriorityTaskWoken);
         if (status==pdTRUE) break;
-
-        //if (res !=0) DBG_sd_wr_timeout_cnt++;
+        if (++spins >= MSC_SD_WAIT_MAX_SPINS)
+        {
+          /* Completion never arrived — recover instead of hanging forever. Leave
+           * event != CPLT so res stays -1 (USB reports an error and retries). */
+          event = 0;
+          DBG_sd_wr_timeout_cnt++;
+          break;
+        }
         m1_wdt_reset();
       }
 
@@ -266,7 +295,9 @@ int8_t STORAGE_Write(uint8_t lun, uint8_t *buf,
 
       if (event==SDCARD_CB_WRITE_CPLT_MSG)
       {
+        /* Iteration backstop: the tick bound can't advance in USB-ISR context. */
         timer = osKernelGetTickCount();
+        uint32_t cs_spins = 0;
         while ( (osKernelGetTickCount() - timer) < MSC_SD_DATATIMEOUT )
         {
           if (HAL_SD_GetCardState(phsd)==HAL_SD_CARD_TRANSFER)
@@ -274,7 +305,7 @@ int8_t STORAGE_Write(uint8_t lun, uint8_t *buf,
             res = 0;
             break;
           }
-          if (res !=0) DBG_sd_wr_timeout_cnt++;
+          if (++cs_spins >= MSC_SD_WAIT_MAX_SPINS) { DBG_sd_wr_timeout_cnt++; break; }
           m1_wdt_reset();
         } // while (...)
       }

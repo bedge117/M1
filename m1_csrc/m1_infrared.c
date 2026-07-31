@@ -944,5 +944,7 @@ static void infrared_encode_timer_cb(TimerHandle_t xTimer)
 
 	q_item.q_data.ir_tx_data = 1; // any value, not used
 	q_item.q_evt_type = Q_EVENT_IRRED_TX;
-	xQueueSend(main_q_hdl, &q_item, portMAX_DELAY);
+	/* Non-blocking (0): runs in the timer-service task — a blocking send wedges
+	 * every software timer if main_q_hdl is full. See battery_info_timer. */
+	(void)xQueueSend(main_q_hdl, &q_item, 0);
 } // static void infrared_encode_timer_cb(TimerHandle_t xTimer)

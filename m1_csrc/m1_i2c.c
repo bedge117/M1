@@ -129,9 +129,13 @@ HAL_StatusTypeDef m1_i2c_hal_trans_req(S_M1_I2C_Trans_Inf *trans_inf)
 			break;
 
 		case I2C_TRANS_WRITE_REGISTER:
-			taskENTER_CRITICAL();
+			/* No taskENTER_CRITICAL here: mutex_i2c_trans (above) already serializes
+			 * every I2C transaction, so the critical section added no exclusion — but
+			 * it masked the HAL tick timer, freezing HAL_GetTick(). HAL_I2C_Mem_Write
+			 * relies on that tick for its timeout, so inside a critical section the
+			 * timeout could NEVER fire: a stalled I2C device (stuck bus, clock-stretch,
+			 * browning-out PMIC) hung the ENTIRE RTOS forever. Reads never did this. */
 			stat = HAL_I2C_Mem_Write(pi2chdl, m1_i2c_addr[trans_inf->dev_id], trans_inf->reg_address, I2C_MEMADD_SIZE_8BIT, &trans_inf->reg_data, 1, trans_inf->timeout);
-			taskEXIT_CRITICAL();
 			break;
 
 		case I2C_TRANS_READ_DATA:
@@ -139,9 +143,9 @@ HAL_StatusTypeDef m1_i2c_hal_trans_req(S_M1_I2C_Trans_Inf *trans_inf)
 			break;
 
 		case I2C_TRANS_WRITE_DATA:
-			taskENTER_CRITICAL();
+			/* See I2C_TRANS_WRITE_REGISTER: dropped the tick-freezing critical
+			 * section; mutex_i2c_trans already provides exclusion. */
 			stat = HAL_I2C_Master_Transmit(pi2chdl, m1_i2c_addr[trans_inf->dev_id], trans_inf->pdata, trans_inf->data_len, trans_inf->timeout);
-			taskEXIT_CRITICAL();
 			break;
 
 		case I2C_TRANS_READ_REGISTER_MULTIPLE:	// Added for STC3115 to read multiple registers, shb
@@ -149,9 +153,9 @@ HAL_StatusTypeDef m1_i2c_hal_trans_req(S_M1_I2C_Trans_Inf *trans_inf)
 			break;
 
 		case I2C_TRANS_WRITE_REGISTER_MULTIPLE:	// Added for STC3115 to write multiple registers, shb
-			taskENTER_CRITICAL();
+			/* See I2C_TRANS_WRITE_REGISTER: dropped the tick-freezing critical
+			 * section; mutex_i2c_trans already provides exclusion. */
 			stat = HAL_I2C_Mem_Write(pi2chdl, m1_i2c_addr[trans_inf->dev_id], trans_inf->reg_address, I2C_MEMADD_SIZE_8BIT, trans_inf->pdata, trans_inf->data_len, trans_inf->timeout);
-			taskEXIT_CRITICAL();
 			break;
 
 		default:

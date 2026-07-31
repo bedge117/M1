@@ -268,6 +268,13 @@ static int8_t CDC_Receive_FS(uint8_t *Buf, uint32_t *Len)
         }
         usbRxBufIndex -= sentBytes;
         freeSpace -= sentBytes;
+
+        /* Notify the task — this first drain block previously pushed bytes into
+         * the stream buffer WITHOUT waking vUsb2SerTask, which is the lost-wakeup
+         * that could strand the endpoint paused with data pending. */
+        if (usb2ser_task_hdl != NULL) {
+          vTaskNotifyGiveFromISR(usb2ser_task_hdl, &xHigherPriorityTaskWoken);
+        }
       }
     }
 
@@ -436,6 +443,19 @@ uint8_t CDC_Transmit_Busy(void)
   if (hcdc == NULL)
     return 0;   /* not enumerated — nothing in flight */
   return (hcdc->TxState != 0) ? 1 : 0;
+}
+
+/* Abort a stuck IN transfer: a suspended/non-reading host may never generate the
+ * DataIn completion that clears TxState, leaving the class holding the caller's
+ * TX buffer forever. Flush the endpoint and clear TxState so the buffer is safe
+ * to reuse. Safe to call when not enumerated (guards NULL pClassData). */
+void CDC_TxAbort(void)
+{
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+  if (hcdc == NULL)
+    return;
+  (void)USBD_LL_FlushEP(&hUsbDeviceFS, CDC_IN_EP);
+  hcdc->TxState = 0U;
 }
 
 /**

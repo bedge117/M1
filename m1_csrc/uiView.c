@@ -177,7 +177,12 @@ static void prvScreenTimeoutTimerCb(TimerHandle_t xTimer)
 {
     (void)xTimer;
 
-    m1_app_send_q_message(main_q_hdl, Q_EVENT_MENU_TIMEOUT);
+    /* Non-blocking send: this runs in the timer-service task. m1_app_send_q_message()
+     * blocks on portMAX_DELAY, which would wedge the entire timer service if
+     * main_q_hdl were full. Post directly with a 0 timeout instead. */
+    S_M1_Main_Q_t q_item;
+    q_item.q_evt_type = Q_EVENT_MENU_TIMEOUT;
+    (void)xQueueSend(main_q_hdl, &q_item, 0);
     if (s_timeoutCallback) {
         s_timeoutCallback();
     }

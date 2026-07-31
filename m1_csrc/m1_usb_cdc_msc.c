@@ -298,7 +298,15 @@ void vSer2UsbTask(void *pvParameters)
         }
       }
       else
-      { // Error !!, cancel data
+      {
+        /* Timeout: the previous USB TX never completed (host not reading / stalled
+         * endpoint). We did NOT acquire the semaphore here, so blindly giving it
+         * (the old behaviour) freed the "TX in flight" gate while CDC still owned
+         * usb_tx_temp_buffer by pointer — the next iteration then reused the buffer
+         * mid-flight, corrupting the transfer / losing data. Instead abort the
+         * stuck transfer (flush EP + clear TxState) so the buffer is safe, THEN
+         * restore the semaphore to the free state. */
+        CDC_TxAbort();
         xSemaphoreGive(ser2usb_task_semaphore);
       }
     }
@@ -375,13 +383,31 @@ void vUsb2SerTask(void *pvParameters)
 #endif
 
 #else
-    /* Wait indefinitely until data arrives */
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    /* Bounded wait (NOT portMAX_DELAY): the USB RX flow-control handshake pauses
+     * the OUT endpoint when the stream buffer fills, and the ISR does not notify
+     * on every path that leaves it paused. An indefinite wait here + the
+     * data==0 `continue` below stranded the endpoint paused forever on a lost
+     * wakeup => inbound RPC dead until USB re-plug/reboot. A 100 ms cap makes the
+     * task re-evaluate and re-arm on its own, so any lost wakeup self-heals. */
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
 #endif
 
     size_t data_available = xStreamBufferBytesAvailable(h_usb_rx_streambuf);
     if (data_available == 0)
+    {
+      /* No data to process — but if flow control paused the endpoint, re-arm it
+       * here. When the buffer is empty there is always room, so a stranded
+       * paused endpoint (lost ISR wakeup) recovers instead of hanging forever. */
+      if (usbcdc_rx_paused == 1)
+      {
+        taskENTER_CRITICAL();
+        usbcdc_rx_paused = 0;
+        __DSB();
+        USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+        taskEXIT_CRITICAL();
+      }
       continue; // If there is no data, wait again
+    }
 
 #if 0
     if( xSemaphoreTake(usb2ser_tx_semaphore, portMAX_DELAY) != pdTRUE ) // Remove or keep a mutex

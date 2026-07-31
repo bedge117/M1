@@ -1221,8 +1221,11 @@ void boot_recovery_check(void)
     /* Launch option byte change (triggers system reset) */
     FLASH->OPTCR |= FLASH_OPTCR_OPTSTART;
 
-    /* Wait for completion - system will reset */
-    while (FLASH->NSSR & FLASH_SR_BSY) {}
+    /* Wait for completion - system will reset. Bounded (same form as the sibling
+     * swap at the top of this file): a stuck BSY must not spin forever; fall
+     * through to the explicit reset below on timeout. */
+    for (volatile uint32_t bsy_to = 0;
+         (FLASH->NSSR & FLASH_SR_BSY) && bsy_to < 0x02000000U; bsy_to++) {}
 
     /* If we get here, trigger manual reset */
     NVIC_SystemReset();

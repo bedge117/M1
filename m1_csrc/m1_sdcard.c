@@ -682,7 +682,12 @@ void m1_sdcard_mount(void)
 		if ( sd_fres==FR_DISK_ERR )
 			sdcard_ctl.status = SD_access_NotReady;  /* wedged low-level I/O — let init_retry re-init */
 		else
-			sdcard_ctl.status = SD_access_UnMounted;
+			/* A mount failure must NOT land in SD_access_UnMounted: that is the state
+			 * STORAGE_IsReady() uses to expose the raw card to the host over USB-MSC.
+			 * Handing Windows a card that FatFs just failed to mount can corrupt it.
+			 * UnMounted is reserved for the user explicitly choosing USB-storage mode
+			 * (m1_sdcard_unmount). NotOK gets the same connect-time remount recovery. */
+			sdcard_ctl.status = SD_access_NotOK;
 	} // else
 	sdcard_ctl.timestamp = HAL_GetTick();
 	M1_LOG_I(M1_LOGDB_TAG, "Mounting result: f_mount:%d %s\r\n", sd_fres, m1_sd_error_msg(sdcard_ctl.status));

@@ -41,6 +41,10 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
  * shared TX buffer must wait for this to clear before overwriting it. */
 uint8_t CDC_Transmit_Busy(void);
 
+/* Abort a stuck IN transfer (flush EP + clear TxState) so a shared TX buffer is
+ * safe to reuse after the host stops reading. Guards NULL pClassData. */
+void CDC_TxAbort(void);
+
 #ifdef __cplusplus
 }
 #endif

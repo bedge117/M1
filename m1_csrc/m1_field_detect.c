@@ -110,7 +110,13 @@ static void adc_deinit(void)
         return;
 
     ADC1->CR |= ADC_CR_ADDIS;
-    while (ADC1->CR & ADC_CR_ADEN) {}
+    {
+        uint32_t to = HAL_GetTick() + 10;   /* ADEN clears in µs; 10 ms = huge margin */
+        while (ADC1->CR & ADC_CR_ADEN)
+        {
+            if (HAL_GetTick() > to) break;  /* stuck — don't spin forever */
+        }
+    }
 
     ADC1->CR &= ~ADC_CR_ADVREGEN;
     ADC1->CR |= ADC_CR_DEEPPWD;
@@ -128,7 +134,16 @@ static uint16_t adc_read_single(void)
 {
     ADC1->ISR = ADC_ISR_EOC;
     ADC1->CR |= ADC_CR_ADSTART;
-    while (!(ADC1->ISR & ADC_ISR_EOC)) {}
+    /* EOC arrives in µs. This ran up to 1024x per detection pass with NO escape —
+     * a not-actually-ready ADC hung the whole task until the watchdog reset. Bound
+     * it (task context, so HAL_GetTick advances) and bail with 0 on a stuck ADC. */
+    {
+        uint32_t to = HAL_GetTick() + 10;
+        while (!(ADC1->ISR & ADC_ISR_EOC))
+        {
+            if (HAL_GetTick() > to) return 0;
+        }
+    }
     return (uint16_t)(ADC1->DR & 0xFFF);
 }
 

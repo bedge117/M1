@@ -201,7 +201,11 @@ static void battery_info_timer(TimerHandle_t xTimer)
 	S_M1_Main_Q_t q_item;
 
 	q_item.q_evt_type = Q_EVENT_BATTERY_UPDATED;
-    xQueueSend(main_q_hdl, &q_item, portMAX_DELAY);
+    /* Non-blocking (0): this runs in the FreeRTOS timer-service task. A blocking
+     * portMAX_DELAY here wedges the ENTIRE timer service (every software timer,
+     * incl. the screen-timeout) if main_q_hdl is momentarily full. A dropped
+     * periodic battery update is harmless — the next tick re-sends. */
+    (void)xQueueSend(main_q_hdl, &q_item, 0);
 } // static void battery_info_timer(TimerHandle_t xTimer)
 
 
