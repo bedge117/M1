@@ -220,6 +220,18 @@ static S_RPC_FileWriteState s_file_write;
 static S_RPC_Frame  s_deferred_frame;
 static volatile bool s_deferred_pending = false;
 
+/* USB session epoch: bumped from the PCD reset/disconnect ISR on every host-side
+ * re-enumeration (qM reconnect without an MCU reboot). The receive parser and
+ * rpc_task consume it to drop STALE old-session state — a mid-frame parse, a
+ * partial file write, and any deferred command left from the previous session —
+ * without dropping work that legitimately arrived in the CURRENT session (that
+ * mistake was the FILE_WRITE_START-timeout-after-reconnect bug in the M1OS fork;
+ * this port carries the fix from the start). */
+static volatile uint32_t s_usb_session_epoch = 0;
+static uint32_t          s_usb_parser_epoch  = 0;   /* parser's last-seen epoch */
+static uint32_t          s_usb_cleanup_epoch = 0;   /* rpc_task's last-seen epoch */
+static volatile uint32_t s_deferred_epoch    = 0;   /* epoch the pending frame arrived in */
+
 /* CRC-16 lookup table */
 static const uint16_t s_crc16_table[256] = {
     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
@@ -510,6 +522,17 @@ void m1_rpc_log_enqueue(const char *data, int len)
 
 static void rpc_flush_log(void)
 {
+    /* Do NOT try to flush logs to a suspended or still-busy IN endpoint. If the
+     * host has stopped draining (USB selective-suspend / long idle), the TX below
+     * would stall here holding the TX path, AND its own "CDC TX stalled" WARN
+     * lines re-enter this very ring (m1_log_debug.c, when m1_rpc_active) — a
+     * self-sustaining livelock that keeps this ring non-empty and starves
+     * rpc_task's deferred work every loop (the post-idle "deferred commands time
+     * out while inline still answers" wedge). Skip; the ring drains once the host
+     * resumes reading. The ring is fixed-size, so it simply caps, never grows. */
+    if (m1_USB_CDC_ready != 0 || CDC_Transmit_Busy())
+        return;
+
     uint16_t head = s_log_ring_head;
     uint16_t tail = s_log_ring_tail;
 
@@ -575,8 +598,33 @@ static void rpc_send_nack_sub(uint8_t seq, uint8_t error_code, uint8_t sub_error
 /**
  * @brief  Feed received bytes from USB CDC into the USB parser context.
  */
+/* Record a USB transport reset from the PCD ISR. Do NOT touch the parser or
+ * FatFs here (not ISR-safe); the receive + rpc tasks consume this epoch. */
+void m1_rpc_usb_session_reset_from_isr(void)
+{
+    s_usb_session_epoch++;
+
+    if (s_rpc_task_hdl != NULL)
+    {
+        BaseType_t higher_priority_task_woken = pdFALSE;
+        vTaskNotifyGiveFromISR(s_rpc_task_hdl, &higher_priority_task_woken);
+        portYIELD_FROM_ISR(higher_priority_task_woken);
+    }
+}
+
 void m1_rpc_feed(const uint8_t *data, uint16_t len)
 {
+    /* A USB bus reset can split an RPC frame. Never let the first bytes from a
+     * newly enumerated host complete a frame that belonged to the old host. */
+    uint32_t session_epoch = s_usb_session_epoch;
+    if (s_usb_parser_epoch != session_epoch)
+    {
+        memset(&s_parser_usb, 0, sizeof(s_parser_usb));
+        s_parser_usb.state = RPC_STATE_IDLE;
+        s_parser_usb.src = RPC_SRC_USB;
+        s_usb_parser_epoch = session_epoch;
+    }
+
     M1_LOG_I(M1_LOGDB_TAG, "FEED %u bytes [%02X %02X %02X ...]\r\n",
              len,
              (len > 0) ? data[0] : 0,
@@ -785,6 +833,7 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
         else
         {
             memcpy(&s_deferred_frame, frame, sizeof(S_RPC_Frame));
+            s_deferred_epoch = s_usb_session_epoch;   /* tag with the session it arrived in */
             s_deferred_pending = true;
             xTaskNotifyGive(s_rpc_task_hdl);
         }
@@ -822,6 +871,7 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
         else
         {
             memcpy(&s_deferred_frame, frame, sizeof(S_RPC_Frame));
+            s_deferred_epoch = s_usb_session_epoch;   /* tag with the session it arrived in */
             s_deferred_pending = true;
             xTaskNotifyGive(s_rpc_task_hdl);
         }
@@ -841,6 +891,7 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
         else
         {
             memcpy(&s_deferred_frame, frame, sizeof(S_RPC_Frame));
+            s_deferred_epoch = s_usb_session_epoch;   /* tag with the session it arrived in */
             s_deferred_pending = true;
             xTaskNotifyGive(s_rpc_task_hdl);
         }
@@ -857,6 +908,7 @@ static void rpc_dispatch_frame(const S_RPC_Frame *frame)
         else
         {
             memcpy(&s_deferred_frame, frame, sizeof(S_RPC_Frame));
+            s_deferred_epoch = s_usb_session_epoch;   /* tag with the session it arrived in */
             s_deferred_pending = true;
             xTaskNotifyGive(s_rpc_task_hdl);
         }
@@ -3360,6 +3412,38 @@ void m1_rpc_task(void *param)
          *  - m1_rpc_notify_screen_update() for screen frame ready
          *  - rpc_dispatch_frame() for deferred slow commands */
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+
+        /* Drop stale state from a host re-enumeration (qM reconnect without a
+         * reboot). Discard ONLY a deferred command + partial write left by an
+         * OLDER session; work tagged with the current epoch is kept, so a valid
+         * request that arrived right after the reset is still processed (not
+         * silently dropped). Done here in task context — the ISR only bumps the
+         * epoch; FatFs is not ISR-safe. */
+        uint32_t session_epoch = s_usb_session_epoch;
+        if (s_usb_cleanup_epoch != session_epoch)
+        {
+            s_usb_cleanup_epoch = session_epoch;
+
+            if (s_deferred_pending && s_deferred_frame.src == RPC_SRC_USB &&
+                s_deferred_epoch != session_epoch)
+            {
+                /* Don't silently drop a stale-session deferred command: the same
+                 * physical host (qM) is often still attached across a bus reset
+                 * and would otherwise wait forever for a reply. NACK it (routed
+                 * to USB, since the discarded frame is USB-sourced) so the host
+                 * fails fast and can retry on the new session. */
+                uint8_t discarded_seq = s_deferred_frame.seq;
+                s_deferred_pending = false;
+                s_deferred_to_tcp  = false;
+                m1_rpc_send_nack(discarded_seq, RPC_ERR_BUSY);
+            }
+
+            if (s_file_write.active)
+            {
+                f_close(&s_file_write.file);
+                s_file_write.active = false;
+            }
+        }
 
         /* Process deferred command (file delete, mkdir, etc.)
          * These run here instead of the CDC task to avoid blocking

@@ -45,6 +45,10 @@ uint8_t CDC_Transmit_Busy(void);
  * safe to reuse after the host stops reading. Guards NULL pClassData. */
 void CDC_TxAbort(void);
 
+/* Re-arm the CDC OUT (RX) endpoint from task context, forcing the CDC instance on
+ * a composite device. Returns USBD_OK only when the rearm was accepted. */
+uint8_t CDC_RearmRx(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -46,8 +46,8 @@ if(RECOVERY)
     endif()
     set(M1_C3_REVISION 1)
 else()
-    set(CMAKE_PROJECT_NAME M1_v0800_C3.151)
-    set(M1_C3_REVISION 151)
+    set(CMAKE_PROJECT_NAME M1_v0800_C3.154)
+    set(M1_C3_REVISION 154)
 endif()
 
 # Include toolchain file

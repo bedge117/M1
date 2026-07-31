@@ -170,11 +170,13 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t *pbuf, uint16_t length)
       linecoding.paritytype = pbuf[5];
       linecoding.datatype   = pbuf[6];
 
-      /* Add your code here */
-      if (m1_usbcdc_mode == CDC_MODE_VCP)
-      {
-        m1_usb_cdc_comconfig();
-      }
+      /* Store-only. Previously this called m1_usb_cdc_comconfig() from the USB
+       * control-transfer (ISR) context, which tore down UART/DMA AND ran
+       * m1_logdb_deinit() -> vSemaphoreDelete(mutex_log_write_trans). That mutex
+       * is taken with portMAX_DELAY by every M1_LOG_* caller (incl. the RPC
+       * worker); deleting it out from under a blocked task hangs that task
+       * forever. The host setting line coding does NOT require reconfiguring the
+       * physical USART for the qM RPC port, so we only record the coding. */
       break;
 
     case CDC_GET_LINE_CODING:
@@ -456,6 +458,20 @@ void CDC_TxAbort(void)
     return;
   (void)USBD_LL_FlushEP(&hUsbDeviceFS, CDC_IN_EP);
   hcdc->TxState = 0U;
+}
+
+/* Re-arm the CDC OUT (RX) endpoint, forcing the CDC instance on a composite
+ * device. hUsbDeviceFS.classId is mutable and shared with the MSC class; a prior
+ * MSC transfer can leave it pointing at MSC, so re-arming without forcing the CDC
+ * instance can arm the wrong endpoint and leave the serial port deaf. Returns
+ * USBD_OK only when the rearm was accepted; callers must clear the paused flag
+ * ONLY on USBD_OK. */
+uint8_t CDC_RearmRx(void)
+{
+#if M1_USB_MODE == M1_CFG_USB_CDC_MSC
+  hUsbDeviceFS.classId = CDC_InstID;
+#endif
+  return USBD_CDC_ReceivePacket(&hUsbDeviceFS);
 }
 
 /**

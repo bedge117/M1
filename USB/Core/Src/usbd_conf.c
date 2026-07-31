@@ -23,6 +23,9 @@
 #include "usbd_core.h"
 #include "usbd_cdc.h" 				/* Include class header file */
 #include "usbd_msc.h"         /* Include class header file */
+#ifdef M1_APP_RPC_ENABLE
+#include "m1_rpc.h"           /* m1_rpc_usb_session_reset_from_isr on host re-enum */
+#endif
 
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
@@ -61,6 +64,21 @@ void HAL_PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
   {
     Error_Handler();
   }
+  /* A host-side reset/re-enumeration ends the previous CDC/RPC session even
+   * though the MCU never rebooted. Bump the RPC session epoch so the parser and
+   * rpc_task drop stale old-session state (mid-frame parse, partial write, stale
+   * deferred command) without dropping legitimately-new work. */
+#ifdef M1_APP_RPC_ENABLE
+  m1_rpc_usb_session_reset_from_isr();
+#endif
+  /* A bus reset re-enumerates the device. If a prior SUSPEND left CDC parked at
+   * -1 and no RESUME fired before the reset, CDC_ready would stay -1 forever,
+   * which now permanently trips the rpc_flush_log()/TX guards and wedges RPC TX.
+   * Restore it to ready here. HID mode uses sentinel -2 and must NOT be touched. */
+  if (m1_USB_CDC_ready == -1)
+    m1_USB_CDC_ready = 0;
+  if (m1_USB_MSC_ready == -1)
+    m1_USB_MSC_ready = 0;
     /* Set Speed. */
   USBD_LL_SetSpeed((USBD_HandleTypeDef*)hpcd->pData, speed);
   /* Reset Device. */
@@ -74,6 +92,9 @@ void HAL_PCD_ConnectCallback(PCD_HandleTypeDef *hpcd)
 
 void HAL_PCD_DisconnectCallback(PCD_HandleTypeDef *hpcd)
 {
+#ifdef M1_APP_RPC_ENABLE
+  m1_rpc_usb_session_reset_from_isr();
+#endif
   USBD_LL_DevDisconnected((USBD_HandleTypeDef*)hpcd->pData);
 }
 

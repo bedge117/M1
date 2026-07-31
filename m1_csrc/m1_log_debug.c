@@ -328,8 +328,15 @@ void m1_logdb_init(void)
 	}
 #endif // #ifdef M1_DEBUG_CLI_ENABLE
 
-	mutex_log_write_trans = xSemaphoreCreateMutex();
-	assert(mutex_log_write_trans);
+	/* Create ONCE and keep it for the life of the process. A CDC reconfig
+	 * (SET_LINE_CODING / comconfig) used to deinit+reinit logging, deleting this
+	 * mutex out from under any task blocked on it (portMAX_DELAY) -> permanent
+	 * hang. Never delete it; just reuse the existing handle on re-init. */
+	if ( mutex_log_write_trans == NULL )
+	{
+		mutex_log_write_trans = xSemaphoreCreateMutex();
+		assert(mutex_log_write_trans);
+	}
 
 	log_q_hdl = xQueueCreate(1, 1);
 	assert(log_q_hdl!=NULL);
@@ -365,8 +372,10 @@ void m1_logdb_deinit(void)
     HAL_NVIC_DisableIRQ(GPDMA1_Channel2_IRQn);
     HAL_DMA_DeInit(&hdma_rxlogdb);
 
-    if ( mutex_log_write_trans != NULL )
-    	vSemaphoreDelete(mutex_log_write_trans);
+    /* Intentionally do NOT delete mutex_log_write_trans here. It is created once
+     * in m1_logdb_init() and must outlive any task that may be blocked on it;
+     * deleting it from a reconfig path (e.g. SET_LINE_CODING) hangs that task
+     * forever. The handle is reused on the next m1_logdb_init(). */
 } // static void m1_logdb_deinit(void)
 
 

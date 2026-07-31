@@ -20,6 +20,7 @@
 #include "cli_app.h"
 #include "m1_cli.h"
 #include "m1_compile_cfg.h"
+#include "m1_watchdog.h"
 #include "m1_sdcard.h"
 #ifdef M1_APP_RPC_ENABLE
 #include "m1_rpc.h"
@@ -349,9 +350,22 @@ void vUsb2SerTask(void *pvParameters)
   UNUSED(pvParameters);
 
   const TickType_t xMaxBlockTime = pdMS_TO_TICKS(500);
+  TickType_t wdt_last = xTaskGetTickCount();
+
+  /* Now that this task is actually running, activate its watchdog supervision
+   * (registered inactive at boot). resume grants one grace check for the transient. */
+  m1_wdt_resume_task(M1_REPORT_ID_USB2SER_HANDLER_TASK);
 
   for(;;)
   {
+    /* Watchdog heartbeat: report the actual wall-time consumed by the previous
+     * loop iteration. The task wakes at least every 100ms (bounded notify wait),
+     * so a healthy task accumulates ~100% of the check window; if it ever hangs
+     * anywhere in the loop, reports stop and the supervisor resets the device
+     * instead of leaving inbound RPC silently dead. */
+    m1_wdt_send_report_ex(M1_REPORT_ID_USB2SER_HANDLER_TASK, wdt_last);
+    wdt_last = xTaskGetTickCount();
+
 #if 0
     /* Wait indefinitely until data arrives */
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
@@ -401,9 +415,13 @@ void vUsb2SerTask(void *pvParameters)
       if (usbcdc_rx_paused == 1)
       {
         taskENTER_CRITICAL();
-        usbcdc_rx_paused = 0;
-        __DSB();
-        USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+        /* Clear paused ONLY after a real rearm, and force the CDC instance so a
+         * stale MSC classId can't arm the wrong endpoint and leave RX un-armed. */
+        if (CDC_RearmRx() == USBD_OK)
+        {
+          usbcdc_rx_paused = 0;
+          __DSB();
+        }
         taskEXIT_CRITICAL();
       }
       continue; // If there is no data, wait again
@@ -437,9 +455,12 @@ void vUsb2SerTask(void *pvParameters)
         if (usbcdc_rx_paused == 1)
         {
           taskENTER_CRITICAL();
-          usbcdc_rx_paused = 0;
-          __DSB();
-          USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+          /* Clear paused ONLY after a real rearm; force the CDC instance. */
+          if (CDC_RearmRx() == USBD_OK)
+          {
+            usbcdc_rx_paused = 0;
+            __DSB();
+          }
           taskEXIT_CRITICAL();
         }
         continue;  /* Skip UART forwarding */
@@ -451,6 +472,12 @@ void vUsb2SerTask(void *pvParameters)
 
       while(bytes_remaining > 0)
       {
+        /* Heartbeat inside the burst loop too: a large UART-bridge forward with a
+         * slow/stalled USART consumer could otherwise keep this one outer iteration
+         * running past the watchdog window without a report. */
+        m1_wdt_send_report_ex(M1_REPORT_ID_USB2SER_HANDLER_TASK, wdt_last);
+        wdt_last = xTaskGetTickCount();
+
         bytes_to_send = (bytes_remaining > CHUNK_SIZE) ? CHUNK_SIZE : bytes_remaining;
         //bytes_to_send = (bytes_remaining > M1_LOGDB_TX_BUFFER_SIZE) ? M1_LOGDB_TX_BUFFER_SIZE : bytes_remaining;
 
@@ -500,9 +527,13 @@ if (DEBUG_bytes_to_send < bytes_to_send) DEBUG_bytes_to_send = bytes_to_send;
       if (usbcdc_rx_paused == 1)
       {
         taskENTER_CRITICAL();
-        usbcdc_rx_paused = 0;
-        __DSB();  /* Ensure paused flag write is committed before re-arming */
-        USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+        /* Clear paused ONLY after a real rearm; force the CDC instance so a stale
+         * MSC classId can't arm the wrong endpoint. */
+        if (CDC_RearmRx() == USBD_OK)
+        {
+          usbcdc_rx_paused = 0;
+          __DSB();  /* Ensure paused flag write is committed before re-arming */
+        }
         taskEXIT_CRITICAL();
       }
     }
