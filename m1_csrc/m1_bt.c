@@ -797,10 +797,11 @@ void bluetooth_info(void)
 		strncpy(version_str, "ESP32 offline", sizeof(version_str) - 1);
 	}
 
-	/* Query live BLE role/state (Direct + Bad-BT) for the "what's active" lines. */
+	/* Query live Direct (NUS) state for the "what's active" line. Bad-BT is NOT
+	 * shown here: reaching this screen means the Bad-BT app is closed (it tears
+	 * its HID down on exit), so it is always idle from here — no line needed. */
 	uint8_t ble_flags = 0;
 	const char *direct_state;
-	const char *badbt_state;
 	if (get_esp32_main_init_status())
 		m1_esp_client_ble_state(&ble_flags);
 	if (m1_ble_direct)
@@ -808,8 +809,6 @@ void bluetooth_info(void)
 		             : (ble_flags & 0x01) ? "advertising" : "on";
 	else
 		direct_state = "off";
-	badbt_state = (ble_flags & 0x08) ? "connected"
-	            : (ble_flags & 0x04) ? "advertising" : "idle";
 
 	/* Draw info screen */
 	m1_u8g2_firstpage();
@@ -818,14 +817,12 @@ void bluetooth_info(void)
 	bt_draw_title_bar("BT Info");
 
 	char l[26];
-	y = 22;
+	y = 24;
 	snprintf(l, sizeof(l), "AT FW: %s", version_str);
-	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 11;
+	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 13;
 	snprintf(l, sizeof(l), "Direct: %s", direct_state);
-	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 10;
+	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 12;
 	snprintf(l, sizeof(l), " %s", m1_bt_direct_name);
-	u8g2_DrawStr(&m1_u8g2, 2, y, l); y += 11;
-	snprintf(l, sizeof(l), "Bad-BT: %s", badbt_state);
 	u8g2_DrawStr(&m1_u8g2, 2, y, l);
 
 	m1_draw_bottom_bar(&m1_u8g2, arrowleft_8x8, "Back", "OK", arrowright_8x8);
