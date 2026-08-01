@@ -318,7 +318,12 @@ typedef struct
 #endif /* SDMMC_DATATIMEOUT */
 
 #ifndef SDMMC_SWDATATIMEOUT /*Software Data Timeout (ms) */
-#define SDMMC_SWDATATIMEOUT                SDMMC_DATATIMEOUT
+/* M1: the ST default aliases this SOFTWARE (HAL_GetTick-based, ms) timeout to
+ * SDMMC_DATATIMEOUT = 0xFFFFFFFF ~= 49 days, so every polled SD op (init, abort,
+ * erase, status) spins effectively forever if the card wedges — a real hang path
+ * for whatever task ran the file op. Bound it to 5 s. The HARDWARE data-timeout
+ * register (SDMMC_DATATIMEOUT) is intentionally left large. */
+#define SDMMC_SWDATATIMEOUT                ((uint32_t)5000U)
 #endif /* SDMMC_SWDATATIMEOUT */
 
 #define SDMMC_0TO7BITS                     ((uint32_t)0x000000FFU)

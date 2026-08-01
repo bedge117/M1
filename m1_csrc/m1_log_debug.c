@@ -702,7 +702,8 @@ void m1_logdb_printf(S_M1_LogDebugLevel_t level, const char* tag, const char* fo
 static void m1_logdb_dyn_vsprintf(const char *format, va_list pargs, char **pstring)
 {
 	int ret_n;
-	uint8_t mem_size;
+	int mem_size;   /* NOT uint8_t: ret_n+20 wrapped past 255 on a >235-byte
+	                 * message, passing the size cap and spinning this loop forever. */
 	va_list pargsc;
 
 	mem_size = M1_LOGDB_MESSAGE_SIZE; // Set the default size first
@@ -718,7 +719,7 @@ static void m1_logdb_dyn_vsprintf(const char *format, va_list pargs, char **pstr
 				mem_size = ret_n + 20; // Adjust the allocated space
 		} // if ( ret_n > -1 )
 		else
-			mem_size = UCHAR_MAX; // Exit condition
+			mem_size = 2 * M1_LOGDB_MESSAGE_SIZE + 1; // vsnprintf error: force the size-cap break
 
 		free(*pstring); // Free allocated memory slot
 		*pstring = NULL; // Caller function may check NULL for error condition
