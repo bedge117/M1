@@ -331,6 +331,10 @@ void m1_rpc_route_to_tcp(bool enable);
  * doesn't keep pushing frames to a dead socket. */
 void m1_rpc_stop_screen_stream(void);
 
+/* Called from the USB PCD reset/disconnect ISR to mark a host re-enumeration so
+ * the RPC parser/rpc_task drop stale old-session state on the next pass. */
+void m1_rpc_usb_session_reset_from_isr(void);
+
 /**
  * @brief  Fill `out` with the ESP32 coprocessor firmware string ("m1_link
  *         X.Y.Z", "ESP not started", "checking...", "updating...") for the

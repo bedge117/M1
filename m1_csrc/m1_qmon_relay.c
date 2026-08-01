@@ -12,6 +12,7 @@
 #include "m1_esp_client.h"
 #include "m1_rpc.h"
 #include "m1_wifi.h"          /* m1_ble_direct — keep polling for a BLE client with WiFi down */
+#include "m1_watchdog.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -38,9 +39,22 @@ static void qmon_relay_task(void *arg)
     static uint8_t buf[1500];        /* one qMonstatek frame */
     bool routed = false;
     uint32_t last_wifi_poll = 0;
+    TickType_t wdt_last = xTaskGetTickCount();
     (void)arg;
 
+    /* Activate watchdog supervision now that the task is running (registered
+     * inactive at boot); resume grants one grace check for the startup transient. */
+    m1_wdt_resume_task(M1_REPORT_ID_QMON_RELAY_TASK);
+
     for (;;) {
+        /* Watchdog heartbeat: report the actual elapsed time of the previous loop
+         * iteration (before any of the `continue` branches below). Every path
+         * loops on a bounded cadence (50/250ms delays, timeout-bounded esp_calls),
+         * so a healthy relay accumulates ~100% of the window; a true hang (e.g. a
+         * permanently wedged ESP link) stops the reports and resets the device. */
+        m1_wdt_send_report_ex(M1_REPORT_ID_QMON_RELAY_TASK, wdt_last);
+        wdt_last = xTaskGetTickCount();
+
         if (s_relay_suspend) {           /* paused for an ESP flash */
             if (routed) { m1_rpc_route_to_tcp(false); routed = false; }
             s_session_active = false;

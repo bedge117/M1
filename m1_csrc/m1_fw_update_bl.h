@@ -82,7 +82,7 @@ typedef struct {
 #ifdef M1_RECOVERY_BUILD
 #define M1_C3_REVISION				1     /* Recovery FW line — see M1_RECOVERY_VER_* */
 #else
-#define M1_C3_REVISION				151   /* working FW line */
+#define M1_C3_REVISION				157   /* working FW line — keep in sync with CMakeLists.txt */
 #endif
 
 #define FW_CONFIG_MAGIC_NUMBER_1	((uint32_t)0x4D493235)
