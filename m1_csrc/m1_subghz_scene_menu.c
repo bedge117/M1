@@ -41,7 +41,12 @@
 /* Menu items                                                                 */
 /*============================================================================*/
 
-#define MENU_ITEM_COUNT   14
+/* "Radio Settings" opens SubGhzSceneConfig — frequency / modulation / hopping /
+ * TX power / ISM REGION (incl. the "no region / disable" option). The C3.107
+ * scene-engine cutover deleted the old menu_Sub_GHz_Radio_Settings / Regional
+ * Information items and only left Config reachable from Read's LEFT button, which
+ * hid the region setting. This restores a discoverable menu entry for it. */
+#define MENU_ITEM_COUNT   15
 
 static const char *menu_labels[MENU_ITEM_COUNT] = {
     "Read",
@@ -58,6 +63,7 @@ static const char *menu_labels[MENU_ITEM_COUNT] = {
     "Remote",
     "Bind Remote",
     "Proto Pirate",
+    "Radio Settings",
 };
 
 static const SubGhzSceneId menu_targets[MENU_ITEM_COUNT] = {
@@ -75,6 +81,7 @@ static const SubGhzSceneId menu_targets[MENU_ITEM_COUNT] = {
     SubGhzSceneRemote,
     SubGhzSceneBindWizard,
     SubGhzSceneProtoPirateMenu,
+    SubGhzSceneConfig,    /* "Radio Settings" — freq/mod/hop/TX power/ISM region + disable */
 };
 
 /*============================================================================*/

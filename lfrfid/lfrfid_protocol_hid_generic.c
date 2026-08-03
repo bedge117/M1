@@ -421,7 +421,16 @@ static void hid_generic_render_data(void *proto, char *result)
 /*============================================================================*/
 void hid_generic_write_begin(void *protocol, void *data)
 {
-    (void)protocol;
+    /* The encode source is the per-protocol decode buffer g_hid_decoded, which
+     * ONLY a live read fills. For Saved/Add -> Write it is stale/empty, so the tag
+     * was written blank. Re-seed it from the tag's stored 6-byte credential — the
+     * read path mirrors g_hid_decoded into lfrfid_tag_info.uid (see the decode
+     * copy to uid), so uid[0..5] holds exactly what belongs in g_hid_decoded.
+     * Live Read -> Write is unaffected (uid already equals g_hid_decoded). */
+    LFRFID_TAG_INFO *tag = (LFRFID_TAG_INFO *)protocol;
+    if (tag)
+        memcpy(g_hid_decoded, tag->uid, HID_GENERIC_DECODED_SIZE);
+
     const uint8_t *decoded = g_hid_decoded;
     LFRFIDProgram *write   = (LFRFIDProgram *)data;
     uint8_t        encoded[HID_GENERIC_ENCODED_SIZE];

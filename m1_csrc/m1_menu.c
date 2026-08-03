@@ -83,24 +83,13 @@ S_M1_Menu_t menu_125KHz_RFID_Utilities =
     "Utilities", rfid_125khz_utilities, NULL, NULL, 0, 0, NULL, NULL, NULL
 };
 
-#ifdef M1_APP_FILE_IMPORT_ENABLE
-S_M1_Menu_t menu_125KHz_RFID_Import =
-{
-    "Import .rfid", rfid_import_flipper, NULL, NULL, 0, 0, NULL, NULL, NULL
-};
-
-S_M1_Menu_t menu_125KHz_RFID =
-{
-    "RFID", menu_125khz_rfid_init, menu_125khz_rfid_deinit, NULL, 5, 0, menu_m1_icon_rfid, NULL,
-    {&menu_125KHz_RFID_Read, &menu_125KHz_RFID_Saved, &menu_125KHz_RFID_Add_Manually, &menu_125KHz_RFID_Import, &menu_125KHz_RFID_Utilities}
-};
-#else
+/* "Import .rfid" removed — the Flipper-format importer was buggy and could crash
+ * the device. RFID stays Read / Saved / Add / Utilities. */
 S_M1_Menu_t menu_125KHz_RFID =
 {
     "RFID", menu_125khz_rfid_init, menu_125khz_rfid_deinit, NULL, 4, 0, menu_m1_icon_rfid, NULL,
     {&menu_125KHz_RFID_Read, &menu_125KHz_RFID_Saved, &menu_125KHz_RFID_Add_Manually, &menu_125KHz_RFID_Utilities}
 };
-#endif
 
 /*-------------------------------- > NFC -------------------------------------*/
 

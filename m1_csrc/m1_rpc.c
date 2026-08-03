@@ -2353,6 +2353,39 @@ static void rpc_handle_esp_flash_from_sd(const S_RPC_Frame *f)
     m1_qmon_relay_suspend(false);                   /* ESP is back; let the relay poll again */
 }
 
+/* The M1 self-flash masks the ESP interrupt lines (DataReady / Handshake /
+ * UART RX) for the WHOLE session — erase through FINISH — not just around each
+ * individual flash op. After ESP (WiFi/BLE/802.15.4) activity the ESP keeps
+ * asserting these lines and streaming over UART4; those high-priority ISRs
+ * preempt the flash worker and the (lowest-priority) IWDG feeder in EVERY
+ * unmasked gap. The previous design unmasked after each ACK, so the gap right
+ * after the START ACK — before the first DATA chunk arrives — let a buffered ESP
+ * backlog starve the feeder and the worker, and the IWDG reset the device before
+ * a single byte was written (bank erased, 0 bytes, reports v0.0.0). Keeping the
+ * lines masked for the whole session removes every gap. USB TX (all the ACKs) is
+ * independent of these ESP lines — the START ACK already delivers while they are
+ * masked during the erase — so ACKs are unaffected. Re-enabled at FINISH and at
+ * every error/teardown exit so a failed flash still leaves the ESP link live. */
+#ifndef M1_RESTORE_HOST
+static void fw_esp_irqs_mask(void)
+{
+    HAL_NVIC_DisableIRQ(EXTI1_IRQn);   /* ESP DataReady */
+    HAL_NVIC_DisableIRQ(EXTI7_IRQn);   /* ESP Handshake */
+    HAL_NVIC_DisableIRQ(UART4_IRQn);   /* ESP UART RX   */
+}
+static void fw_esp_irqs_unmask(void)
+{
+    HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+    HAL_NVIC_EnableIRQ(EXTI7_IRQn);
+    HAL_NVIC_EnableIRQ(UART4_IRQn);
+}
+#else
+/* Restore Host holds the ESP in reset for the whole flash and reboots after —
+ * it must never re-enable these lines mid-flash. */
+static void fw_esp_irqs_mask(void)   { }
+static void fw_esp_irqs_unmask(void) { }
+#endif
+
 static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
 {
     M1_LOG_N(M1_LOGDB_TAG, "FW flash: START received\r\n");
@@ -2438,20 +2471,12 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
     erase_init.Banks      = inactive_bank;
     erase_init.NbSectors  = 1;
 
-#ifndef M1_RESTORE_HOST
-    /* Mask the ESP interrupt lines for the (blocking) bank erase. After WiFi/BLE/
-     * 802.15.4 use the ESP keeps asserting DataReady (EXTI1) / Handshake (EXTI7)
-     * and streaming over UART4; those high-priority ISRs preempt this task and
-     * steal CPU during every sector erase, stretching it until qMonstatek's
-     * START-ACK timeout fires ("Timeout during erase/start" — reproduces ONLY
-     * after ESP activity, and a reboot that idles the ESP "fixes" it). This is
-     * the same guard the Restore Host already applies (see the block above); here
-     * we only mask (never hold the ESP in reset), and we unmask on every exit so
-     * a failed flash leaves the ESP link fully live. */
-    HAL_NVIC_DisableIRQ(EXTI1_IRQn);   /* ESP DataReady */
-    HAL_NVIC_DisableIRQ(EXTI7_IRQn);   /* ESP Handshake */
-    HAL_NVIC_DisableIRQ(UART4_IRQn);   /* ESP UART RX   */
-#endif
+    /* Mask the ESP interrupt lines for the ENTIRE flash session (erase + all DATA
+     * chunks + FINISH), not just this erase. See fw_esp_irqs_mask() above for why
+     * unmasking in the gaps between ops is what let the IWDG reset the device. We
+     * only mask here (never hold the ESP in reset — that's the Restore Host); every
+     * exit below unmasks so a failed flash leaves the ESP link fully live. */
+    fw_esp_irqs_mask();
 
     uint32_t erase_t0 = HAL_GetTick();
     for (uint16_t i = 0; i < n_sectors; i++)
@@ -2461,11 +2486,7 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
         if (HAL_FLASHEx_Erase(&erase_init, &sector_error) != HAL_OK)
         {
             HAL_FLASH_Lock();
-#ifndef M1_RESTORE_HOST
-            HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-            HAL_NVIC_EnableIRQ(EXTI7_IRQn);
-            HAL_NVIC_EnableIRQ(UART4_IRQn);
-#endif
+            fw_esp_irqs_unmask();
             m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
             m1_qmon_relay_suspend(false);
             m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
@@ -2473,11 +2494,6 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
         }
     }
 
-#ifndef M1_RESTORE_HOST
-    HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-    HAL_NVIC_EnableIRQ(EXTI7_IRQn);
-    HAL_NVIC_EnableIRQ(UART4_IRQn);
-#endif
     M1_LOG_N(M1_LOGDB_TAG, "FW flash: erase done in %lu ms (%u sectors)\r\n",
              (unsigned long)(HAL_GetTick() - erase_t0), (unsigned)n_sectors);
 
@@ -2489,6 +2505,12 @@ static void rpc_handle_fw_update_start(const S_RPC_Frame *f)
     s_fw_update.flash_addr    = (uint8_t *)inactive_base;
     s_fw_update.last_activity_tick = xTaskGetTickCount();
 
+    /* Send the START ACK with the ESP IRQs STILL masked — and LEAVE them masked
+     * for the rest of the session (the DATA chunks + FINISH unmask). This is the
+     * key fix: the old code unmasked right here, and the gap before the first DATA
+     * chunk let a buffered ESP backlog starve the worker + IWDG feeder → reset with
+     * the bank erased but 0 bytes written. USB TX is unaffected by the masked ESP,
+     * so the ACK delivers promptly regardless. */
     M1_LOG_N(M1_LOGDB_TAG, "FW flash: ACK sent\r\n");
     m1_rpc_send_ack(f->seq);
 }
@@ -2531,6 +2553,7 @@ static void rpc_handle_fw_update_data(const S_RPC_Frame *f)
     {
         HAL_FLASH_Lock();
         s_fw_update.active = false;
+        fw_esp_irqs_unmask();
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_INVALID_PAYLOAD);
@@ -2541,33 +2564,19 @@ static void rpc_handle_fw_update_data(const S_RPC_Frame *f)
 
     m1_wdt_reset();
 
-    /* Write using HAL — STM32H5 requires 16-byte aligned writes.
-     * bl_flash_if_write handles alignment internally.
-     *
-     * Mask the ESP interrupt lines around the actual program, exactly as the
-     * erase does. On STM32H5 an EXTI1/EXTI7/UART4 ISR preempting an active
-     * quad-word program (RWW) stalls FLASH_BSY; because the IWDG feeder is the
-     * lowest-priority task, a stalled/looping program starves the feed → IWDG
-     * reboot mid-flash "at a random %". This is the bulk of a flash (many DATA
-     * chunks) — leaving it exposed was the M1 FW-flash hang, worse after ESP
-     * (WiFi/BLE/802.15.4) activity. Unmasked right after so the link stays live
-     * between chunks (and the IWDG feeder runs then). */
-#ifndef M1_RESTORE_HOST
-    HAL_NVIC_DisableIRQ(EXTI1_IRQn);
-    HAL_NVIC_DisableIRQ(EXTI7_IRQn);
-    HAL_NVIC_DisableIRQ(UART4_IRQn);
-#endif
+    /* Write using HAL — STM32H5 requires 16-byte aligned writes; bl_flash_if_write
+     * handles alignment internally. The ESP IRQ lines are already masked for the
+     * whole session (see START), so the quad-word program can't be preempted by an
+     * EXTI1/EXTI7/UART4 ISR — on STM32H5 such a preemption stalls FLASH_BSY (RWW)
+     * and starves the lowest-priority IWDG feeder → reboot mid-flash "at a random
+     * %". No per-chunk mask/unmask: the between-chunk gaps were the exposure. */
     uint8_t wr = bl_flash_if_write((uint8_t *)&f->payload[4], write_addr, data_len);
-#ifndef M1_RESTORE_HOST
-    HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-    HAL_NVIC_EnableIRQ(EXTI7_IRQn);
-    HAL_NVIC_EnableIRQ(UART4_IRQn);
-#endif
 
     if (wr != BL_CODE_OK)
     {
         HAL_FLASH_Lock();
         s_fw_update.active = false;
+        fw_esp_irqs_unmask();
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_FLASH_ERROR);
@@ -2576,6 +2585,11 @@ static void rpc_handle_fw_update_data(const S_RPC_Frame *f)
 
     s_fw_update.bytes_written += data_len;
     s_fw_update.last_activity_tick = xTaskGetTickCount();
+
+    /* ACK this chunk with the ESP IRQs still masked (they stay masked for the whole
+     * session — FINISH unmasks). USB TX is independent of the ESP lines, so the ACK
+     * delivers promptly; keeping them masked means no between-chunk gap for an ESP
+     * flood to starve the worker/IWDG feeder in. */
     m1_rpc_send_ack(f->seq);
 }
 
@@ -2613,6 +2627,7 @@ static void rpc_handle_fw_update_finish(const S_RPC_Frame *f)
     {
         /* The freshly-written bank isn't even readable — treat as corruption. */
         M1_LOG_E(M1_LOGDB_TAG, "FW update: inactive-bank CRC-ext read FAULTED\r\n");
+        fw_esp_irqs_unmask();
         m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
         m1_qmon_relay_suspend(false);
         m1_rpc_send_nack(f->seq, RPC_ERR_CRC_MISMATCH);
@@ -2626,6 +2641,7 @@ static void rpc_handle_fw_update_finish(const S_RPC_Frame *f)
         if (!bl_verify_bank_crc(inactive_base))
         {
             M1_LOG_E(M1_LOGDB_TAG, "FW update: post-write CRC verification FAILED\r\n");
+            fw_esp_irqs_unmask();
             m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
             m1_qmon_relay_suspend(false);
             m1_rpc_send_nack(f->seq, RPC_ERR_CRC_MISMATCH);
@@ -2638,9 +2654,13 @@ static void rpc_handle_fw_update_finish(const S_RPC_Frame *f)
         M1_LOG_I(M1_LOGDB_TAG, "FW update: no CRC extension, skipping verification\r\n");
     }
 
+    /* Session done — re-enable the ESP IRQ lines that were masked since START, and
+     * ACK the FINISH BEFORE resuming the qMon relay: resuming restarts the 50 ms ESP
+     * SPI poll, whose traffic can preempt this worker and delay the FINISH ACK. */
+    fw_esp_irqs_unmask();
     m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
-    m1_qmon_relay_suspend(false);
     m1_rpc_send_ack(f->seq);
+    m1_qmon_relay_suspend(false);
 }
 
 
@@ -2891,6 +2911,7 @@ static void esp_flash_session_teardown(void)
 static void fw_flash_session_teardown(void)
 {
     HAL_FLASH_Lock();
+    fw_esp_irqs_unmask();   /* masked since START — restore the ESP link on abandon */
     m1_wdt_resume_task(M1_REPORT_ID_BUTTONS_HANDLER_TASK);
     m1_qmon_relay_suspend(false);
     s_fw_update.active = false;

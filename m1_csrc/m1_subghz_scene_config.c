@@ -140,24 +140,25 @@ static const char *get_value_text(SubGhzApp *app, uint8_t item)
     switch (item)
     {
         case CFG_FREQUENCY:
-            if (subghz_freq_labels)
-            {
-                /* For Custom entry (index 62), show the stored MHz label.
-                 * subghz_set_user_custom_freq_ext() keeps freq_labels[Custom]
-                 * updated with the formatted MHz string, so we can use it
-                 * directly — falling through to the normal return path. */
-                if (app->freq_idx == CFG_FREQ_COUNT - 1)
-                    return subghz_freq_labels[app->freq_idx];
-                return subghz_freq_labels[app->freq_idx];
-            }
+        {
+            /* Never return NULL: subghz_freq_labels[] is populated at runtime by
+             * subghz_init_labels(); if that hasn't run (or the index is out of
+             * range) the entry is NULL and u8g2_DrawStr(NULL) HardFaults. Fall back
+             * to a formatted "Preset N". */
+            const char *l = (app->freq_idx < CFG_FREQ_COUNT)
+                          ? subghz_freq_labels[app->freq_idx] : NULL;
+            if (l) return l;
             snprintf(freq_buf, sizeof(freq_buf), "Preset %d", app->freq_idx);
             return freq_buf;
+        }
         case CFG_HOPPING:
             return app->hopping ? "ON" : "OFF";
         case CFG_MODULATION:
-            if (subghz_mod_labels)
-                return subghz_mod_labels[app->mod_idx];
-            return "?";
+        {
+            const char *l = (app->mod_idx < CFG_MOD_COUNT)
+                          ? subghz_mod_labels[app->mod_idx] : NULL;
+            return l ? l : "?";
+        }
         case CFG_SOUND:
             return app->sound ? "ON" : "OFF";
         case CFG_AUTOSAVE:
@@ -165,7 +166,10 @@ static const char *get_value_text(SubGhzApp *app, uint8_t item)
         case CFG_TX_POWER:
             return subghz_get_tx_power_label_ext(subghz_get_tx_power_idx_ext());
         case CFG_ISM_REGION:
-            return subghz_ism_regions_text[m1_device_stat.config.ism_band_region];
+        {
+            uint8_t r = m1_device_stat.config.ism_band_region;
+            return (r < SUBGHZ_ISM_BAND_REGIONS_LIST) ? subghz_ism_regions_text[r] : "?";
+        }
         case CFG_SAVE_FMT:
             return subghz_get_save_fmt_ext() ? "M1 (.sgh)" : "Flipper (.sub)";
         case CFG_RSSI_THRESH:
